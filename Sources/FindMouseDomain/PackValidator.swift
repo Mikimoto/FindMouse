@@ -73,9 +73,9 @@ public enum PackValidator {
                 errors.append(.inconsistentSizeWithinAction(action: name))
                 actionOK = false
             }
-            if let firstSize = fileSizes.first {
-                sizesAcrossActions.append(firstSize)
-            }
+            // 帶入該動作的全部尺寸而不只是第一個：某個動作內部尺寸就不一致時，
+            // 跨動作比對也該看到它的每一種尺寸（與計畫的 formUnion 語意一致）
+            sizesAcrossActions.append(contentsOf: fileSizes)
 
             if actionOK { usable.insert(action) }
         }
