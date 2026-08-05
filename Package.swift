@@ -6,9 +6,12 @@ let package = Package(
     platforms: [.macOS("14.0")],
     products: [
         .library(name: "FindMouseDomain", targets: ["FindMouseDomain"]),
+        .library(name: "FindMouseCore", targets: ["FindMouseCore"]),
     ],
     targets: [
         .target(name: "FindMouseDomain"),
+        .target(name: "FindMouseCore", dependencies: ["FindMouseDomain"]),
         .testTarget(name: "FindMouseDomainTests", dependencies: ["FindMouseDomain"]),
+        .testTarget(name: "FindMouseCoreTests", dependencies: ["FindMouseCore", "FindMouseDomain"]),
     ]
 )

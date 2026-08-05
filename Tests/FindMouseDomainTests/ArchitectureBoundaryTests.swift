@@ -194,7 +194,9 @@ struct ArchitectureBoundaryTests {
             #expect(result.offences.isEmpty,
                     "\(target) 只允許 import \(allowed.sorted().joined(separator: "、"))：\(result.offences)")
         }
-        #expect(audited.contains("FindMouseDomain"),
-                "沒有審到 FindMouseDomain，這個測試的綠燈單獨看沒有意義：audited=\(audited)")
+        let declared = Set(Self.allowedImports.keys)
+        let missing = declared.subtracting(audited).sorted()
+        #expect(missing.isEmpty,
+                "allowedImports 宣告了這些內層 target，但掃描時找不到它們的目錄，這個測試的綠燈單獨看沒有意義：\(missing)")
     }
 }
