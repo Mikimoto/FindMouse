@@ -46,7 +46,9 @@ public final class CatSessionUseCase {
     /// 推進一帧。dt 會被 clamp 在 Timings.maxTickDelta，防止系統睡眠喚醒後貓瞬移。
     public func tick(dt rawDt: TimeInterval, cursor: CGPoint,
                      stage: Stage, commands: [Command]) -> CatFrameState {
-        let dt = min(max(rawDt, 0), Timings.maxTickDelta)
+        // NaN 通不過 clamp（min/max 對 NaN 是恆等），而 Int(actionElapsed * fps)
+        // 會直接 trap。M2 的 driver 由時間戳相減算 dt，所以擋在這裡最省。
+        let dt = rawDt.isFinite ? min(max(rawDt, 0), Timings.maxTickDelta) : 0
         let cfg = config.config
         self.stage = stage
 
@@ -92,7 +94,10 @@ public final class CatSessionUseCase {
     }
 
     private func goHome() {
-        guard phase.isVisible else { return }
+        // 已在退場路上就不做事：goHome 會重設 alpha 並依當前位置重算 exitTarget，
+        // 所以每帧重複 dismiss 會讓淡出永遠不完成、貓一路走出畫面。
+        // Command 的文件宣稱 dismiss 幂等，這個守衛讓那句話成真。
+        guard phase.isVisible, phase != .exiting else { return }
         teaserEnabled = false
         pendingExit = false
         spotlightArmed = false
@@ -107,6 +112,10 @@ public final class CatSessionUseCase {
             guard catalog.capabilities.teaserAvailable else { return }
             guard !teaserEnabled else { return }
             teaserEnabled = true
+            // 關掉再開時 pendingExit 可能還 latch 著（enter 只在進入 teaser phase
+            // 時消費它，而重新開啟時 phase 往往沒變、enter 直接 return）。
+            // 不清掉的話，下一次真正的 teaser 轉換會把貓送回家。
+            pendingExit = false
             spotlightArmed = false
             spotlightOpacity = 0
             if phase == .hidden {
@@ -191,7 +200,10 @@ public final class CatSessionUseCase {
     private func restartHunt(cursor: CGPoint, cfg: BehaviorConfig) {
         restTimer = 0
         sleepTimer = 0
-        activeFlourish = nil
+        // 不需要清 activeFlourish：action(for: .hunting) 一律回 .run，
+        // 而回到 resting 只能經過 enter(.resting)，那裡會清。
+        // 曾經有一行 activeFlourish = nil 在這裡，它讀起來像是「立刻放棄休息動作」
+        // 這條規則的執行點，但實際執行點是 action(for:) 加上無條件的重新狩獵分支。
         enter(.hunting, cursor: cursor, cfg: cfg)
     }
 
@@ -223,6 +235,9 @@ public final class CatSessionUseCase {
         case .hidden:
             alpha = 1
             spotlightOpacity = 0
+            // 不清掉的話，status --json 會對一隻不存在的貓回報 restTimer=10
+            restTimer = 0
+            sleepTimer = 0
         default:
             break
         }
