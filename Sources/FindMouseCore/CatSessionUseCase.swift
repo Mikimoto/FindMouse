@@ -189,9 +189,55 @@ public final class CatSessionUseCase {
             alpha = max(0, alpha - CGFloat(dt / Timings.exitFade))
             if alpha <= 0 { enter(.hidden, cursor: cursor, cfg: cfg) }
 
-        case .teaserApproach, .teaserStalking, .teaserWindup,
-             .teaserPouncing, .teaserTumbling, .teaserRetreating:
-            break   // Task 14 補完
+        case .teaserApproach:
+            move(toward: cursor, dt: dt, speed: cfg.catSpeed, cfg: cfg)
+            if distance <= cfg.teaserStalkRange {
+                enter(.teaserStalking, cursor: cursor, cfg: cfg)
+            }
+
+        case .teaserStalking:
+            move(toward: cursor, dt: dt,
+                 speed: cfg.catSpeed * Timings.stalkSpeedFactor, cfg: cfg)
+            if cursorSpeed > cfg.teaserPounceTriggerSpeed || phaseElapsed >= cfg.teaserStalkTimeout {
+                enter(.teaserWindup, cursor: cursor, cfg: cfg)
+            }
+
+        case .teaserWindup:
+            if phaseElapsed >= Timings.windup {
+                // spec 第 4.5 節：鎖定此刻的鼠標位置。
+                // 之後 teaserPouncing 只讀 pounceTarget，絕不讀 cursor——
+                // ballisticStep 每次呼叫都重新瞄準，換成 live cursor 就變成追蹤。
+                pounceTarget = cursor
+                enter(.teaserPouncing, cursor: cursor, cfg: cfg)
+            }
+
+        case .teaserPouncing:
+            let result = Kinematics.ballisticStep(body: body, target: pounceTarget,
+                                                  dt: dt, speed: cfg.teaserPounceSpeed)
+            body = result.body
+            if result.reached {
+                // 比的是「貓實際落在哪」與鼠標的距離，不是鎖定點與鼠標的距離。
+                // 用鎖定點會讓判定與飛行路徑脫鉤：把 target 換成 live cursor
+                // （撲擊變成追蹤）時，貓明明落在鼠標上卻仍被判成撲空，
+                // 而且那個改動不會讓任何測試轉紅。
+                let missed = hypot(cursor.x - body.position.x,
+                                   cursor.y - body.position.y) > cfg.teaserHitRadius
+                enter(missed ? .teaserRetreating : .teaserTumbling, cursor: cursor, cfg: cfg)
+            }
+
+        case .teaserTumbling:
+            if clipFinished(.tumble) {
+                enter(.teaserRetreating, cursor: cursor, cfg: cfg)
+            }
+
+        case .teaserRetreating:
+            move(toward: retreatPoint, dt: dt,
+                 speed: cfg.catSpeed * Timings.retreatSpeedFactor, cfg: cfg)
+            let arrivedAtRetreat = hypot(retreatPoint.x - body.position.x,
+                                         retreatPoint.y - body.position.y) < 4
+            if clipFinished(.retreat) || arrivedAtRetreat {
+                enter(.teaserStalking, cursor: cursor, cfg: cfg)
+            }
         }
 
         syncAction()
@@ -232,6 +278,8 @@ public final class CatSessionUseCase {
             flourishInterval = randomizer.double(in: Timings.flourishInterval)
         case .sleeping:
             sleepTimer = 0
+        case .teaserRetreating:
+            retreatPoint = retreatDestination(from: cursor, cfg: cfg)
         case .hidden:
             alpha = 1
             spotlightOpacity = 0
@@ -316,6 +364,25 @@ public final class CatSessionUseCase {
     private func move(toward target: CGPoint, dt: TimeInterval, speed: CGFloat, cfg: BehaviorConfig) {
         body = Kinematics.step(body: body, target: target, dt: dt,
                                speed: speed, turnRateDegreesPerSecond: cfg.catTurnRate)
+    }
+
+    /// 退開的目標點：從貓的當前位置朝遠離鼠標的方向走 teaserRetreatDistance。
+    ///
+    /// **已知限制（M1 不修，因為在純邏輯層看不出來）：** 命中時貓的落點正好等於
+    /// 鼠標（鼠標靜止時必然如此，而那是最常見的情況），此時 dx = dy = 0，
+    /// 方向向量退化成 (0, 0)、retreatPoint 等於貓自己。貓不會卡住——`move(toward:)`
+    /// 內部是 `atan2(0, 0) = 0`，所以牠會以退開速度往**正右方**漂——但那個方向與
+    /// 牠撲擊過來的方向完全無關。等 M2 把動畫畫上去才看得出來對不對；
+    /// 現在不改，是因為改成「沿原路退回」需要一個能釘住方向的測試，
+    /// 而退開只持續 0.2 秒、轉向速率上限讓 180 度反轉做不完，那個測試不好寫。
+    private func retreatDestination(from cursor: CGPoint, cfg: BehaviorConfig) -> CGPoint {
+        let dx = body.position.x - cursor.x
+        let dy = body.position.y - cursor.y
+        let separation = max(hypot(dx, dy), 0.001)
+        let ux = dx / separation
+        let uy = dy / separation
+        return CGPoint(x: body.position.x + ux * cfg.teaserRetreatDistance,
+                       y: body.position.y + uy * cfg.teaserRetreatDistance)
     }
 
     /// 離 point 最近的邊緣外側一個貓身的位置。入場與退場共用。
