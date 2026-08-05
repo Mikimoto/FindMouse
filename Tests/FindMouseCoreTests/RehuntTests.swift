@@ -87,7 +87,7 @@ private let center = CGPoint(x: 960, y: 540)
     }
     // 休息池動作 2 格、10 fps、dt = 1/60 → 至少 12 帧。
     // 這條釘住 syncAction() 裡的 actionElapsed 歸零：少了它，切進 flourish 時
-    // actionElapsed 還是 sitIdle 累積的值，clipFinished 立刻成立，動作一帧就結束。
+    // actionElapsed 還是 sitIdle 累積的值，clipFinished 在下一帧就成立，動作只剩 2 帧（實測值；不是 1，因為判定發生在切換的下一次 tick）。
     #expect(frames >= 10, "休息動作只持續了 \(frames) 帧，syncAction 的 actionElapsed 沒有歸零")
 }
 
