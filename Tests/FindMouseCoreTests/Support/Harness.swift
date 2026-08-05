@@ -20,7 +20,8 @@ final class Harness {
         self.catalog = catalog
         self.session = CatSessionUseCase(config: config, catalog: catalog,
                                          randomizer: SeededRandomizer(seed: seed))
-        self.last = session.tick(dt: 0, cursor: .zero, stage: Self.stage, commands: [])
+        self.last = session.tick(dt: 0, cursor: CGPoint(x: 960, y: 540),
+                                 stage: Self.stage, commands: [])
         self.phases = [last.phase]
     }
 
