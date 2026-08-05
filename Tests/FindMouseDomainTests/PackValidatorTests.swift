@@ -42,6 +42,8 @@ private func fullPack(
     #expect(report.capabilities?.teaserAvailable == true)
     #expect(report.capabilities?.restPool == [.scratch, .stretch, .yawn])  // rawValue 排序
     #expect(report.capabilities?.available.count == CatAction.allCases.count)
+    // 乾淨的 pack 不該有任何警告；少了這行，任何新增的假警告都不會被發現
+    #expect(report.warnings.isEmpty)
 }
 
 @Test func missingCoreActionInvalidatesPack() {
@@ -88,6 +90,9 @@ private func fullPack(
     ]
     let report = PackValidator.validate(manifest: manifest, directoryName: "test-blocks", listing: listing)
     #expect(report.errors.contains(.inconsistentSizeWithinAction(action: "sit")))
+    // 同一個動作內部尺寸不一致時，那些尺寸也會進到跨動作比對。
+    // 沒有這一行，「只帶第一個尺寸」的錯誤實作會靜默通過——實際發生過一次。
+    #expect(report.warnings.contains(.inconsistentSizeAcrossActions))
     _ = manifest
 }
 
@@ -149,6 +154,25 @@ private func fullPack(
     let (mismatch, l5) = fullPack(id: "one")
     #expect(PackValidator.validate(manifest: mismatch, directoryName: "two", listing: l5)
         .errors.contains(.idDirectoryMismatch(id: "one", directory: "two")))
+
+    // 規則是 ASCII 的 [a-z0-9-]+。Unicode 屬性版本會放行這個 id，而它與磁碟目錄名
+    // 的正規化差異在 String 相等下看不出來，所以必須在 invalidID 就攔掉。
+    let (unicodeID, l6) = fullPack(id: "café-cat")
+    #expect(PackValidator.validate(manifest: unicodeID, directoryName: "café-cat", listing: l6)
+        .errors.contains(.invalidID("café-cat")))
+}
+
+@Test func invalidFrameCountAndFPSAreErrors() {
+    var (manifest, listing) = fullPack()
+    manifest.actions["yawn"] = .init(frames: 0, fps: 0, loop: false)
+    listing.directories["yawn"] = []   // 宣告 0 格、目錄也空，所以不會另外觸發 frameCountMismatch
+    let report = PackValidator.validate(manifest: manifest, directoryName: "test-blocks", listing: listing)
+    #expect(report.isValid == false)
+    #expect(report.errors.contains(.invalidFrameCount(action: "yawn", frames: 0)))
+    #expect(report.errors.contains(.invalidFPS(action: "yawn", fps: 0)))
+    // 這兩個守衛是唯一阻止「零格動作進入 restPool」的東西：
+    // 刪掉它們，該 pack 會以 isValid=true 通過且 .yawn 出現在 restPool 裡
+    #expect(report.capabilities == nil)
 }
 
 @Test func inconsistentSizeAcrossActionsIsOnlyWarning() {

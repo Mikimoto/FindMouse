@@ -32,6 +32,8 @@ public enum PackValidator {
 
         // --- 逐一檢查宣告的動作。actions 是唯一權威。---
         var usable: Set<CatAction> = []
+        // 不能用 Set<CGSize>：CGSize 對 Hashable 的 conformance 要 macOS 15+，
+        // 而本套件宣告 .macOS("14.0")。改用陣列＋手動判重（見 uniqueCGSizes）。
         var sizesAcrossActions: [CGSize] = []
 
         for name in manifest.actions.keys.sorted() {
@@ -74,7 +76,7 @@ public enum PackValidator {
                 actionOK = false
             }
             // 帶入該動作的全部尺寸而不只是第一個：某個動作內部尺寸就不一致時，
-            // 跨動作比對也該看到它的每一種尺寸（與計畫的 formUnion 語意一致）
+            // 跨動作比對也該看到它的每一種尺寸
             sizesAcrossActions.append(contentsOf: fileSizes)
 
             if actionOK { usable.insert(action) }
@@ -85,9 +87,7 @@ public enum PackValidator {
             warnings.append(.undeclaredDirectory(name))
         }
 
-        // Check if sizes vary across actions
-        let uniqueSizes = uniqueCGSizes(sizesAcrossActions)
-        if uniqueSizes.count > 1 {
+        if uniqueCGSizes(sizesAcrossActions).count > 1 {
             warnings.append(.inconsistentSizeAcrossActions)
         }
 
@@ -119,14 +119,22 @@ public enum PackValidator {
         return PackValidationReport(errors: errors, warnings: warnings, capabilities: capabilities)
     }
 
+    /// 規則是 ASCII 的 `[a-z0-9-]+`，所以不能用 `Character.isLowercase` / `isNumber`——
+    /// 那些是 Unicode 全域屬性，會放行 `ünïcode`、`ß`、`½`、`٣`、`Ⅷ`。
+    /// 這不只是寬鬆：pack id 必須等於磁碟上的目錄名，而 Swift 的 String 相等是
+    /// 正規化等價，NFC 的 id 對 NFD 的目錄名會比較成相等，於是 idDirectoryMismatch
+    /// 看不出正規化差異。限制成 ASCII 就從構造上消掉整個類別。
     private static func isValidID(_ id: String) -> Bool {
-        !id.isEmpty && id.allSatisfy { $0.isLowercase && $0.isLetter || $0.isNumber || $0 == "-" }
+        !id.isEmpty && id.allSatisfy {
+            ("a"..."z").contains($0) || ("0"..."9").contains($0) || $0 == "-"
+        }
     }
 
     private static func sorted(_ actions: Set<CatAction>) -> [CatAction] {
         actions.sorted { $0.rawValue < $1.rawValue }
     }
 
+    /// CGSize 在 macOS 14 部署目標下不是 Hashable，所以自己判重
     private static func uniqueCGSizes(_ sizes: [CGSize]) -> [CGSize] {
         var unique: [CGSize] = []
         for size in sizes {
