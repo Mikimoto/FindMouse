@@ -9,8 +9,21 @@ import Testing
 /// **規則是允許清單，不是禁止清單。** 禁止清單無法窮舉：實測 macOS SDK 裡至少有 14 個
 /// 框架會 re-export AppKit（PDFKit、SceneKit、MapKit、ScreenCaptureKit、StoreKit…），
 /// 而 Swift 的 import 文法還有 `import class AppKit.NSScreen` 這種逐符號形式。
-/// 允許清單由 spec 第 7.1 節直接給定、小而穩定，而且對沒想到的寫法是往失敗的方向倒
-/// （大聲誤報，看 檔案:行號 幾秒就能判斷），不是往通過的方向倒（靜默漏放）。
+/// 允許清單讓「模組名」這一層由構造上完整：凡是被辨識出來、又不在清單上的模組一律紅燈。
+///
+/// 這個測試**保證**：被辨識為 import 宣告的行，其模組必須在該 target 的允許清單內；
+/// 被掃描的目錄裡沒有符號連結；`Package.swift` 維持慣例佈局。
+///
+/// 這個測試**不保證**，寫出來以免綠燈被過度解讀：
+///
+/// - **不保證 Domain 沒有 I/O。** 允許清單的粒度是模組而不是符號。`CoreGraphics` 是
+///   spec 第 7.1 節允許的，但它同時給了 `CGDisplayBounds`、`CGWarpMouseCursorPosition`
+///   與 `CGEvent.post`——實測這些在 Domain 裡編得過而本測試維持綠。在這個專案裡這是
+///   最可能發生的真實洩漏，因為整個 App 的主題就是列舉螢幕與移動鼠標，而那些操作
+///   應該住在 Core 的 port 後面。**綠燈不等於 Domain 是純的。**
+/// - **不保證擋得住刻意規避。** 一行寫兩個 import、`import` 與模組名跨行、
+///   `import /* 註解 */ AppKit` 都能編過而本測試看不到（pattern 是 `^` 錨定的單行比對）。
+///   這些不會有人不小心寫出來，所以刻意不為它們增加誤報風險。
 struct ArchitectureBoundaryTests {
 
     /// 每個內層 target 允許 import 的模組。來源：spec 第 7.1 節。
@@ -72,6 +85,31 @@ struct ArchitectureBoundaryTests {
         return (walker?.compactMap { $0 as? URL } ?? []).filter { $0.pathExtension == "swift" }
     }
 
+    /// 被掃描目錄裡的符號連結。SPM 會編譯符號連結目錄底下的檔案，
+    /// 但 `FileManager.enumerator` 不會遞迴進去——那是一條掃不到的路徑。
+    /// 與其複製 SPM 的來源解析邏輯，不如在符號連結出現的當下就紅燈。
+    private static func symlinks(inTarget target: String) -> [String] {
+        let dir = packageRoot
+            .appendingPathComponent("Sources")
+            .appendingPathComponent(target)
+        let walker = FileManager.default.enumerator(
+            at: dir, includingPropertiesForKeys: [.isSymbolicLinkKey])
+        return (walker?.compactMap { $0 as? URL } ?? [])
+            .filter { (try? $0.resourceValues(forKeys: [.isSymbolicLinkKey]))?.isSymbolicLink == true }
+            .map { "\(target)/\($0.lastPathComponent)" }
+            .sorted()
+    }
+
+    /// 掃描假設「`Sources/<target>/` 就是該 target 的實際內容」。
+    /// 這些 manifest 設定會讓那個假設失效：實測 `path:` 重導向並留下誘餌目錄、
+    /// 或 `unsafeFlags` 掛 `-import-objc-header`，都能讓 AppKit 進到 Domain
+    /// 而本測試維持綠。與其讓假設默默失效，不如在它被引入的當下就紅燈。
+    /// 後續里程碑若真的需要其中之一，必須連同這個測試一起改——那才是有意識的決定。
+    private static let manifestKeysThatBreakTheScan = [
+        "path:", "sources:", "exclude:", "unsafeFlags",
+        "linkerSettings", "cSettings", "-import-objc-header",
+    ]
+
     private static func audit(target: String,
                               allowed: Set<String>) throws -> (fileCount: Int, offences: [String]) {
         // importPattern 是計算屬性（見下），所以在迴圈外取一份
@@ -82,7 +120,10 @@ struct ArchitectureBoundaryTests {
             let text = try String(contentsOf: file, encoding: .utf8)
             // 外部編輯器可能留下 BOM；U+FEFF 屬 Cf 類，不會被 whitespace trim 掉
             let body = text.hasPrefix("\u{FEFF}") ? String(text.dropFirst()) : text
-            for (lineNumber, line) in body.components(separatedBy: .newlines).enumerated() {
+            // 先正規化 CRLF：.newlines 會把 \r 與 \n 各算一個分隔符，
+            // 讓 \r\n 檔案的每一行多出一個空元素，回報的行號約為實際的兩倍
+            let normalized = body.replacingOccurrences(of: "\r\n", with: "\n")
+            for (lineNumber, line) in normalized.components(separatedBy: "\n").enumerated() {
                 guard let match = try? pattern.firstMatch(in: line),
                       let range = match[1].range else { continue }
                 let module = String(line[range])
@@ -103,13 +144,29 @@ struct ArchitectureBoundaryTests {
                 "這些 target 沒有宣告 import 政策，請在 allowedImports 明確宣告，不要讓它靜默地不受檢查：\(undeclared)")
     }
 
+    @Test func manifestKeepsTheLayoutTheScanAssumes() throws {
+        let manifest = try String(
+            contentsOf: Self.packageRoot.appendingPathComponent("Package.swift"),
+            encoding: .utf8)
+        let present = Self.manifestKeysThatBreakTheScan.filter { manifest.contains($0) }
+        #expect(present.isEmpty, "Package.swift 出現會讓掃描假設失效的設定，掃到的檔案可能不是真正被編譯的檔案：\(present)")
+    }
+
     @Test func innerTargetsImportOnlyAllowedModules() throws {
+        var audited: [String] = []
         for target in Self.sourceTargets {
             guard let allowed = Self.allowedImports[target] else { continue }
+            audited.append(target)
+
+            let dangling = Self.symlinks(inTarget: target)
+            #expect(dangling.isEmpty, "\(target) 裡有符號連結，SPM 會編譯它但掃描不會進去：\(dangling)")
+
             let result = try Self.audit(target: target, allowed: allowed)
             #expect(result.fileCount > 0, "\(target) 掃不到任何 .swift，這一層等於沒檢查")
             #expect(result.offences.isEmpty,
                     "\(target) 只允許 import \(allowed.sorted().joined(separator: "、"))：\(result.offences)")
         }
+        #expect(audited.contains("FindMouseDomain"),
+                "沒有審到 FindMouseDomain，這個測試的綠燈單獨看沒有意義：audited=\(audited)")
     }
 }
