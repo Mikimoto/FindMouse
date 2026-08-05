@@ -12,7 +12,8 @@ import Testing
 /// 允許清單讓「模組名」這一層由構造上完整：凡是被辨識出來、又不在清單上的模組一律紅燈。
 ///
 /// 這個測試**保證**：被辨識為 import 宣告的行，其模組必須在該 target 的允許清單內；
-/// 被掃描的目錄裡沒有符號連結；`Package.swift` 維持慣例佈局。
+/// 被掃描的目錄裡沒有符號連結；`Package.swift` 是根目錄唯一的 manifest，
+/// 且不含會讓掃描假設失效的關鍵字。
 ///
 /// 這個測試**不保證**，寫出來以免綠燈被過度解讀：
 ///
@@ -24,6 +25,12 @@ import Testing
 /// - **不保證擋得住刻意規避。** 一行寫兩個 import、`import` 與模組名跨行、
 ///   `import /* 註解 */ AppKit` 都能編過而本測試看不到（pattern 是 `^` 錨定的單行比對）。
 ///   這些不會有人不小心寫出來，所以刻意不為它們增加誤報風險。
+/// - **不保證 manifest 檢查是解析式的。** 它是對單一檔名的文字關鍵字掃描，
+///   `path : "x"`（冒號前有空格）這種寫法躲得過。與 import 行同屬「刻意規避
+///   擋不住」那一類。
+/// - **這三個測試是一道閘門，不是三個獨立結論。** 任何單獨一個的綠燈都沒有意義：
+///   例如 manifest 被 `path:` 重導向時，`innerTargetsImportOnlyAllowedModules`
+///   會忠實地稽核那個誘餌目錄然後通過。
 struct ArchitectureBoundaryTests {
 
     /// 每個內層 target 允許 import 的模組。來源：spec 第 7.1 節。
@@ -70,9 +77,14 @@ struct ArchitectureBoundaryTests {
     private static var sourceTargets: [String] {
         let dir = packageRoot.appendingPathComponent("Sources")
         let entries = try? FileManager.default.contentsOfDirectory(
-            at: dir, includingPropertiesForKeys: [.isDirectoryKey])
+            at: dir, includingPropertiesForKeys: [.isDirectoryKey, .isSymbolicLinkKey])
         return (entries ?? [])
-            .filter { (try? $0.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true }
+            .filter {
+                let values = try? $0.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
+                // 指向目錄的符號連結，isDirectory 是 false。不把它收進來的話，
+                // 一個 symlink 當 target 目錄會同時躲過「未宣告政策」與「內容稽核」。
+                return values?.isDirectory == true || values?.isSymbolicLink == true
+            }
             .map(\.lastPathComponent)
             .sorted()
     }
@@ -96,7 +108,8 @@ struct ArchitectureBoundaryTests {
             at: dir, includingPropertiesForKeys: [.isSymbolicLinkKey])
         return (walker?.compactMap { $0 as? URL } ?? [])
             .filter { (try? $0.resourceValues(forKeys: [.isSymbolicLinkKey]))?.isSymbolicLink == true }
-            .map { "\(target)/\($0.lastPathComponent)" }
+            .map { $0.path.replacingOccurrences(
+                of: packageRoot.appendingPathComponent("Sources").path + "/", with: "") }
             .sorted()
     }
 
@@ -105,8 +118,12 @@ struct ArchitectureBoundaryTests {
     /// 或 `unsafeFlags` 掛 `-import-objc-header`，都能讓 AppKit 進到 Domain
     /// 而本測試維持綠。與其讓假設默默失效，不如在它被引入的當下就紅燈。
     /// 後續里程碑若真的需要其中之一，必須連同這個測試一起改——那才是有意識的決定。
+    ///
+    /// 不列 `sources:`——它是 `resources:` 的子字串，而本專案之後要用 resources 出貨
+    /// 內建 sprite pack。而且用 `sources:` 縮小編譯範圍只會讓掃描看到「超集」，
+    /// 那是 fail-closed 的方向（可能誤報，不會漏放）。
     private static let manifestKeysThatBreakTheScan = [
-        "path:", "sources:", "exclude:", "unsafeFlags",
+        "path:", "exclude:", "unsafeFlags",
         "linkerSettings", "cSettings", "-import-objc-header",
     ]
 
@@ -122,7 +139,10 @@ struct ArchitectureBoundaryTests {
             let body = text.hasPrefix("\u{FEFF}") ? String(text.dropFirst()) : text
             // 先正規化 CRLF：.newlines 會把 \r 與 \n 各算一個分隔符，
             // 讓 \r\n 檔案的每一行多出一個空元素，回報的行號約為實際的兩倍
-            let normalized = body.replacingOccurrences(of: "\r\n", with: "\n")
+            // 單獨的 \r 也是 Swift lexer 認的換行，不正規化的話整個檔案會塌成一行
+            let normalized = body
+                .replacingOccurrences(of: "\r\n", with: "\n")
+                .replacingOccurrences(of: "\r", with: "\n")
             for (lineNumber, line) in normalized.components(separatedBy: "\n").enumerated() {
                 guard let match = try? pattern.firstMatch(in: line),
                       let range = match[1].range else { continue }
@@ -145,9 +165,17 @@ struct ArchitectureBoundaryTests {
     }
 
     @Test func manifestKeepsTheLayoutTheScanAssumes() throws {
+        let root = Self.packageRoot
+        let manifests = ((try? FileManager.default.contentsOfDirectory(atPath: root.path)) ?? [])
+            .filter { $0.hasPrefix("Package") && $0.hasSuffix(".swift") }
+            .sorted()
+        // SwiftPM 會優先採用 Package@swift-<版本>.swift。只讀 Package.swift 的檢查
+        // 在那種檔案存在時，檢查的是一份不再權威的 manifest，而且會回報綠燈。
+        #expect(manifests == ["Package.swift"],
+                "根目錄應該只有一份 Package.swift，否則本測試檢查的可能不是 SwiftPM 實際採用的那一份：\(manifests)")
+
         let manifest = try String(
-            contentsOf: Self.packageRoot.appendingPathComponent("Package.swift"),
-            encoding: .utf8)
+            contentsOf: root.appendingPathComponent("Package.swift"), encoding: .utf8)
         let present = Self.manifestKeysThatBreakTheScan.filter { manifest.contains($0) }
         #expect(present.isEmpty, "Package.swift 出現會讓掃描假設失效的設定，掃到的檔案可能不是真正被編譯的檔案：\(present)")
     }
