@@ -1,0 +1,140 @@
+import Foundation
+import Testing
+@testable import FindMouseAdapters
+import FindMouseDomain
+
+/// fixtures 是 SwiftPM resources，靠 `Bundle.module` 定位。
+/// 用 `#require` 而不是 `#expect`：路徑找不到時後面每一條斷言都會是誤導。
+private func fixtures() throws -> URL {
+    try #require(Bundle.module.url(forResource: "Fixtures", withExtension: nil))
+}
+
+/// 造一個空的「使用者 pack 目錄」。呼叫端負責刪。
+///
+/// 名字帶亂數：整個 target 的測試在同一個 process 裡平行跑，
+/// 固定名字會讓兩條測試互相踩到對方正在建立或刪除的檔案。
+private func makeUserPacksDirectory() throws -> URL {
+    let dir = URL(fileURLWithPath: NSTemporaryDirectory())
+        .appendingPathComponent("fm-packs-\(UUID().uuidString.prefix(8))")
+    try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    return dir
+}
+
+/// 複製一份 fixture 到 `parent` 並換成新的 id。
+///
+/// 目錄名與 pack.json 裡的 id 必須一起換：`PackValidator` 把兩者不符判成 error，
+/// 只換一邊的話這套 pack 會變成不可用，就測不到「合格的使用者 pack 長什麼樣」。
+private func copyFixture(_ id: String, into parent: URL, as newID: String) throws {
+    let source = try fixtures().appendingPathComponent(id)
+    let destination = parent.appendingPathComponent(newID)
+    try FileManager.default.copyItem(at: source, to: destination)
+    let manifest = destination.appendingPathComponent("pack.json")
+    let rewritten = try String(contentsOf: manifest, encoding: .utf8)
+        .replacingOccurrences(of: "\"\(id)\"", with: "\"\(newID)\"")
+    try rewritten.write(to: manifest, atomically: true, encoding: .utf8)
+}
+
+/// 壞掉的 pack 要出現在清單上、標成不可用，**而不是從清單消失**。
+///
+/// 消失的話使用者完全無法理解——他明明把目錄放進去了。spec 第 10 節要求
+/// 「缺必要動作 → 設定裡紅字不可選」，紅字的前提是它列得出來。
+@Test func brokenPacksAreListedAsUnusableRatherThanHidden() throws {
+    let packs = PackCatalogRepository.scan(directories: [(try fixtures(), false)])
+    let ids = packs.map(\.id)
+    #expect(ids.contains("bad-missing-core"))
+    // 同一個目錄內依 id 排序。`contentsOfDirectory` 的順序沒有保證，
+    // 不排的話設定視窗的清單每次開都可能換一個順序。
+    #expect(ids == ids.sorted())
+
+    let broken = try #require(packs.first { $0.id == "bad-missing-core" })
+    #expect(broken.isUsable == false)
+    #expect(broken.errors.contains { $0.contains("必要動作") })
+}
+
+/// 缺 teaser 的 pack 是**合格**的，只是 teaserAvailable 為 false。
+@Test func aPackMissingTeaserIsStillUsable() throws {
+    let packs = PackCatalogRepository.scan(directories: [(try fixtures(), false)])
+    let noTeaser = try #require(packs.first { $0.id == "bad-missing-teaser" })
+    #expect(noTeaser.isUsable)
+    #expect(noTeaser.teaserAvailable == false)
+}
+
+/// 內建與使用者目錄的來源要分得出來——UI 要用它決定能不能刪，
+/// 而且**同 id 時內建的優先**（使用者不該能用同名 pack 蓋掉內建的）。
+@Test func builtInWinsWhenBothDirectoriesHaveTheSameID() throws {
+    let builtIn = try fixtures()
+    let user = try makeUserPacksDirectory()
+    defer { try? FileManager.default.removeItem(at: user) }
+    try FileManager.default.copyItem(
+        at: builtIn.appendingPathComponent("bad-missing-core"),
+        to: user.appendingPathComponent("bad-missing-core"))
+
+    let packs = PackCatalogRepository.scan(directories: [(builtIn, true), (user, false)])
+    let matching = packs.filter { $0.id == "bad-missing-core" }
+    #expect(matching.count == 1, "同一個 id 只能出現一次")
+    #expect(matching.first?.isBuiltIn == true)
+}
+
+/// 第二個目錄也要真的掃到，而且 `isBuiltIn` 是**逐目錄**決定的。
+///
+/// 沒有這一條，「只掃 directories.first」與「isBuiltIn 一律填 true」兩種寫法
+/// 都能通過上面每一條測試——「內建優先」剛好也是「取第一個」，
+/// 而其餘測試都只餵一個目錄。
+@Test func userPacksAreListedAndMarkedAsNotBuiltIn() throws {
+    let builtIn = try fixtures()
+    let user = try makeUserPacksDirectory()
+    defer { try? FileManager.default.removeItem(at: user) }
+    try copyFixture("bad-missing-teaser", into: user, as: "user-blocks")
+
+    let packs = PackCatalogRepository.scan(directories: [(builtIn, true), (user, false)])
+    let mine = try #require(packs.first { $0.id == "user-blocks" })
+    #expect(mine.isBuiltIn == false)
+    #expect(mine.isUsable, "只是換了 id 的合格 pack")
+
+    // 另一邊也要如實標成內建，否則「isBuiltIn 一律填 false」也會通過
+    let othersAreBuiltIn = packs.filter { $0.id != "user-blocks" }.allSatisfy(\.isBuiltIn)
+    #expect(othersAreBuiltIn)
+    #expect(packs.count == PackCatalogRepository.scan(directories: [(builtIn, true)]).count + 1,
+            "兩個目錄的 pack 都要在清單上")
+}
+
+/// 目錄不存在不是錯誤——使用者 pack 目錄一開始本來就不存在。
+///
+/// 不存在的那個排**前面**：排後面的話，「讀不到目錄就把已收集的結果丟回去」
+/// 這種寫法照樣會通過，而它在使用者目錄缺席時會讓內建 pack 全部消失。
+@Test func aMissingDirectoryContributesNothingAndDoesNotThrow() throws {
+    let existing = try fixtures()
+    let absent = URL(fileURLWithPath: "/nonexistent/packs-\(UUID().uuidString.prefix(8))")
+    let baseline = PackCatalogRepository.scan(directories: [(existing, false)])
+    let withAbsent = PackCatalogRepository.scan(
+        directories: [(absent, false), (existing, false)])
+
+    #expect(baseline.isEmpty == false, "fixtures 目錄本來就有 pack，不然這條測不到東西")
+    #expect(withAbsent == baseline, "既有目錄的 pack 一筆不多一筆不少")
+}
+
+/// 目錄裡的非 pack 目錄（沒有 pack.json）要略過，不要變成一筆壞掉的 pack。
+@Test func directoriesWithoutAManifestAreSkipped() throws {
+    let dir = try makeUserPacksDirectory()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    try FileManager.default.createDirectory(
+        at: dir.appendingPathComponent("not-a-pack"), withIntermediateDirectories: true)
+
+    #expect(PackCatalogRepository.scan(directories: [(dir, false)]).isEmpty)
+}
+
+/// `pack use` 要靠它把 id 換成目錄，而且**必須跟清單同一套優先序**：
+/// 清單顯示內建那套、切換卻切到使用者的同名目錄，畫面與實際就對不起來了。
+@Test func packDirectoryLookupPrefersTheBuiltInCopy() throws {
+    let builtIn = try fixtures()
+    let user = try makeUserPacksDirectory()
+    defer { try? FileManager.default.removeItem(at: user) }
+    try FileManager.default.copyItem(
+        at: builtIn.appendingPathComponent("bad-missing-core"),
+        to: user.appendingPathComponent("bad-missing-core"))
+
+    let directories: [(URL, Bool)] = [(builtIn, true), (user, false)]
+    #expect(PackCatalogRepository.directory(for: "bad-missing-core", in: directories)
+            == builtIn.appendingPathComponent("bad-missing-core"))
+    #expect(PackCatalogRepository.directory(for: "no-such-pack", in: directories) == nil)
+}
