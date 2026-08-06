@@ -8,7 +8,7 @@ import FindMouseDomain
 /// **只做編解碼，不驗值域。** 值域拒絕（回 `CONFIG_VALUE_OUT_OF_RANGE`）是
 /// M3 `SettingsUseCase` 的職責——見 M1 完成報告第 6 項。這裡若順手加了 clamp，
 /// M3 就會拿到「已經被偷偷修正過」的值，永遠無法回報那個錯誤。
-public final class SettingsGateway: ConfigProviderPort, @unchecked Sendable {
+public final class SettingsGateway: SettingsStorePort, @unchecked Sendable {
 
     private let defaults: UserDefaults
 
@@ -76,6 +76,19 @@ public final class SettingsGateway: ConfigProviderPort, @unchecked Sendable {
 
         setOptional(config.wakeThresholdOverride, forKey: Key.wakeThreshold)
         setOptional(config.arriveRadiusOverride, forKey: Key.arriveRadius)
+    }
+
+    // MARK: - 不進 Domain 的 4 個字串型 key（pack.id / hotkey.* / window.level）
+
+    public func string(forKey key: String) -> String? {
+        defaults.string(forKey: key)
+    }
+
+    /// nil 一律移除鍵，與 `setOptional` 同一個理由：
+    /// 「沒設定過」要讓上層看得出來，才有辦法回落到預設。
+    public func setString(_ value: String?, forKey key: String) {
+        if let value { defaults.set(value, forKey: key) }
+        else { defaults.removeObject(forKey: key) }
     }
 
     // MARK: - 鍵名。與 spec 第 9 節的設定項名稱一致，M3 的 CLI `config` 會沿用。
