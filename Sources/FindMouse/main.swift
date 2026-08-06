@@ -6,6 +6,7 @@ private let log = Logger(subsystem: "com.findmouse.app", category: "spike")
 @MainActor
 final class SpikeDelegate: NSObject, NSApplicationDelegate {
     private var hotkeys: CarbonHotkeyDriver?
+    private var window: OverlayWindow?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
@@ -24,6 +25,16 @@ final class SpikeDelegate: NSObject, NSApplicationDelegate {
             log.error("hotkey registration failed: \(String(describing: driver.failed), privacy: .public)")
         }
         hotkeys = driver
+
+        // 暫時的紅色底：只為了用眼睛確認視窗真的落在正確的位置與層級。
+        // Task 15 接線時整個 main.swift 會被換掉。
+        let screens = NSScreen.screens.map(\.frame)
+        let union = screens.dropFirst().reduce(screens.first ?? .zero) { $0.union($1) }
+        let overlay = OverlayWindow(union: union, level: .overlayWindow)
+        overlay.backgroundColor = NSColor.systemRed.withAlphaComponent(0.25)
+        overlay.orderFrontRegardless()
+        window = overlay
+        log.notice("overlay window up: union=\(String(describing: union), privacy: .public) screens=\(screens.count)")
     }
 }
 
