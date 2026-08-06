@@ -27,13 +27,14 @@ private func makeState(
         restTimer: 3.5, sleepTimer: 1.25)
 }
 
-private let oneScreen = [CGRect(x: 0, y: 0, width: 1920, height: 1080)]
+private let oneScreen = [ScreenInfo(frame: CGRect(x: 0, y: 0, width: 1920, height: 1080),
+                                    scale: 2)]
 
 private func makePayload(_ state: CatFrameState,
-                         screens: [CGRect] = oneScreen) -> StatusPayload {
+                         screens: [ScreenInfo] = oneScreen) -> StatusPayload {
     StatusJSONPresenter.payload(state: state, appVersion: "9.9.9",
                                 packID: "test-blocks", packLogicalHeight: 96,
-                                screens: screens, scale: 2)
+                                screens: screens)
 }
 
 /// 每個欄位都對得上來源，沒有一個是這一層自己算的。
@@ -95,7 +96,7 @@ private func makePayload(_ state: CatFrameState,
     for heading in [CGFloat(0), .pi / 4, 3 * .pi / 4, .pi, -3 * .pi / 4] {
         let state = makeState(heading: heading)
         let facing = makePayload(state).cat.facing
-        let mirrored = overlay.viewModel(for: state, in: oneScreen[0]).cat.mirrored
+        let mirrored = overlay.viewModel(for: state, in: oneScreen[0].frame).cat.mirrored
         // 素材本來朝右，所以「畫面鏡像了」等價於「status 說朝左」
         #expect(mirrored == (facing == "left"),
                 "heading \(heading)：畫面 mirrored=\(mirrored) 但 status 說 \(facing)")
@@ -136,11 +137,26 @@ private func makePayload(_ state: CatFrameState,
 /// 貓與鼠標在不同螢幕上時這兩個答案才會不同，所以夾具讓它們不同——
 /// 單螢幕、或兩者同螢幕時，「用貓的位置」是完全正確的，測不出來。
 @Test func screenIndexFollowsTheCursorNotTheCat() {
-    let screens = [CGRect(x: 0, y: 0, width: 1920, height: 1080),
-                   CGRect(x: 1920, y: 0, width: 1280, height: 800)]
+    let screens = [ScreenInfo(frame: CGRect(x: 0, y: 0, width: 1920, height: 1080), scale: 2),
+                   ScreenInfo(frame: CGRect(x: 1920, y: 0, width: 1280, height: 800), scale: 1)]
     let state = makeState(position: CGPoint(x: 500, y: 500),      // 貓在 0 號
                           cursor: CGPoint(x: 2400, y: 400))       // 鼠標在 1 號
     #expect(makePayload(state, screens: screens).display.screenIndex == 1)
+}
+
+/// `scale` 要來自**索引指到的那一片**，不是第一片、也不是主螢幕。
+///
+/// 兩片螢幕的 scale 刻意不同（Retina ＋ 外接 1080p 就是這個樣子）。
+/// 相同的話，「拿錯螢幕的 scale」這個 bug 在任何斷言下都看不出來。
+@Test func scaleComesFromTheScreenTheCursorIsOn() {
+    let screens = [ScreenInfo(frame: CGRect(x: 0, y: 0, width: 1920, height: 1080), scale: 2),
+                   ScreenInfo(frame: CGRect(x: 1920, y: 0, width: 1280, height: 800), scale: 1)]
+
+    let onRetina = makeState(cursor: CGPoint(x: 900, y: 500))
+    #expect(makePayload(onRetina, screens: screens).display.scale == 2)
+
+    let onExternal = makeState(cursor: CGPoint(x: 2400, y: 400))
+    #expect(makePayload(onExternal, screens: screens).display.scale == 1)
 }
 
 /// 鼠標落在螢幕之間的空隙時，索引要與貓的入場點是同一片螢幕。
@@ -148,16 +164,17 @@ private func makePayload(_ state: CatFrameState,
 /// 分開實作的話這裡會分歧：貓從最近那片的邊緣跑出來，
 /// 而 status 說牠不在任何螢幕上。
 @Test func screenIndexAgreesWithTheStageWhenCursorIsInAGap() {
-    let screens = [CGRect(x: 0, y: 0, width: 1000, height: 1000),
-                   CGRect(x: 2000, y: 0, width: 1000, height: 1000)]
+    let screens = [ScreenInfo(frame: CGRect(x: 0, y: 0, width: 1000, height: 1000), scale: 1),
+                   ScreenInfo(frame: CGRect(x: 2000, y: 0, width: 1000, height: 1000), scale: 1)]
     let cursor = CGPoint(x: 1900, y: 500)   // 空隙裡，離 1 號比較近
     let index = makePayload(makeState(cursor: cursor), screens: screens).display.screenIndex
 
     #expect(index == 1)
     // 先確認索引在範圍內再 subscript：直接 `screens[index]` 在索引錯掉時是
     // crash 而不是 fail，而 crash 會帶走整個 test run，把後面每一條都藏起來
-    let indexed = screens.indices.contains(index) ? screens[index] : nil
-    #expect(indexed == StageReader.stage(screens: screens, cursor: cursor).cursorScreen)
+    let frames = screens.map(\.frame)
+    let indexed = frames.indices.contains(index) ? frames[index] : nil
+    #expect(indexed == StageReader.stage(screens: frames, cursor: cursor).cursorScreen)
 }
 
 /// 螢幕全部睡著時沒有任何索引是對的，回 -1 而不是 0。
@@ -165,4 +182,5 @@ private func makePayload(_ state: CatFrameState,
 /// 0 是個看起來很正常的答案，腳本不會發現它是瞎猜的。
 @Test func noScreensReportsMinusOneNotZero() {
     #expect(makePayload(makeState(), screens: []).display.screenIndex == -1)
+    #expect(makePayload(makeState(), screens: []).display.scale == 1)
 }

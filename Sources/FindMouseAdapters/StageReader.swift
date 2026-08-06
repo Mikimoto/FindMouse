@@ -3,6 +3,22 @@ import CoreGraphics
 import Foundation
 import FindMouseDomain
 
+/// 一片螢幕的幾何與縮放。
+///
+/// 兩個欄位綁在一起，是為了讓「哪一片」與「它的 scale」只查一次。
+/// 分開傳的話，`status --json` 的 `screenIndex` 與 `scale` 會各自算，
+/// 而在多螢幕不同 scale（Retina ＋ 外接 1080p）時，兩者指到不同螢幕
+/// 不會有任何訊號——那正是這種欄位最容易錯的形狀。
+public struct ScreenInfo: Sendable, Equatable {
+    public let frame: CGRect
+    public let scale: CGFloat
+
+    public init(frame: CGRect, scale: CGFloat) {
+        self.frame = frame
+        self.scale = scale
+    }
+}
+
 /// `NSScreen` → `Stage`。
 ///
 /// 幾何計算做成吃 `[CGRect]` 的靜態函式，多螢幕的判定才測得到——
@@ -27,7 +43,7 @@ public enum StageReader {
     /// `status --json` 的 `display.screenIndex` 與貓的入場點都問這個問題，
     /// 答案必須是同一個。分開實作的話，鼠標落在螢幕空隙時兩邊會分歧：
     /// 貓從最近那片的邊緣跑出來，而 status 說牠不在任何螢幕上。
-    static func cursorScreenIndex(screens: [CGRect], cursor: CGPoint) -> Int? {
+    public static func cursorScreenIndex(screens: [CGRect], cursor: CGPoint) -> Int? {
         if let containing = screens.firstIndex(where: { $0.contains(cursor) }) {
             return containing
         }

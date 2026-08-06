@@ -58,7 +58,8 @@ struct ArchitectureBoundaryTests {
         // app（驅動層）：可以碰 UI 與系統框架，這是依賴方向的最外層
         "FindMouse": ["Foundation", "CoreGraphics", "AppKit", "QuartzCore",
                       "Carbon", "OSLog",
-                      "FindMouseCore", "FindMouseDomain", "FindMouseAdapters"],
+                      "FindMouseCore", "FindMouseDomain", "FindMouseAdapters",
+                      "FindMouseWire"],
     ]
 
     /// 往上找到含 Package.swift 的目錄。

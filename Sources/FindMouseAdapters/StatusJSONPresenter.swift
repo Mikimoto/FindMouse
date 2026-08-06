@@ -23,9 +23,11 @@ public enum StatusJSONPresenter {
                                appVersion: String,
                                packID: String,
                                packLogicalHeight: CGFloat,
-                               screens: [CGRect],
-                               scale: CGFloat) -> StatusPayload {
-        StatusPayload(
+                               screens: [ScreenInfo]) -> StatusPayload {
+        // 索引與 scale 是**同一次查詢**的兩個結果，不是兩個獨立的答案。
+        let index = StageReader.cursorScreenIndex(screens: screens.map(\.frame),
+                                                  cursor: state.cursor)
+        return StatusPayload(
             appVersion: appVersion,
             visible: state.isVisible,
             phase: state.phase.rawValue,
@@ -41,11 +43,9 @@ public enum StatusJSONPresenter {
             spotlight: spotlight(state.spotlight),
             timers: .init(rest: state.restTimer, sleep: state.sleepTimer),
             pack: .init(id: packID, logicalHeight: Double(packLogicalHeight)),
-            display: .init(
-                // 以**鼠標**為準，不是貓：spec 第 8.4 節。兩者可能在不同螢幕上。
-                screenIndex: StageReader.cursorScreenIndex(
-                    screens: screens, cursor: state.cursor) ?? noScreen,
-                scale: Double(scale)))
+            // 以**鼠標**為準，不是貓：spec 第 8.4 節。兩者可能在不同螢幕上。
+            display: .init(screenIndex: index ?? noScreen,
+                           scale: Double(index.map { screens[$0].scale } ?? 1)))
     }
 
     /// 暗幕不活躍時半徑也要歸零。
