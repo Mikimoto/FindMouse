@@ -350,6 +350,17 @@ public final class CatSessionUseCase {
 
     // MARK: - spotlight
 
+    /// **`!teaserEnabled` 目前餵不到輸入，是刻意留下的防禦。**
+    /// 這個函式只從 `enter(.hunting)` 呼叫，而不變式「`teaserEnabled` 為真時
+    /// phase 必為 teaser 階段」讓那件事在 M1 不可能發生：`summon` 對 teaser 階段
+    /// 是 no-op，`toggle` 先走 `goHome()` 而它第一件事就是清掉 `teaserEnabled`，
+    /// `restartHunt` 只從 resting／sleeping 呼叫而那兩個 phase 與 teaser 不共存。
+    /// 所以把這個條件拿掉，測試會全綠——不要因此以為它被測到了。
+    ///
+    /// 保留它的理由是 spec 第 5.2 節要求「逗貓棒的任何階段暗幕都是 0」，而真正
+    /// 在執行那條規則的是 `updateSpotlight(fadingIn: phase == .hunting)` 加上這個
+    /// 不變式，不是這個條件。M2 若新增一條「teaser 開著也能進 hunting」的路徑，
+    /// `teaserEnabledImpliesTeaserPhase` 會轉紅，屆時這個條件就變成 load-bearing。
     private func armSpotlight(fromHidden: Bool, cfg: BehaviorConfig) {
         guard cfg.spotlightEnabled, !teaserEnabled else {
             spotlightArmed = false

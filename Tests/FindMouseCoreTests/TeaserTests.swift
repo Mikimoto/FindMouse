@@ -269,6 +269,68 @@ private func stepWhile(_ h: Harness, phase: CatPhase, cursor: CGPoint, limit: In
     #expect(h.last.teaserEnabled == false)
 }
 
+/// 不變式：`teaserEnabled` 為真時，phase 必為 teaser 階段。
+///
+/// 沒有任何一行程式碼在執行這條不變式——它是三條進 `.hunting` 的路徑各自的性質
+/// 疊出來的結果。M1 有兩處倚賴它：`teaserNeverDims`（暗幕不出現的真正原因）
+/// 與 `armSpotlight` 的 `!teaserEnabled` 為什麼餵不到輸入。所以它需要自己的測試，
+/// 否則哪天被打破了不會有任何訊號，而那條防禦條件會靜默變成 load-bearing。
+@Test func teaserEnabledImpliesTeaserPhase() {
+    // 手工序列：三條進 .hunting 的路徑各自為什麼與 teaser 不共存
+    let onSummon = Harness()
+    onSummon.step(cursor: center, commands: [.setTeaser(true)])
+    #expect(onSummon.run(until: .teaserStalking, cursor: center))
+    onSummon.step(cursor: center, commands: [.summon])
+    #expect(onSummon.last.teaserEnabled)
+    #expect(onSummon.last.phase.isTeaser, "summon 把貓拉出了 teaser：\(onSummon.last.phase)")
+
+    let onToggle = Harness()
+    onToggle.step(cursor: center, commands: [.setTeaser(true)])
+    #expect(onToggle.run(until: .teaserStalking, cursor: center))
+    onToggle.step(cursor: center, commands: [.toggle])
+    #expect(onToggle.last.teaserEnabled == false, "toggle 沒有關掉逗貓棒")
+    #expect(onToggle.last.phase == .exiting)
+
+    // 休息中開逗貓棒，同時把鼠標跳遠：rehunt 的距離條件成立但走不到，
+    // 因為 setTeaser 在同一帧的命令階段就把 phase 換成 teaser 階段了
+    let onRehunt = Harness()
+    onRehunt.step(cursor: center, commands: [.summon])
+    #expect(onRehunt.run(until: .resting, cursor: center))
+    let farAway = CGPoint(x: center.x + 800, y: center.y)
+    onRehunt.step(cursor: farAway, commands: [.setTeaser(true)])
+    #expect(onRehunt.last.teaserEnabled)
+    #expect(onRehunt.last.phase.isTeaser, "rehunt 搶先了：\(onRehunt.last.phase)")
+
+    // 亂序掃描：手工序列只覆蓋我想到的路徑，而這條不變式的價值在於沒想到的那些
+    let deck: [Command] = [.summon, .dismiss, .toggle,
+                           .setTeaser(true), .setTeaser(false), .toggleTeaser]
+    var violations: [String] = []
+    var teaserFrames = 0
+    for seed in UInt64(1)...200 {
+        let h = Harness(seed: seed)
+        let rng = SeededRandomizer(seed: seed &* 2_654_435_761)
+        for _ in 0..<200 {
+            let cursor = CGPoint(x: rng.double(in: 0...1920), y: rng.double(in: 0...1080))
+            h.step(cursor: cursor, commands: rng.pick(deck).map { [$0] } ?? [])
+            guard h.last.teaserEnabled else { continue }
+            teaserFrames += 1
+            if !h.last.phase.isTeaser {
+                violations.append("seed \(seed) phase=\(h.last.phase)")
+            }
+        }
+    }
+    #expect(violations.isEmpty, "不變式被打破：\(violations.prefix(5))")
+    // 掃描若從未讓 teaser 開起來，violations 會恆為空——那是恆真句不是驗證
+    #expect(teaserFrames > 1000,
+            "40000 帧裡只有 \(teaserFrames) 帧 teaserEnabled 為真，掃描沒有實際檢查到不變式")
+}
+
+/// spec 第 5.2 節：逗貓棒的任何階段暗幕都是 0。
+///
+/// 注意這個測試**沒有**釘住 `armSpotlight` 裡的 `!teaserEnabled`——把那個條件
+/// 拿掉本測試照樣綠。真正讓 teaser 不變暗的是
+/// `updateSpotlight(fadingIn: phase == .hunting)` 加上「teaser 開著時 phase 必為
+/// teaser 階段」這個不變式，見 `teaserEnabledImpliesTeaserPhase`。
 @Test func teaserNeverDims() {
     let h = Harness()
     h.step(cursor: center, commands: [.setTeaser(true)])
