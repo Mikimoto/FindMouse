@@ -20,20 +20,58 @@ mutations.json：
 每一批都會自動附一個 no-op 對照組：它若不是全綠，代表 runner 本身壞了，
 這一批的結果全部不可採信。
 """
+import atexit
 import json
 import re
+import signal
 import subprocess
 import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 
+# 目前被破壞的檔案與它的原始內容。
+#
+# 為什麼不是只靠 try/finally：SIGTERM（Ctrl-C 之外的任何 kill）預設**不會**跑
+# finally，被破壞的檔案就留在工作目錄裡。實測踩過一次——kill 掉一個跑太久的
+# 批次之後，注入的那個 return 留在 accept 迴圈裡，接下來每一輪除錯都在追一個
+# 我自己剛剛種下的 bug，而 git status 只顯示「檔案有修改」，看不出是誰改的。
+_patched = {}
+
+
+def _restore_all(*_):
+    for path, original in list(_patched.items()):
+        Path(path).write_text(original)
+        print(f"已還原 {path}", file=sys.stderr)
+    _patched.clear()
+    sys.exit(130)
+
+
+atexit.register(lambda: [Path(p).write_text(o) for p, o in _patched.items()])
+for _sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
+    signal.signal(_sig, _restore_all)
+
+
+TIMEOUT_SECONDS = 300
+
 
 def run_tests(test_filter):
-    proc = subprocess.run(
-        ["swift", "test", "--filter", test_filter],
-        cwd=ROOT, capture_output=True, text=True)
-    return proc.stdout + proc.stderr
+    """回 (output, timed_out)。
+
+    逾時要獨立成一種結果：破壞掉的程式碼可能讓測試**掛住**而不是轉紅
+    （socket 少了收訊逾時就是這樣），而那既不是紅也不是綠。
+    沒有這個上限的話，一個 mutation 會讓整批停在那裡不動、沒有任何訊息。
+    """
+    try:
+        proc = subprocess.run(
+            ["swift", "test", "--filter", test_filter],
+            cwd=ROOT, capture_output=True, text=True, timeout=TIMEOUT_SECONDS)
+    except subprocess.TimeoutExpired as expired:
+        partial = (expired.stdout or b"") + (expired.stderr or b"")
+        if isinstance(partial, bytes):
+            partial = partial.decode(errors="replace")
+        return partial, True
+    return proc.stdout + proc.stderr, False
 
 
 def classify(output):
@@ -57,6 +95,7 @@ def apply_patch(path, find, replace):
     text = path.read_text()
     if text.count(find) != 1:
         return None, f"find 片段出現 {text.count(find)} 次，必須剛好 1 次"
+    _patched[str(path)] = text
     path.write_text(text.replace(find, replace))
     return text, None
 
@@ -89,9 +128,11 @@ def main():
             results.append({"label": m["label"], "verdict": "patch-failed", "detail": err})
             continue
         try:
-            verdict, reds = classify(run_tests(test_filter))
+            output, timed_out = run_tests(test_filter)
+            verdict, reds = ("timeout", []) if timed_out else classify(output)
         finally:
             path.write_text(original)
+            _patched.pop(str(path), None)
 
         expected = m.get("expect", [])
         if m.get("control"):
