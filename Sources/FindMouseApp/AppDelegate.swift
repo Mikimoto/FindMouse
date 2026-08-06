@@ -117,6 +117,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             settings: SettingsUseCase(store: settings, catalog: sprites),
             status: { [weak self] in
                 MainActor.assumeIsolated { self?.snapshot(sprites: sprites) ?? placeholderStatus }
+            },
+            packs: { PackCatalogRepository.current() },
+            // 真正的抽換是 M4 Task 7 的事（要一次換掉七個 pack 衍生物）。
+            // 在那之前先留下 log：這條路徑會回 ok，沒有痕跡的話
+            // 「命令成功但貓沒換」查不出是哪一段沒接。
+            usePack: { [weak self] id in
+                MainActor.assumeIsolated {
+                    self?.log.notice("pack.use \(id, privacy: .public)：抽換尚未接線")
+                }
             })
 
         let server = UnixSocketServer(path: UnixSocketServer.defaultPath) { [weak self] request in

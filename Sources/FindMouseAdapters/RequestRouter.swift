@@ -17,14 +17,25 @@ public final class RequestRouter {
     private let control: ControlUseCase
     private let settings: SettingsUseCase
     private let status: () -> StatusPayload
+    private let packs: () -> [PackSummary]
+    private let usePack: (String) -> Void
 
     /// - Parameter status: 產生當下狀態的快照。注入而不是自己算：
     ///   它需要 `CatFrameState`、螢幕清單與 pack 資訊，那些都住在 App 層。
+    /// - Parameter packs: 當下掃得到的 pack。每次呼叫都重掃，不快取：
+    ///   使用者把 pack 丟進目錄之後不該還要重開 App 才看得到。
+    /// - Parameter usePack: 換 pack 的請求交給誰。**router 不自己換**——
+    ///   換一套 pack 要一起換掉 App 那七個從 pack 衍生出來的持有者，
+    ///   而 router 一個都碰不到。與 `status` 注入快照是同一個模式。
     public init(control: ControlUseCase, settings: SettingsUseCase,
-                status: @escaping () -> StatusPayload) {
+                status: @escaping () -> StatusPayload,
+                packs: @escaping () -> [PackSummary],
+                usePack: @escaping (String) -> Void) {
         self.control = control
         self.settings = settings
         self.status = status
+        self.packs = packs
+        self.usePack = usePack
     }
 
     public func handle(_ request: WireRequest) -> Data {
@@ -49,6 +60,8 @@ public final class RequestRouter {
         case "config.set":    return configSet(request.args)
         case "config.reset":  return configReset(request.args)
         case "pack.validate": return packValidate(request.args)
+        case "pack.list":     return packList()
+        case "pack.use":      return packUse(request.args)
         default:
             return encode(WireResponse<AckPayload>(error: WireError(
                 code: .unknownCommand, message: "未知命令：\(request.command)")))
@@ -134,6 +147,44 @@ public final class RequestRouter {
             valid: report.isValid,
             errors: report.errors.map(\.wireText),
             warnings: report.warnings.map(\.wireText))))
+    }
+
+    /// 清單維持 `packs()` 給的順序（掃描的優先序，內建在前），不重排。
+    private func packList() -> Data {
+        let currentID = status().pack.id
+        return encode(WireResponse(data: PackListPayload(packs: packs().map {
+            .init(id: $0.id, builtIn: $0.isBuiltIn,
+                  logicalHeight: Double($0.logicalHeight), usable: $0.isUsable,
+                  current: $0.id == currentID, teaserAvailable: $0.teaserAvailable,
+                  errors: $0.errors, warnings: $0.warnings)
+        })))
+    }
+
+    /// 驗證在這裡做完才交給 App：App 那一側要動七個持有者，
+    /// 不該還要負責判斷「這個 id 能不能用」。
+    ///
+    /// 「沒這套」與「這套壞了」分成兩個碼，因為要修的事不同：一個是打錯 id，
+    /// 另一個是那套 pack 真的缺檔案——後者還要附上缺什麼，否則使用者只知道
+    /// 不能用、不知道為什麼。
+    private func packUse(_ args: [String: String]) -> Data {
+        guard let id = args["id"] else {
+            return encode(WireResponse<AckPayload>(error: WireError(
+                code: .invalidArgument, message: "pack.use 需要 id")))
+        }
+        guard let summary = packs().first(where: { $0.id == id }) else {
+            return encode(WireResponse<AckPayload>(error: WireError(
+                code: .packNotFound, message: "沒有這套 pack：\(id)")))
+        }
+        guard summary.isUsable else {
+            return encode(WireResponse<AckPayload>(error: WireError(
+                code: .packInvalid, message: "\(id) 不合格，不能使用",
+                details: summary.errors)))
+        }
+        usePack(id)
+        // `queued` 只放命令名，不夾帶 id：那是 `AckPayload` 對這個欄位的定義，
+        // 而 id 本來就是呼叫端自己送來的，回給它沒有新資訊。想知道換成功沒有
+        // 就打一次 `status`——換 pack 跟其他命令一樣要等到下一帧才發生。
+        return encode(WireResponse(data: AckPayload(queued: "pack.use")))
     }
 
     // MARK: - 錯誤對應
