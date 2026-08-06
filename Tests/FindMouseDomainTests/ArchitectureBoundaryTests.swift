@@ -40,6 +40,10 @@ struct ArchitectureBoundaryTests {
         "FindMouseDomain": ["Foundation", "CoreGraphics"],
         // Core 只依賴 Domain
         "FindMouseCore": ["Foundation", "CoreGraphics", "FindMouseDomain"],
+        // Adapters：允許碰系統框架與 UI，但依賴方向仍然只能往內（Core、Domain）
+        "FindMouseAdapters": ["Foundation", "CoreGraphics", "AppKit", "QuartzCore",
+                              "ImageIO", "UniformTypeIdentifiers", "OSLog",
+                              "FindMouseCore", "FindMouseDomain"],
         // app（驅動層）：可以碰 UI 與系統框架，這是依賴方向的最外層
         "FindMouse": ["Foundation", "CoreGraphics", "AppKit", "QuartzCore",
                       "Carbon", "OSLog",
