@@ -37,10 +37,10 @@ public struct OverlayPresenter: Sendable {
         self.feather = feather
     }
 
-    public func viewModel(for state: CatFrameState, union: CGRect) -> OverlayViewModel {
+    public func viewModel(for state: CatFrameState, in windowFrame: CGRect) -> OverlayViewModel {
         let height = logicalHeight * catScale
         let cat = OverlayViewModel.Cat(
-            position: toWindow(state.body.position, union: union),
+            position: toWindow(state.body.position, in: windowFrame),
             size: CGSize(width: height * spriteAspect, height: height),
             // manifest 的 anchor.y 由上往下，CALayer 的 anchorPoint.y 由下往上
             anchorPoint: CGPoint(x: anchor.x, y: 1 - anchor.y),
@@ -53,7 +53,7 @@ public struct OverlayPresenter: Sendable {
             alpha: state.alpha)
 
         let dim: OverlayViewModel.Dim? = state.spotlight.isActive
-            ? OverlayViewModel.Dim(center: toWindow(state.spotlight.center, union: union),
+            ? OverlayViewModel.Dim(center: toWindow(state.spotlight.center, in: windowFrame),
                                    radius: state.spotlight.radius,
                                    opacity: state.spotlight.opacity,
                                    feather: feather)
@@ -62,7 +62,12 @@ public struct OverlayPresenter: Sendable {
         return OverlayViewModel(visible: state.isVisible, cat: cat, dim: dim)
     }
 
-    private func toWindow(_ point: CGPoint, union: CGRect) -> CGPoint {
-        CGPoint(x: point.x - union.minX, y: point.y - union.minY)
+    /// 全域座標 -> **這一個視窗**的座標。
+    ///
+    /// 參數是視窗自己的 frame，不是所有螢幕的聯集：實測發現單一視窗只會在它
+    /// 「所屬」的那片螢幕上渲染，所以每片螢幕各有一個視窗（見 AppDelegate）。
+    /// 傳聯集進來正好是那個 bug 的形狀，所以參數名不叫 union。
+    private func toWindow(_ point: CGPoint, in windowFrame: CGRect) -> CGPoint {
+        CGPoint(x: point.x - windowFrame.minX, y: point.y - windowFrame.minY)
     }
 }

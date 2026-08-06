@@ -57,6 +57,7 @@ private func makeRepository(_ packID: String = "test-blocks") throws -> SpriteRe
 @Test func manifestGeometryIsExposedForThePresenter() throws {
     let repo = try makeRepository()
     #expect(repo.anchor == CGPoint(x: 0.5, y: 0.9))
+    #expect(repo.spriteFacing == .right, "test-blocks 的 manifest 宣告 facing: right")
     #expect(repo.mirrorForOpposite)
     // test-blocks 是正方形，所以寬高比為 1
     #expect(repo.spriteAspect == 1)

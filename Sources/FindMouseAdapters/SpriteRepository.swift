@@ -19,6 +19,9 @@ public final class SpriteRepository: AnimationCatalogPort, @unchecked Sendable {
 
     /// manifest 的 anchor（y 由上往下，見 spec 第 6.2 節）。presenter 要做軸向翻轉。
     public let anchor: CGPoint
+    /// 素材畫的是朝哪一邊。presenter 靠它判斷要不要鏡像——
+    /// 假設「素材一律朝右」在朝右的 pack 上完全正確，換一套朝左的才會現形。
+    public let spriteFacing: Facing
     public let mirrorForOpposite: Bool
 
     private let packDir: URL
@@ -39,6 +42,7 @@ public final class SpriteRepository: AnimationCatalogPort, @unchecked Sendable {
         self.logicalHeight = loaded.manifest.logicalHeight
         self.capabilities = capabilities
         self.anchor = CGPoint(x: loaded.manifest.anchor.x, y: loaded.manifest.anchor.y)
+        self.spriteFacing = loaded.manifest.facing
         self.mirrorForOpposite = loaded.manifest.mirrorForOpposite
 
         var clips: [CatAction: AnimationClip] = [:]

@@ -29,6 +29,19 @@ final class OverlayWindow: NSWindow {
     override var canBecomeKey: Bool { false }
     override var canBecomeMain: Bool { false }
 
+    /// **不接受 AppKit 的 frame 夾制。**
+    ///
+    /// `NSWindow` 預設會把 frame 夾回「某一片螢幕」的可見範圍——那是為了保證
+    /// 一般視窗的標題列不會跑到螢幕外。但這個視窗的整個目的就是橫跨所有螢幕，
+    /// 夾制的結果是它只蓋住其中一片，而且**沒有任何錯誤訊息**：
+    /// 單螢幕環境下完全正常，接上第二個螢幕才會發現另一片沒有變暗。
+    ///
+    /// 回傳未修改的 `frameRect` 就是關掉夾制。這對 `init` 的 contentRect 與
+    /// 之後每一次 `setFrame` 都生效。
+    override func constrainFrameRect(_ frameRect: NSRect, to screen: NSScreen?) -> NSRect {
+        frameRect
+    }
+
     /// 螢幕組態變動時重設 frame。不重設的話，接上或拔掉螢幕之後
     /// 貓會被畫到視窗外——而視窗是透明的，看起來就像貓憑空消失。
     func resize(to union: CGRect) {
