@@ -115,6 +115,13 @@ public enum Output {
     /// 座標印到小數點後一位就夠，整數就不印小數。
     /// `String(describing:)` 會印出 `663.5000000000001` 這種東西。
     private static func fixed(_ value: Double) -> String {
-        value == value.rounded() ? String(Int(value)) : String(format: "%.1f", value)
+        // `abs(value) < 1e15` 不是保守，是必要：`Int(1e300)` 直接 trap
+        // （"Double value cannot be converted to Int"），CLI 會崩而不是印東西。
+        // 同一個慣用法在 SettingsUseCase.render 有這道守衛，這份複本原本漏了。
+        // 非有限值（NaN／inf）也走同一條退路。
+        guard value.isFinite, value == value.rounded(), abs(value) < 1e15 else {
+            return value.isFinite ? String(format: "%.1f", value) : String(value)
+        }
+        return String(Int(value))
     }
 }

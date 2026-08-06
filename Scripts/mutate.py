@@ -77,12 +77,25 @@ def run_tests(test_filter):
 
 
 def classify(output):
-    """三態：crash / build-failed / red / green。綠必須正面確認。"""
-    if "Fatal error:" in output or re.search(r"^Crash:", output, re.M):
+    """三態：crash / build-failed / red / green。綠必須正面確認。
+
+    「process 被訊號殺掉」要與「編不過」分開。兩者都沒有 `Test run with` 收尾行，
+    但意義相反：前者是**紅**（守衛有效，破壞它就死給你看），後者是這批不算數。
+    實測踩過：拿掉 SIGPIPE 的忽略之後，test process 被 SIGPIPE 殺掉，
+    輸出裡沒有 `Fatal error:`（那是 Swift 自己的 trap 才有），於是被誤判成 build-failed，
+    而那個守衛其實正是有效的。判別依據是「有沒有測試真的跑起來過」。
+    """
+    started = bool(re.search(r"Test \w+\(\) (?:started|passed|recorded)", output))
+    finished = "Test run with" in output
+
+    if "Fatal error:" in output or re.search(r"Exited with signal code", output):
         return "red-crash", sorted(set(re.findall(r"Test (\w+)\(\) recorded", output)))
-    if re.search(r"error: .*\n", output) and "Compiling" in output:
+    if started and not finished:
+        # 測試跑到一半 process 就沒了——訊號殺掉最常見
+        return "red-crash", sorted(set(re.findall(r"Test (\w+)\(\) recorded", output)))
+    if re.search(r"error: .*\n", output) and "Compiling" in output and not started:
         return "build-failed", []
-    if "error: " in output and "Test run with" not in output:
+    if "error: " in output and not finished and not started:
         return "build-failed", []
     failed = sorted(set(re.findall(r"Test (\w+)\(\) (?:recorded an issue|failed)", output)))
     if failed:

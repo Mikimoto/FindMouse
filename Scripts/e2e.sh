@@ -155,6 +155,31 @@ fi
 # 在會漂移的游標上斷言「兩次讀數相等」，測到的是漂移速度。
 echo "  （實際落點：低 ${LOW_ACTUAL} / 高 ${HIGH_ACTUAL}；只驗方向，理由見註解）"
 
+# --- 6b ----------------------------------------------------------------------
+step "6b. 貓不可見時 status 的鼠標也要是現在的"
+# hidden 是**預設狀態**，而 display link 在那時是停的。狀態若直接讀最後一帧，
+# 剛啟動的 App 會永遠回報啟動當下的鼠標位置——而這個 App 的主題就是鼠標在哪。
+# 前面每一條斷言都在「有事發生」的時候讀 status，所以都看不到這件事。
+"${FM}" dismiss >/dev/null
+for _ in $(seq 1 40); do
+    [[ "$(field 'd["visible"]')" == "False" ]] && break
+    sleep 0.5
+done
+swift "${ROOT}/Scripts/warp-cursor.swift" 300 250 >/dev/null 2>&1
+sleep 0.8
+HIDDEN_LOW="$(field 'd["cursor"]["y"]')"
+swift "${ROOT}/Scripts/warp-cursor.swift" 300 900 >/dev/null 2>&1
+sleep 0.8
+HIDDEN_HIGH="$(field 'd["cursor"]["y"]')"
+
+expect "$(field 'd["visible"]')" "False" "前提：貓確實不可見"
+# 漂移是幾十點，這裡的位移是 650 點，所以門檻設 300 分得開
+if /usr/bin/python3 -c "import sys; sys.exit(0 if ${HIDDEN_HIGH} - ${HIDDEN_LOW} > 300 else 1)"; then
+    ok "hidden 狀態下鼠標仍然跟著動（${HIDDEN_LOW} → ${HIDDEN_HIGH}）"
+else
+    bad "hidden 狀態下鼠標凍住了：${HIDDEN_LOW} → ${HIDDEN_HIGH}"
+fi
+
 # --- 7 -----------------------------------------------------------------------
 step "7. dismiss → 輪詢到 visible == false"
 "${FM}" dismiss >/dev/null

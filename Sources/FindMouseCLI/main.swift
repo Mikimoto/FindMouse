@@ -48,9 +48,17 @@ let parsed: Arguments.Parsed
 do {
     parsed = try Arguments.parse(argv)
 } catch Arguments.ParseError.help {
-    // 沒給任何參數是用法錯誤（2）；明確要 --help 是成功（0）
+    // 明確要 --help 是成功（0），印說明文字即可——那是給人看的。
+    // 但「沒給命令」是用法錯誤，而 --json 模式下錯誤也必須是合法 JSON：
+    // agent 拿到不是 JSON 的東西，比拿到錯誤碼難處理得多。
+    // 判斷「有沒有給命令」要看**抽掉旗標之後**還剩什麼：`findmouse --json` 的
+    // argv 不是空的，但它同樣沒有指定命令。第一版寫成 argv.isEmpty，於是
+    // `--json` 照樣走到印說明文字那條路——正是這個修正要防的事。
+    if argv.allSatisfy({ $0 == "--json" }) {
+        fail(.invalidArgument, "沒有指定命令。用 findmouse --help 看用法。", json: wantsJSON)
+    }
     emit(Arguments.usageText)
-    exit(argv.isEmpty ? 2 : 0)
+    exit(0)
 } catch let Arguments.ParseError.usage(message) {
     fail(.invalidArgument, message, json: wantsJSON)
 } catch {

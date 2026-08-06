@@ -150,9 +150,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     /// 把最後一帧翻成 `status --json` 的 payload。
+    ///
+    /// **貓不可見時要換上現在的鼠標位置。** display link 在那時是停的（spec 第 7.4 節），
+    /// 所以 `lastState` 連同它的 `cursor` 一起凍在最後一帧——而 `cursor`、`distance`、
+    /// `display.screenIndex`、`display.scale` 全都是從鼠標導出的。
+    /// hidden 是**預設狀態**，所以「剛啟動的 App 永遠回報啟動當下的鼠標位置」，
+    /// 而這個 App 的主題就是鼠標在哪裡。spec 第 8.4 節與成功條件第 5 條都因此不成立。
+    ///
+    /// 時鐘在跑的時候不換：那時 `lastState` 最多差一帧，而「畫面與 status 讀同一份」
+    /// （spec 第 7.3 節）在有真實幀可讀時才是有意義的保證。
     private func snapshot(sprites: SpriteRepository) -> StatusPayload {
-        StatusJSONPresenter.payload(
-            state: lastState ?? hiddenState(cursor: cursor.location),
+        let frame = lastState ?? hiddenState(cursor: cursor.location)
+        let state = driver?.isRunning == true ? frame : frame.withCursor(cursor.location)
+        return StatusJSONPresenter.payload(
+            state: state,
             appVersion: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString")
                 as? String ?? "0.0.0",
             packID: packID,
@@ -271,6 +282,17 @@ private func hiddenState(cursor: CGPoint) -> CatFrameState {
                   spotlight: .inactive, cursor: cursor,
                   teaserEnabled: false, teaserAvailable: false,
                   restTimer: 0, sleepTimer: 0)
+}
+
+private extension CatFrameState {
+    /// 換掉鼠標位置，其餘照舊。`distanceToCursor` 是計算屬性，所以會跟著更新。
+    func withCursor(_ point: CGPoint) -> CatFrameState {
+        CatFrameState(phase: phase, phaseElapsed: phaseElapsed, body: body,
+                      action: action, frameIndex: frameIndex, frameCount: frameCount,
+                      alpha: alpha, spotlight: spotlight, cursor: point,
+                      teaserEnabled: teaserEnabled, teaserAvailable: teaserAvailable,
+                      restTimer: restTimer, sleepTimer: sleepTimer)
+    }
 }
 
 private let placeholderStatus = StatusJSONPresenter.payload(

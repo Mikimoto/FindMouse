@@ -106,6 +106,53 @@ private let statusPayload = StatusPayload(
     #expect(text.contains("0000000") == false)
 }
 
+/// 極端數值不可以讓 CLI 崩掉。
+///
+/// `String(Int(value))` 對 1e300 是 **trap**（"Double value cannot be converted
+/// to Int"），不是印出奇怪的字——CLI 會整個崩，而使用者只看到沒有輸出。
+/// distance 與 phaseElapsed 都是從 App 來的 Double，CLI 不該假設它們有界。
+@Test func absurdNumbersPrintInsteadOfTrapping() {
+    // 只列**有限**的極端值：inf 與 NaN 根本過不了 wire（見下一條測試），
+    // 把它們放進來測的是 JSONEncoder 而不是 Output。
+    for value in [1e300, -1e300, 9e15, 1e15, -1e15] {
+        let payload = StatusPayload(
+            appVersion: "1", visible: true, phase: "resting", phaseElapsed: value,
+            teaser: .init(enabled: false, available: true),
+            cat: .init(position: .init(x: value, y: 0), facing: "left",
+                       action: "sitIdle", frame: 0, frameCount: 1),
+            cursor: .init(x: 0, y: 0), distance: value,
+            spotlight: .init(active: false, radius: 0, opacity: 0),
+            timers: .init(rest: 0, sleep: 0),
+            pack: .init(id: "p", logicalHeight: 96),
+            display: .init(screenIndex: 0, scale: 1))
+        let rendered = Output.render(encode(WireResponse(data: payload)),
+                                     for: WireRequest(command: "status"))
+        #expect(rendered.exitCode == 0)
+        #expect(rendered.text.isEmpty == false)
+    }
+}
+
+/// inf 與 NaN 過不了 wire——所以 CLI 那一側不必為它們寫退路。
+///
+/// 寫下來是因為上一條測試原本把它們列進去，然後失敗了：`JSONEncoder` 對
+/// 非有限的 Double 直接丟錯，編不出東西。也就是說 App 那端若真的算出 inf，
+/// 症狀會是「回應編碼失敗」而不是「CLI 印出 inf」——要修的地方在 App 不在這裡。
+@Test func nonFiniteNumbersCannotCrossTheWireAtAll() {
+    let payload = StatusPayload(
+        appVersion: "1", visible: true, phase: "resting", phaseElapsed: .infinity,
+        teaser: .init(enabled: false, available: true),
+        cat: .init(position: .init(x: 0, y: 0), facing: "left",
+                   action: "sitIdle", frame: 0, frameCount: 1),
+        cursor: .init(x: 0, y: 0), distance: .nan,
+        spotlight: .init(active: false, radius: 0, opacity: 0),
+        timers: .init(rest: 0, sleep: 0),
+        pack: .init(id: "p", logicalHeight: 96),
+        display: .init(screenIndex: 0, scale: 1))
+    #expect(throws: (any Error).self) {
+        try JSONEncoder().encode(WireResponse(data: payload))
+    }
+}
+
 /// config 的輸出是 `key = value`，每行一項。
 @Test func configTextIsOneKeyPerLine() {
     let payload = ConfigPayload(entries: [.init(key: "cat.speed", value: "900"),

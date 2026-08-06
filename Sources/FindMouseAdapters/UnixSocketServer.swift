@@ -28,6 +28,17 @@ public final class UnixSocketServer: @unchecked Sendable {
     private let handle: @Sendable (WireRequest) -> Data
     private let lock = NSLock()
     private var listenFD: Int32 = -1
+    private var acceptLoopAlive = false
+
+    /// accept 迴圈還在不在。**只給測試用。**
+    ///
+    /// 沒有這個縫，「`stop()` 之後迴圈要結束」就沒有任何測試釘得住——
+    /// 讓 EBADF 也 continue 的話，每個停掉的 server 都留下一條每 100ms 醒一次的
+    /// 執行緒，而它手上那個 fd 編號可能已經被別的 socket 重用了。
+    var isAcceptLoopRunning: Bool {
+        lock.lock(); defer { lock.unlock() }
+        return acceptLoopAlive
+    }
 
     /// - Parameter handle: 收到請求時呼叫。**它會在 accept 執行緒上被呼叫**，
     ///   所以碰到 App 狀態的實作必須自己切回 main actor（見 AppDelegate）。
@@ -37,6 +48,10 @@ public final class UnixSocketServer: @unchecked Sendable {
     }
 
     public func start() throws {
+        // 對端消失時的 write 會用 SIGPIPE 殺掉整個 App（實測）。
+        // 見 SocketLine.ignoreSIGPIPE：SO_NOSIGPIPE 在那個情況下設不起來。
+        SocketLine.ignoreSIGPIPE()
+
         var addr = sockaddr_un()
         addr.sun_family = sa_family_t(AF_UNIX)
         let capacity = MemoryLayout.size(ofValue: addr.sun_path)
@@ -116,11 +131,27 @@ public final class UnixSocketServer: @unchecked Sendable {
     /// 所以每個 client 的處理都自己吞掉錯誤，而 accept 只在
     /// 「server 已被 stop」時才離開。
     private func acceptLoop(_ fd: Int32) {
+        lock.lock(); acceptLoopAlive = true; lock.unlock()
+        defer { lock.lock(); acceptLoopAlive = false; lock.unlock() }
         while true {
             let client = accept(fd, nil, nil)
             if client < 0 {
-                if errno == EINTR { continue }
-                return   // fd 被 stop() 關掉了，或監聽 socket 真的壞了
+                let code = errno
+                // 只有「監聽 socket 沒了」才離開，其餘一律續跑。
+                //
+                // 原本寫成「除了 EINTR 都 return」，那讓一堆**暫時性**的 errno
+                // 變成永久停業：ECONNABORTED（對端在 accept 完成前就跑了）、
+                // EMFILE／ENFILE（fd 一時用完，本 App 會開 PNG）、ENOMEM／ENOBUFS。
+                // 這個迴圈一旦靜默結束，App 畫面完全正常而每個 CLI 命令都回
+                // APP_NOT_RUNNING——本檔開頭那段註解說的正是不能發生這件事。
+                if code == EBADF || code == EINVAL || code == ENOTSOCK {
+                    return   // stop() 關掉了 fd，這是唯一該離開的理由
+                }
+                // 其餘一律退讓 100ms 再試。不分辨個別 errno 是刻意的：
+                // 白名單漏掉的那個會變成永久停業，而**任何**未知且持續的錯誤
+                // 若直接 continue 就是 100% CPU 的空轉。退讓讓兩種都只是變慢。
+                usleep(100_000)
+                continue
             }
             serve(client)
             close(client)
@@ -132,6 +163,19 @@ public final class UnixSocketServer: @unchecked Sendable {
         // SO_NOSIGPIPE 讓它退化成 EPIPE，由 SocketLine.write 自己處理。
         var on: Int32 = 1
         setsockopt(client, SOL_SOCKET, SO_NOSIGPIPE, &on, socklen_t(MemoryLayout<Int32>.size))
+
+        // 讀取逾時。server 只有一條 accept 執行緒，而 serve 是在它上面同步跑的，
+        // 所以**一個連上來卻不說話的 client 會讓整個控制介面停擺**：其餘命令全部
+        // 逾時、CLI 回 APP_NOT_RUNNING（exit 3），而 App 其實好好的。
+        // client 端早就有 5 秒逾時（WireClient），server 端沒有是不對稱的漏洞。
+        //
+        // 而且 server 的逾時要**比 client 短**。設成一樣的 5 秒時，沉默的 client
+        // 佔住 accept 執行緒的那 5 秒剛好等於後面那個 client 的耐心，兩個計時器
+        // 同時到期——實測是個會偶爾紅的競賽。短一點，等待中的 client 才會拿到
+        // 真正的回應，而不是自己的逾時。
+        var timeout = timeval(tv_sec: 2, tv_usec: 0)
+        setsockopt(client, SOL_SOCKET, SO_RCVTIMEO, &timeout,
+                   socklen_t(MemoryLayout<timeval>.size))
 
         guard let line = SocketLine.read(client), !line.isEmpty else { return }
 

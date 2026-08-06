@@ -47,6 +47,9 @@ public enum WireClient {
     }
 
     private static func connect(to path: String) throws -> Int32 {
+        // CLI 也要：App 若在回應途中死掉，這一端的 write 同樣會吃 SIGPIPE，
+        // 那會讓 `findmouse` 以 141 結束而不是回一個可判讀的 exit code。
+        SocketLine.ignoreSIGPIPE()
         var addr = sockaddr_un()
         addr.sun_family = sa_family_t(AF_UNIX)
         let capacity = MemoryLayout.size(ofValue: addr.sun_path)
@@ -96,6 +99,22 @@ public enum SocketLine {
     /// 單一請求的上限。沒有上限的話，一個不送換行的 client 可以讓
     /// server 執行緒一路把記憶體吃光。
     public static let maxBytes = 1 << 20
+
+    /// 把 SIGPIPE 關掉。**這是 socket 程式碼能不能活過對端消失的前提。**
+    ///
+    /// `SO_NOSIGPIPE` 看起來是更精準的做法（只影響這一個 fd），但它在最需要的那個
+    /// 情況下**設不起來**：對端已經斷線時 `setsockopt` 回 -1 / EINVAL，選項根本沒生效
+    /// （實測 readback 是 0），接著的 `write` 就把整個 process 用 SIGPIPE 殺掉。
+    /// 而「對端已經斷線」正是它要防的唯一情況。
+    ///
+    /// 實測代價：CLI 連上、送出請求、立刻關閉（逾時退出就是這個形狀），
+    /// 整個選單列 App 當場死亡——沒有對話框、沒有 log、沒有 crash report，
+    /// 貓消失，之後每個命令都回 APP_NOT_RUNNING。
+    ///
+    /// macOS 沒有 `MSG_NOSIGNAL`，所以只能用 process 層級的處置。呼叫是幂等的。
+    public static func ignoreSIGPIPE() {
+        signal(SIGPIPE, SIG_IGN)
+    }
 
     public static func fill(_ addr: inout sockaddr_un, with path: String, capacity: Int) {
         withUnsafeMutablePointer(to: &addr.sun_path) {

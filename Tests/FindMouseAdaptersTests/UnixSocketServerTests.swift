@@ -144,6 +144,114 @@ private func ack(_ data: Data) throws -> AckPayload {
             == "summon")
 }
 
+/// **對端在回應寫出去之前就消失，不可以把整個 process 帶走。**
+///
+/// 這條測試的失敗形態不是斷言紅字，是**整個 test run 直接死掉**（SIGPIPE）。
+/// 原本的 `SO_NOSIGPIPE` 擋不住：對端已斷線時 `setsockopt` 回 -1/EINVAL，
+/// 選項沒生效，接著的 write 就送出 SIGPIPE。實測拿真的 App 重現——
+/// CLI 連上、送請求、立刻關閉（逾時退出正是這個形狀），選單列 App 當場死亡，
+/// 沒有對話框、沒有 log，之後每個命令都回 APP_NOT_RUNNING。
+///
+/// **這條測試守不住那個守衛，理由寫在這裡免得誤讀綠燈。** 訊號處置是 process
+/// 層級的，而 swift-testing 併發跑測試：任何同時在跑的測試只要碰過 `WireClient`
+/// （它也會 ignoreSIGPIPE）就把處置設回忽略，於是拿掉 server 的那一行照樣全綠。
+/// 試過在這裡先設 `SIG_DFL` 來隔離，那反而更糟——它會讓同時在跑的其他 socket
+/// 測試暴露在 SIGPIPE 下。
+///
+/// 那個守衛實際上是這樣驗的，兩項都做過：
+/// 1. 一支不含專案程式碼的獨立探針——對端消失後 `setsockopt(SO_NOSIGPIPE)`
+///    回 -1/EINVAL、readback 為 0、接著的 write 讓 process 以 141 結束。
+/// 2. 真的 App：連上、送請求、立刻關閉，選單列 App 當場死亡（7/7 重現）。
+/// 這條測試留著的價值是「vanished peer 之後 server 還服務得下去」這個行為。
+@Test func aClientThatVanishesBeforeTheReplyDoesNotKillTheProcess() throws {
+    let path = tempSocketPath()
+
+    let server = echoServer(at: path)
+    try server.start()
+    defer { server.stop() }
+
+    // 連上、送出、立刻關掉整條連線，然後給 server 時間去 accept 一個已死的 peer
+    for _ in 0..<3 {
+        var addr = sockaddr_un()
+        addr.sun_family = sa_family_t(AF_UNIX)
+        SocketLine.fill(&addr, with: path, capacity: MemoryLayout.size(ofValue: addr.sun_path))
+        let fd = socket(AF_UNIX, SOCK_STREAM, 0)
+        try #require(fd >= 0)
+        var stored = addr
+        let connected = withUnsafePointer(to: &stored) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                connect(fd, $0, socklen_t(MemoryLayout<sockaddr_un>.size))
+            }
+        }
+        try #require(connected == 0)
+        SocketLine.write(fd, Data("{\"protocol\":1,\"command\":\"status\"}\n".utf8))
+        close(fd)
+        Thread.sleep(forTimeInterval: 0.2)
+    }
+
+    // 活著就算過——而且還要能服務下一個請求
+    #expect(try ack(try WireClient.send(WireRequest(command: "summon"), to: path)).queued
+            == "summon")
+}
+
+/// `stop()` 之後 accept 迴圈要真的結束。
+///
+/// 迴圈只有在「監聽 fd 沒了」時才該離開，其餘 errno 一律續跑（那是為了不讓
+/// 暫時性錯誤變成永久停業）。但這個放寬有個反面：連 EBADF 都 continue 的話，
+/// 每個停掉的 server 都留下一條每 100ms 醒一次的執行緒——而它手上那個 fd 編號
+/// 可能已經被別的 socket 重用了。
+@Test func stopEndsTheAcceptLoop() throws {
+    let server = echoServer(at: tempSocketPath())
+    try server.start()
+    // 先確定它真的起來了，否則下面的斷言在「根本沒開始」時也會過
+    for _ in 0..<50 where !server.isAcceptLoopRunning { usleep(20_000) }
+    #expect(server.isAcceptLoopRunning, "前提：accept 迴圈已經在跑")
+
+    server.stop()
+    for _ in 0..<100 where server.isAcceptLoopRunning { usleep(20_000) }
+    #expect(server.isAcceptLoopRunning == false, "stop() 之後迴圈還活著")
+}
+
+/// 一個連上來卻不說話的 client 不能讓整個控制介面停擺。
+///
+/// server 只有一條 accept 執行緒，`serve` 在它上面同步跑，所以少了讀取逾時的話
+/// 沉默的 client 會把後面每一個命令都拖到逾時——CLI 回 exit 3「App 沒在跑」，
+/// 而 App 其實好好的。腳本看到 3 會去啟動第二個實例，然後撞上提示視窗。
+@Test func aSilentClientDoesNotWedgeTheServer() throws {
+    let path = tempSocketPath()
+    let server = echoServer(at: path)
+    try server.start()
+    defer { server.stop() }
+
+    // 連上但一個 byte 都不送，也不關
+    var addr = sockaddr_un()
+    addr.sun_family = sa_family_t(AF_UNIX)
+    SocketLine.fill(&addr, with: path, capacity: MemoryLayout.size(ofValue: addr.sun_path))
+    let mute = socket(AF_UNIX, SOCK_STREAM, 0)
+    try #require(mute >= 0)
+    defer { close(mute) }
+    var stored = addr
+    let connected = withUnsafePointer(to: &stored) {
+        $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+            connect(mute, $0, socklen_t(MemoryLayout<sockaddr_un>.size))
+        }
+    }
+    try #require(connected == 0)
+
+    // 等 accept 執行緒真的把它收下並卡在 read 上。少了這一步，兩條連線誰先被
+    // accept 是競賽——實測會讓「拿掉 server 逾時」那個 mutation 照樣全綠，
+    // 因為第二個 client 有時根本沒排在沉默的那個後面。
+    Thread.sleep(forTimeInterval: 0.3)
+
+    // server 的讀取逾時（2 秒）刻意比 client 的（5 秒）短，所以等待中的這個
+    // 一定拿得到真的回應。設成一樣長的話兩個計時器會同時到期——實測會偶爾紅。
+    let started = Date()
+    #expect(try ack(try WireClient.send(WireRequest(command: "status"), to: path)).queued
+            == "status")
+    let waited = Date().timeIntervalSince(started)
+    #expect(waited < 4.5, "等了 \(waited) 秒才被服務——server 的逾時沒有比 client 短")
+}
+
 /// 解不開的 JSON 要回 INVALID_ARGUMENT，而不是靜默關掉連線。
 ///
 /// 靜默關掉的話 CLI 拿到的是「連上了但沒有回應」，那個訊息會把人指向
