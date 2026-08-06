@@ -14,9 +14,9 @@ private func report(for url: URL) throws -> PackValidationReport {
                                   listing: loaded.listing)
 }
 
-private func builtInPackURL() throws -> URL {
+private func builtInPackURL(_ id: String) throws -> URL {
     let packs = try #require(SpritePackRepository.builtInPacksDirectory())
-    return packs.appendingPathComponent("test-blocks")
+    return packs.appendingPathComponent(id)
 }
 
 private func fixtureURL(_ id: String) throws -> URL {
@@ -28,7 +28,7 @@ private func fixtureURL(_ id: String) throws -> URL {
 /// 而且**一個 warning 都不該有**——它是後面每個 M2 task 的基準素材，
 /// 基準本身有雜訊的話，真正的問題會被淹掉。
 @Test func testBlocksIsValidWithFullCapabilities() throws {
-    let report = try report(for: builtInPackURL())
+    let report = try report(for: builtInPackURL("test-blocks"))
 
     #expect(report.errors.isEmpty, "內建 pack 有 error：\(report.errors)")
     #expect(report.warnings.isEmpty, "內建 pack 有 warning：\(report.warnings)")
@@ -86,4 +86,34 @@ private func fixtureURL(_ id: String) throws -> URL {
     for action in CatAction.teaser where action != .pounce {
         #expect(caps.available.contains(action))
     }
+}
+
+/// M4 的第二套內建 pack。上面那個 `bad-missing-teaser` 證明的是**規則**成立；
+/// 這一個證明的是**素材**真的長成那樣——M4 三條驗收條件裡有兩條
+/// （「放入第二套 pack 能切換」「缺 teaser 的 pack 讓 ⌥⌘T 無反應」）
+/// 直接站在這套 pack 的內容上，而它是產生器跑出來的：參數少給一個
+/// 就會安靜地產出一套「看起來正常、卻驗不到東西」的 pack，
+/// 而錯誤要拖到手動驗收才會現形。
+@Test func tallPackIsValidButHasNoTeaser() throws {
+    let url = try builtInPackURL("test-blocks-tall")
+    let loaded = try #require(SpritePackRepository.load(at: url))
+    let report = PackValidator.validate(manifest: loaded.manifest,
+                                        directoryName: loaded.directoryName,
+                                        listing: loaded.listing)
+
+    #expect(report.errors.isEmpty, "第二套 pack 必須是合格的：\(report.errors)")
+    #expect(report.isValid)
+
+    // 體高與 test-blocks（96）不同，這是「切換真的發生了」的客觀證據：
+    // status --json 的 pack.logicalHeight 會跟著變。兩套一樣高的話，
+    // 切換成功與切換失敗在畫面上、在 JSON 上都長得一模一樣。
+    #expect(loaded.manifest.logicalHeight == 240)
+
+    let caps = try #require(report.capabilities)
+    #expect(caps.teaserAvailable == false)
+    // 用相等而不是 contains：這套 pack 的用途是「**只**缺 teaser」，
+    // 多一個 warning（例如順手漏掉某個 flourish 動作）就不再是乾淨的對照組，
+    // 而 contains 對那種退化完全沒有反應。
+    #expect(report.warnings == [.missingTeaserActions([.pounce])],
+            "預期只有缺 pounce 這一個 warning，實際：\(report.warnings)")
 }
