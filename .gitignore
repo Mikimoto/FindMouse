@@ -1,4 +1,8 @@
 .superpowers/
+# agent 的暫存與隔離 worktree。列進來不只是為了整潔：曾經有一個
+# 收工契約寫「工作樹要乾淨」的 agent 看到 `?? .claude/` 就 rm -rf 掉，
+# 連同另一個 agent 正在用的 worktree 一起清空。
+.claude/
 .DS_Store
 .build/
 *.xcuserstate

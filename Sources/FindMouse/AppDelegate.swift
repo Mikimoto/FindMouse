@@ -13,16 +13,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let cursor = CursorGateway()
 
     private var session: CatSessionUseCase?
+    private var control: ControlUseCase?
     private var presenter: OverlayPresenter?
     private var overlays: OverlayEnsemble?
     private var driver: DisplayLinkDriver?
     private var hotkeys: CarbonHotkeyDriver?
     private var menuBar: MenuBarController?
-
-    /// 下一帧要送進狀態機的命令。快捷鍵與選單列都往這裡投遞，
-    /// 所以兩條路徑不可能行為分歧（spec 第 7.2 節的 ControlUseCase 在 M3 落地，
-    /// M2 先用這個佇列達到同樣的效果）。
-    private var pending: [Command] = []
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
@@ -35,6 +31,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let cfg = settings.config
         session = CatSessionUseCase(config: settings, catalog: sprites,
                                     randomizer: SystemRandomizer())
+        // 快捷鍵、選單列、（M3 的）CLI 都只透過它投遞命令，所以三條路徑共用一個佇列
+        control = ControlUseCase(catalog: sprites)
         presenter = OverlayPresenter(
             logicalHeight: sprites.logicalHeight, catScale: cfg.catScale,
             anchor: sprites.anchor, spriteFacing: sprites.spriteFacing,
@@ -84,24 +82,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // MARK: - 每帧
 
     private func enqueue(_ command: Command) {
-        pending.append(command)
+        guard let control else { return }
+        do {
+            try control.enqueue(command)
+        } catch {
+            // 被拒絕的命令不該把 display link 叫醒——沒有東西要推進。
+            // M2 時這裡是靜默的（狀態機自己 no-op），現在至少留得下痕跡。
+            log.notice("命令被拒絕：\(String(describing: command), privacy: .public) → \(String(describing: error), privacy: .public)")
+            return
+        }
         // 貓不可見時 display link 是停的，命令進來要把它叫醒，
         // 否則按了快捷鍵不會有任何事發生。
         if driver?.isRunning == false { driver?.start() }
     }
 
     private func frame(dt: TimeInterval) {
-        guard let session, let presenter, let overlays else { return }
+        guard let session, let control, let presenter, let overlays else { return }
 
         let point = cursor.location
         let stage = StageReader.current(cursor: point)
-        let commands = pending
-        pending.removeAll(keepingCapacity: true)
 
-        let state = session.tick(dt: dt, cursor: point, stage: stage, commands: commands)
+        let state = session.tick(dt: dt, cursor: point, stage: stage, commands: control.drain())
         overlays.apply(state, presenter: presenter)
 
-        if !state.isVisible, pending.isEmpty, driver?.isRunning == true {
+        if !state.isVisible, control.isEmpty, driver?.isRunning == true {
             // spec 第 7.4 節：貓不可見時停止 display link
             driver?.stop()
             log.debug("display link 停止（貓已退場）")
