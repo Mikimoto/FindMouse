@@ -119,7 +119,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // main.sync 是安全的（主執行緒不會反過來等我們）。
             DispatchQueue.main.sync {
                 MainActor.assumeIsolated {
-                    self?.router?.handle(request) ?? appClosingResponse
+                    guard let self else { return appClosingResponse }
+                    let response = self.router?.handle(request) ?? appClosingResponse
+                    // router 直接往 ControlUseCase 投遞，所以喚醒要在這裡做
+                    self.wakeIfWorkPending()
+                    return response
                 }
             }
         }
@@ -160,8 +164,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             log.notice("命令被拒絕：\(String(describing: command), privacy: .public) → \(String(describing: error), privacy: .public)")
             return
         }
-        // 貓不可見時 display link 是停的，命令進來要把它叫醒，
-        // 否則按了快捷鍵不會有任何事發生。
+        wakeIfWorkPending()
+    }
+
+    /// 佇列裡有東西就確保 display link 在跑。
+    ///
+    /// 貓不可見時 display link 是停的（spec 第 7.4 節），而停著的時候沒有人會
+    /// 消費佇列。**每一條投遞命令的路徑都必須經過這裡**——實測踩過：CLI 經由
+    /// router 直接呼叫 `control.enqueue`，繞過了原本寫在快捷鍵路徑裡的喚醒，
+    /// 於是 `findmouse summon` 回 ok、命令進了佇列、貓永遠不出現。
+    ///
+    /// 判斷條件是「佇列非空」而不是「剛剛投遞成功」：後者要每個呼叫端自己記得，
+    /// 而前者就是「需要 tick」的定義本身。
+    private func wakeIfWorkPending() {
+        guard let control, !control.isEmpty else { return }
         if driver?.isRunning == false { driver?.start() }
     }
 

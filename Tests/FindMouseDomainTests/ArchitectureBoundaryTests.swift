@@ -56,10 +56,14 @@ struct ArchitectureBoundaryTests {
                               "ImageIO", "UniformTypeIdentifiers", "OSLog",
                               "FindMouseCore", "FindMouseDomain", "FindMouseWire"],
         // app（驅動層）：可以碰 UI 與系統框架，這是依賴方向的最外層
-        "FindMouse": ["Foundation", "CoreGraphics", "AppKit", "QuartzCore",
-                      "Carbon", "OSLog",
-                      "FindMouseCore", "FindMouseDomain", "FindMouseAdapters",
-                      "FindMouseWire"],
+        "FindMouseApp": ["Foundation", "CoreGraphics", "AppKit", "QuartzCore",
+                         "Carbon", "OSLog",
+                         "FindMouseCore", "FindMouseDomain", "FindMouseAdapters",
+                         "FindMouseWire"],
+        // CLI：只有 Wire 與 Foundation／Darwin。碰得到 Domain 的話，
+        // 對外 JSON 契約與內部型別就又綁在一起了（spec 第 7.1 節）。
+        "FindMouseCLICore": ["Foundation", "FindMouseWire"],
+        "FindMouseCLI": ["Foundation", "Darwin", "FindMouseCLICore", "FindMouseWire"],
     ]
 
     /// 往上找到含 Package.swift 的目錄。
