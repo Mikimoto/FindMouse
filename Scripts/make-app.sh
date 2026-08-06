@@ -7,14 +7,15 @@ CONFIG="${1:-debug}"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "${ROOT}"
 
-swift build -c "${CONFIG}" --product FindMouse
+swift build -c "${CONFIG}" --product FindMouseApp --product findmouse
 BIN_DIR="$(swift build -c "${CONFIG}" --show-bin-path)"
+
 
 APP="${ROOT}/build/FindMouse.app"
 rm -rf "${APP}"
 mkdir -p "${APP}/Contents/MacOS" "${APP}/Contents/Resources"
 
-cp "${BIN_DIR}/FindMouse" "${APP}/Contents/MacOS/FindMouse"
+cp "${BIN_DIR}/FindMouseApp" "${APP}/Contents/MacOS/FindMouse"
 # Info.plist 放在 Scripts/ 而不是 Sources/FindMouse/：它是打包輸入不是原始碼，
 # 而放在 target 目錄裡會讓 SwiftPM 警告「未處理的檔案」，消掉那個警告只能用
 # `exclude:` 或宣告成 resource——前者是 ArchitectureBoundaryTests 明文禁止的

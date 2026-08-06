@@ -38,16 +38,32 @@ struct ArchitectureBoundaryTests {
     /// 逼作者明確宣告它的政策，而不是讓它靜默地不受檢查。
     private static let allowedImports: [String: Set<String>] = [
         "FindMouseDomain": ["Foundation", "CoreGraphics"],
+        // Wire：Foundation 與 Darwin。這是 CLI 與 App 的共同契約，
+        // 碰到 Domain 就等於把 domain 型別洩漏進對外 JSON。
+        //
+        // Darwin 是為了 `WireClient`：CLI 只依賴 Wire（spec 第 8.5 節），
+        // 所以講這個協定的 socket client 也只能住在這裡。禁令針對的是
+        // **本專案的內層模組**，不是系統的 C 介面——放行它不會讓 domain
+        // 型別有任何新的路徑洩漏進來。
+        "FindMouseWire": ["Foundation", "Darwin"],
         // Core 只依賴 Domain
         "FindMouseCore": ["Foundation", "CoreGraphics", "FindMouseDomain"],
         // Adapters：允許碰系統框架與 UI，但依賴方向仍然只能往內（Core、Domain）
+        // FindMouseWire 在這裡而不在 Core：把 domain 型別翻譯成對外 JSON 契約
+        // 是 adapter 的工作。Core 若能 import Wire，狀態機就會開始為了
+        // 「JSON 好看」而長出欄位，而那正是 Wire 單獨存在要防的事。
         "FindMouseAdapters": ["Foundation", "CoreGraphics", "AppKit", "QuartzCore",
                               "ImageIO", "UniformTypeIdentifiers", "OSLog",
-                              "FindMouseCore", "FindMouseDomain"],
+                              "FindMouseCore", "FindMouseDomain", "FindMouseWire"],
         // app（驅動層）：可以碰 UI 與系統框架，這是依賴方向的最外層
-        "FindMouse": ["Foundation", "CoreGraphics", "AppKit", "QuartzCore",
-                      "Carbon", "OSLog",
-                      "FindMouseCore", "FindMouseDomain", "FindMouseAdapters"],
+        "FindMouseApp": ["Foundation", "CoreGraphics", "AppKit", "QuartzCore",
+                         "Carbon", "OSLog",
+                         "FindMouseCore", "FindMouseDomain", "FindMouseAdapters",
+                         "FindMouseWire"],
+        // CLI：只有 Wire 與 Foundation／Darwin。碰得到 Domain 的話，
+        // 對外 JSON 契約與內部型別就又綁在一起了（spec 第 7.1 節）。
+        "FindMouseCLICore": ["Foundation", "FindMouseWire"],
+        "FindMouseCLI": ["Foundation", "Darwin", "FindMouseCLICore", "FindMouseWire"],
     ]
 
     /// 往上找到含 Package.swift 的目錄。

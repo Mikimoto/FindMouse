@@ -27,13 +27,24 @@ final class MenuBarController {
         item.menu = menu
     }
 
-    /// 快捷鍵註冊失敗時換掉圖示並在 tooltip 說明。
+    /// 降級提示。快捷鍵註冊失敗、socket 綁不起來——這些都是
+    /// 「App 還能用，但少了一個入口」的情況（spec 第 10 節）。
+    ///
+    /// 一律走同一份清單而不是各自改圖示：兩件事同時發生時，後寫的那個
+    /// 會把前一個的說明蓋掉，而使用者只看得到其中一個原因。
+    private var degradations: [String] = []
+
+    func reportDegradation(_ message: String) {
+        degradations.append(message)
+        item.button?.title = "🐱⚠️"
+        item.button?.toolTip = degradations.joined(separator: "\n")
+    }
+
     /// 不講的話使用者只會覺得「按了沒反應」，而真正的原因（被別的 app 佔用）
     /// 從畫面上完全看不出來。
     func showHotkeyFailure(_ keys: [String]) {
         guard !keys.isEmpty else { return }
-        item.button?.title = "🐱⚠️"
-        item.button?.toolTip = "這些快捷鍵註冊失敗（可能被其他 app 佔用）：\(keys.joined(separator: "、"))"
+        reportDegradation("這些快捷鍵註冊失敗（可能被其他 app 佔用）：\(keys.joined(separator: "、"))")
     }
 
     @objc private func toggleCat() { onToggleCat() }
