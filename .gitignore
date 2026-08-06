@@ -3,6 +3,9 @@
 # 收工契約寫「工作樹要乾淨」的 agent 看到 `?? .claude/` 就 rm -rf 掉，
 # 連同另一個 agent 正在用的 worktree 一起清空。
 .claude/
+# git-flow 的 feature worktree。理由同上：它出現在 git status 的 untracked 清單裡，
+# 而「把工作樹弄乾淨」很容易被理解成可以刪掉它——那會連整個分支的工作目錄一起沒。
+.worktree/
 .DS_Store
 .build/
 *.xcuserstate
