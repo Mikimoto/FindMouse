@@ -8,8 +8,15 @@ public enum SettingKind: Sendable, Equatable {
     case boolean
     /// 合法值的完整列舉（`spotlight.trigger`、`window.level`）
     case choice([String])
-    /// 不驗內容，只要求非空（`pack.id`、`hotkey.*`）
+    /// 不驗內容，只要求非空（`hotkey.*`）
     case freeText
+    /// pack 目錄名：`[a-z0-9-]+`（spec 第 6.4 節）。
+    ///
+    /// 這裡要驗，是因為 M4 的 `pack use <id>` 會拿它當**路徑組件**——
+    /// 不驗的話 `config set pack.id ../../../etc` 現在就會寫進去，
+    /// 而它變成路徑穿越的那一天離設定被寫下的那一天很遠，沒有人會聯想。
+    /// 規則與 `PackValidator.isValidID` 同一條，只是那邊驗 manifest、這邊驗設定。
+    case packID
 }
 
 /// 已解析（但還沒驗範圍）的值。
@@ -202,6 +209,20 @@ public final class SettingsUseCase {
                 throw SettingsError.invalidValue(key: key, value: raw, expected: "非空字串")
             }
             return .text(raw)
+
+        case .packID:
+            // 與 PackValidator.isValidID 同一條規則，理由也同一個：ASCII 的
+            // `[a-z0-9-]`，不用 Character.isLowercase／isNumber（那些是 Unicode
+            // 全域屬性，會放行 ünïcode、٣、Ⅷ，而 id 要拿去比對磁碟上的目錄名，
+            // Swift 的字串相等是正規化等價，NFC 對 NFD 會比成相等）。
+            let ok = !raw.isEmpty && raw.allSatisfy {
+                ("a"..."z").contains($0) || ("0"..."9").contains($0) || $0 == "-"
+            }
+            guard ok else {
+                throw SettingsError.invalidValue(key: key, value: raw,
+                                                 expected: "只能是 a-z、0-9、-")
+            }
+            return .text(raw)
         }
     }
 
@@ -209,7 +230,7 @@ public final class SettingsUseCase {
 
     static var registry: [SettingSpec] {
         [
-            external("pack.id", .freeText, defaultValue: "test-blocks"),
+            external("pack.id", .packID, defaultValue: "test-blocks"),
             cg("cat.scale", 0.5...2.0, \.catScale),
             seconds("rest.duration", 1...120, \.restDuration),
             seconds("sleep.duration", 1...60, \.sleepDuration),

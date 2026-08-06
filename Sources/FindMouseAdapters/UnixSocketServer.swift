@@ -43,9 +43,19 @@ public final class UnixSocketServer: @unchecked Sendable {
         guard path.utf8.count < capacity else { throw StartError.pathTooLong(path) }
         SocketLine.fill(&addr, with: path, capacity: capacity)
 
+        // 目錄權限 0700 是 socket 那個 0600 的**前提**，不是額外的保險。
+        //
+        // `bind` 依 umask 建檔（實測 umask 022 → srwxr-xr-x），我們要到下面
+        // 才 chmod 成 0600——中間那段時間 socket 本身是 world-connectable。
+        // 目錄鎖成 0700 之後，那個窗口裡別的使用者也走不進來。
+        // 只驗 socket 的權限看不到這件事：e2e 量的是 chmod 之後的狀態。
+        let directory = URL(fileURLWithPath: path).deletingLastPathComponent()
         try? FileManager.default.createDirectory(
-            at: URL(fileURLWithPath: path).deletingLastPathComponent(),
-            withIntermediateDirectories: true)
+            at: directory, withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700])
+        // 目錄可能是舊版留下的（那時建成 0755），所以每次都收緊一次。
+        try? FileManager.default.setAttributes([.posixPermissions: 0o700],
+                                               ofItemAtPath: directory.path)
 
         let fd = socket(AF_UNIX, SOCK_STREAM, 0)
         guard fd >= 0 else { throw StartError.cannotCreateSocket(errno: errno) }

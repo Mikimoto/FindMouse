@@ -46,6 +46,30 @@ private func ack(_ data: Data) throws -> AckPayload {
     #expect(mode.int16Value == 0o600, "實際是 \(String(mode.intValue, radix: 8))")
 }
 
+/// socket 的 0600 只有在**目錄也關起來**時才是完整的保證。
+///
+/// `bind` 依 umask 建檔（umask 022 → srwxr-xr-x），我們要到下一行才 chmod 成
+/// 0600——中間那段時間 socket 本身是 world-connectable。只驗 socket 權限看不到
+/// 這個窗口，因為量到的是 chmod 之後的狀態。目錄鎖成 0700 就從構造上關掉它。
+///
+/// 夾具刻意先把目錄設成 0755：舊版留下的目錄就是那個權限，而「只在建立時設對」
+/// 的實作會讓已經存在的目錄永遠停在 0755。
+@Test func socketDirectoryIsTightenedEvenIfItAlreadyExists() throws {
+    let dir = URL(fileURLWithPath: NSTemporaryDirectory())
+        .appendingPathComponent("fm-perm-\(UUID().uuidString.prefix(8))")
+    try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true,
+                                            attributes: [.posixPermissions: 0o755])
+    defer { try? FileManager.default.removeItem(at: dir) }
+
+    let server = echoServer(at: dir.appendingPathComponent("control.sock").path)
+    try server.start()
+    defer { server.stop() }
+
+    let mode = try #require(
+        try FileManager.default.attributesOfItem(atPath: dir.path)[.posixPermissions] as? NSNumber)
+    #expect(mode.int16Value == 0o700, "目錄還是 \(String(mode.intValue, radix: 8))")
+}
+
 /// 上次崩潰留下的檔案不能擋住啟動。
 @Test func staleSocketFileDoesNotBlockStartup() throws {
     let path = tempSocketPath()

@@ -199,11 +199,39 @@ private func settingsError(_ body: () throws -> Void) -> SettingsError? {
     try settings.set("hotkey.summon", to: "⌃⌘F")
     #expect(try settings.get("pack.id") == "fluffy-orange")
     #expect(try settings.get("hotkey.summon") == "⌃⌘F")
-    #expect(settingsError { try settings.set("pack.id", to: "  ") }
-            == .invalidValue(key: "pack.id", value: "  ", expected: "非空字串"))
+    // hotkey.* 仍然只要求非空
+    #expect(settingsError { try settings.set("hotkey.summon", to: "  ") }
+            == .invalidValue(key: "hotkey.summon", value: "  ", expected: "非空字串"))
 
     try settings.reset("pack.id")
     #expect(try settings.get("pack.id") == before, "reset 後回到內建 pack")
+}
+
+/// `pack.id` 的字元集要與 `PackValidator.isValidID` 同一條規則。
+///
+/// **這是安全性守衛，不是格式潔癖。** M4 的 `pack use <id>` 會拿它當路徑組件，
+/// 不驗的話 `config set pack.id ../../../etc` 今天就會寫進 UserDefaults，
+/// 而它變成路徑穿越的那一天離設定被寫下的那一天很遠，沒有人會把兩件事聯想在一起。
+///
+/// 拒絕清單裡的每一項都是**具體的攻擊或具體的比對陷阱**，不是隨機的壞字串：
+/// 路徑穿越、絕對路徑、路徑分隔、NUL 截斷、Unicode 正規化（NFC 對 NFD 在 Swift
+/// 的字串相等下會比成相等，但在檔案系統上是兩個名字）。
+@Test func packIDRejectsAnythingThatCouldBecomeAPath() throws {
+    let settings = makeUseCase()
+
+    for bad in ["../../../etc", "/absolute", "a/b", "a\\b", "with space",
+                "UPPER", "under_score", "dot.dot", "", "  ",
+                "café", "٣", "pack\u{0}id"] {
+        #expect(settingsError { try settings.set("pack.id", to: bad) }
+                == .invalidValue(key: "pack.id", value: bad, expected: "只能是 a-z、0-9、-"),
+                "「\(bad)」應該被拒絕")
+    }
+
+    // 合法的照樣通過，而且沒有被改寫
+    for good in ["test-blocks", "fluffy-orange", "cat2", "a", "0"] {
+        try settings.set("pack.id", to: good)
+        #expect(try settings.get("pack.id") == good)
+    }
 }
 
 /// `config reset --all` 要把兩類 key 一起清掉。
