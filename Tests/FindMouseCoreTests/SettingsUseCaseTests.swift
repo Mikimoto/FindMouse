@@ -219,3 +219,46 @@ private func settingsError(_ body: () throws -> Void) -> SettingsError? {
     settings.resetAll()
     #expect(settings.getAll() == pristine, "reset --all 之後必須與全新狀態逐項相同")
 }
+
+/// bool 接受多種拼法，但 `get` 一律回正規形式。
+///
+/// spec 第 9 節只寫「bool」，接受 `1`／`yes`／`on` 是刻意放寬的——
+/// CLI 的使用者（含 AI）不該因為打 `1` 而失敗。但**放寬輸入不等於放寬輸出**：
+/// `get` 若把使用者原本打的字原樣回傳，同一個設定就會有八種表示法，
+/// 腳本拿它做比對就會時對時錯。這條測試把「刻意的放寬」與「正規化的輸出」
+/// 兩件事一起釘住，否則兩者在程式碼裡分不出是設計還是意外。
+@Test func booleanAcceptsSeveralSpellingsButAlwaysReadsBackCanonical() throws {
+    for spelling in ["true", "TRUE", "1", "yes", "On"] {
+        let settings = makeUseCase()
+        try settings.set("spotlight.enabled", to: spelling)
+        #expect(try settings.get("spotlight.enabled") == "true",
+                "\(spelling) 應該正規化成 true")
+    }
+    for spelling in ["false", "FALSE", "0", "no", "Off"] {
+        let settings = makeUseCase()
+        try settings.set("spotlight.enabled", to: spelling)
+        #expect(try settings.get("spotlight.enabled") == "false",
+                "\(spelling) 應該正規化成 false")
+    }
+    #expect(settingsError { try makeUseCase().set("spotlight.enabled", to: "maybe") }
+            != nil, "看不懂的字仍要拒絕，放寬不是照單全收")
+}
+
+/// 整數印成 `160` 而不是 `160.0`，而且印出來的東西餵回 `set` 要解得回來。
+///
+/// 後半是重點：輸出格式若與輸入格式不相容，
+/// 「讀出全部設定 → 改一項 → 寫回去」這個最常見的腳本模式會在其餘每一項上失敗。
+@Test func numbersRenderTidilyAndSurviveARoundTrip() throws {
+    let settings = makeUseCase()
+    try settings.set("rehunt.threshold", to: "160")
+    #expect(try settings.get("rehunt.threshold") == "160", "不該印成 160.0")
+    try settings.set("spotlight.dimOpacity", to: "0.75")
+    #expect(try settings.get("spotlight.dimOpacity") == "0.75")
+
+    // 把每一個 key 讀出來再原樣寫回去，全部都要成功
+    for entry in settings.getAll() {
+        #expect(throws: Never.self, "\(entry.key) 的輸出 \(entry.value) 餵不回 set") {
+            try settings.set(entry.key, to: entry.value)
+        }
+    }
+}
