@@ -6,6 +6,7 @@
 // 為什麼不放進專案的任何 target：`CGWarpMouseCursorPosition` 正是
 // ArchitectureBoundaryTests 註解點名的「CoreGraphics 給得出但不該進 Domain」的函式。
 // 一支獨立腳本讓它離所有 target 都很遠。
+import AppKit
 import CoreGraphics
 import Foundation
 
@@ -22,3 +23,11 @@ guard CommandLine.arguments.count == 3,
 let mainHeight = CGDisplayBounds(CGMainDisplayID()).height
 CGWarpMouseCursorPosition(CGPoint(x: x, y: mainHeight - y))
 CGAssociateMouseAndMouseCursorPosition(1)
+
+// 印出**實際**落點的全域座標。
+//
+// 系統不保證鼠標會停在要求的位置（多螢幕錯位排列時，要求的點可能不在任何一片
+// 螢幕上，游標會被拉到最近的合法位置）。呼叫端要拿這個回報值去比對，
+// 而不是拿自己傳進來的值——後者測的是這支腳本，不是被測的 App。
+let actual = NSEvent.mouseLocation
+print("\(actual.x) \(actual.y)")

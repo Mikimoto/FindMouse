@@ -34,6 +34,8 @@ public final class CatSessionUseCase {
     private var previousCursor: CGPoint?
     private var cursorSpeed: CGFloat = 0
     private var stage = Stage(union: .zero, cursorScreen: .zero)
+    /// 上一帧的舞台。只有在它變動時才需要檢查貓有沒有被留在畫面外。
+    private var previousStage: Stage?
 
     public init(config: ConfigProviderPort, catalog: AnimationCatalogPort, randomizer: Randomizer) {
         self.config = config
@@ -52,12 +54,45 @@ public final class CatSessionUseCase {
         let cfg = config.config
         self.stage = stage
 
+        relocateIfStageShrankAwayFromTheCat(previous: previousStage, cfg: cfg)
+        previousStage = stage
         updateCursorSpeed(cursor: cursor, dt: dt)
         for command in commands {
             apply(command, cursor: cursor, cfg: cfg)
         }
         advance(dt: dt, cursor: cursor, cfg: cfg)
         return makeState(cursor: cursor, cfg: cfg)
+    }
+
+    /// 螢幕組態變更後，貓可能停在一個已經不存在的座標上（spec 第 10 節）。
+    ///
+    /// 不搬的話它仍然在追鼠標，於是從畫面外慢慢走回來——使用者看到的是
+    /// 「按了快捷鍵，好幾秒都沒有貓」，看起來像卡住而不像降級。
+    ///
+    /// **只在舞台真的變動的那一帧檢查。** 每帧都檢查是錯的：貓在 `hunting`
+    /// 剛入場與 `exiting` 走出去時**本來就在畫面外**（`edgePoint` 刻意把牠放在
+    /// 邊緣外側），每帧夾一次會把整段進場動畫變成瞬移。實測會讓 M1 的三條
+    /// dt 相關測試一起轉紅——那些測試斷言的正是「貓在這一帧只能移動這麼多」。
+    ///
+    /// 搬到 `cursorScreen` 而不是 `union` 裡最近的點：union 是所有螢幕的**外接矩形**，
+    /// 螢幕錯位排列時它涵蓋的空隙不屬於任何一片，夾進去仍然看不見。
+    /// cursorScreen 一定是真的存在的一片，而且就是使用者正在看的那片。
+    private func relocateIfStageShrankAwayFromTheCat(previous: Stage?, cfg: BehaviorConfig) {
+        guard let previous, previous != stage,
+              phase.isVisible,
+              !stage.cursorScreen.isEmpty,
+              !stage.union.contains(body.position) else { return }
+
+        // 留半隻貓的邊距。夾到 maxX 剛好會讓貓站在邊界上——一半在畫面外，
+        // 而且 `CGRect.contains` 對邊界點回 false，所以「搬回來了」這件事
+        // 連斷言都寫不出來。螢幕比貓還小的話邊距退化成一半，不讓矩形翻過來。
+        let half = catalog.logicalHeight * cfg.catScale / 2
+        let screen = stage.cursorScreen
+        let margin = min(half, min(screen.width, screen.height) / 2)
+        let inset = screen.insetBy(dx: margin, dy: margin)
+        body.position = CGPoint(
+            x: min(max(body.position.x, inset.minX), inset.maxX),
+            y: min(max(body.position.y, inset.minY), inset.maxY))
     }
 
     // MARK: - 命令

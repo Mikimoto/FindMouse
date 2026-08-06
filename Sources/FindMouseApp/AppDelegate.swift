@@ -82,6 +82,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self, selector: #selector(screensChanged),
             name: NSApplication.didChangeScreenParametersNotification, object: nil)
 
+        // spec 第 10 節：系統睡眠時把貓收回去。
+        //
+        // dt clamp 只擋住「醒來後一帧跑完整個狀態機」，擋不住「貓在闔上蓋子的
+        // 那一刻還站在畫面上」——而且醒來後的第一段動畫沒有人看得到。
+        // 用 NSWorkspace 的通知中心，不是 NotificationCenter.default：
+        // 工作區層級的通知只發到前者，掛錯地方會靜默收不到。
+        NSWorkspace.shared.notificationCenter.addObserver(
+            self, selector: #selector(systemWillSleep),
+            name: NSWorkspace.willSleepNotification, object: nil)
+
         log.notice("""
             up: screens=\(ensemble.screenCount, privacy: .public) \
             pack=test-blocks hotkeyFailures=\(hotkeys.failed.count, privacy: .public)
@@ -196,6 +206,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             driver?.stop()
             log.debug("display link 停止（貓已退場）")
         }
+    }
+
+    @objc private func systemWillSleep() {
+        log.notice("系統即將睡眠，讓貓回家")
+        enqueue(.dismiss)
     }
 
     @objc private func screensChanged() {

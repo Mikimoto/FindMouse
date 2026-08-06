@@ -121,12 +121,13 @@ expect "$("${FM}" config get rest.duration | awk '{print $3}')" "10" "拒絕不�
 
 # --- 6 -----------------------------------------------------------------------
 step "6. 座標系：鼠標往上移，cursor.y 要變大（AppKit 全域座標 Y 向上）"
-BEFORE_Y="$(field 'd["cursor"]["y"]')"
-BASE_X="$(field 'd["cursor"]["x"]')"
-swift "${ROOT}/Scripts/warp-cursor.swift" 400 200 >/dev/null 2>&1
+# warp-cursor 會印出**實際**落點：系統不保證游標停在要求的位置
+# （多螢幕錯位時要求的點可能不在任何一片上）。拿實際落點來比對，
+# 才是在測 App 有沒有如實回報，而不是在測那支小腳本準不準。
+LOW_ACTUAL="$(swift "${ROOT}/Scripts/warp-cursor.swift" 400 200 2>/dev/null)"
 sleep 0.6
 LOW_Y="$(field 'd["cursor"]["y"]')"
-swift "${ROOT}/Scripts/warp-cursor.swift" 400 700 >/dev/null 2>&1
+HIGH_ACTUAL="$(swift "${ROOT}/Scripts/warp-cursor.swift" 400 700 2>/dev/null)"
 sleep 0.6
 HIGH_Y="$(field 'd["cursor"]["y"]')"
 
@@ -135,9 +136,15 @@ if /usr/bin/python3 -c "import sys; sys.exit(0 if ${HIGH_Y} > ${LOW_Y} else 1)";
 else
     bad "y 沒有變大：低點 ${LOW_Y}、高點 ${HIGH_Y}——座標系翻轉了"
 fi
-expect "$(/usr/bin/python3 -c "print(abs(${LOW_Y} - 200) < 2)")" "True" \
-       "回報的 y 就是我們設定的全域座標（不是事件座標）"
-echo "  （起始位置 x=${BASE_X} y=${BEFORE_Y}）"
+for pair in "${LOW_ACTUAL}|${LOW_Y}" "${HIGH_ACTUAL}|${HIGH_Y}"; do
+    real_y="$(echo "${pair%%|*}" | awk '{print $2}')"
+    seen_y="${pair##*|}"
+    if /usr/bin/python3 -c "import sys; sys.exit(0 if abs(${real_y} - ${seen_y}) < 2 else 1)"; then
+        ok "status 回報的 y (${seen_y}) 就是真實的全域座標 (${real_y})"
+    else
+        bad "status 說 ${seen_y}，實際在 ${real_y}——差了一個座標系"
+    fi
+done
 
 # --- 7 -----------------------------------------------------------------------
 step "7. dismiss → 輪詢到 visible == false"
