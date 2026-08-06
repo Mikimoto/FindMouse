@@ -196,8 +196,21 @@ public final class CatSessionUseCase {
             }
 
         case .teaserStalking:
+            // 停止距離就是 stalkRange：進到潛行範圍之後不再靠近，只轉向跟隨鼠標。
+            //
+            // spec 第 4.5 節說「撲空正是逗貓棒的全部樂趣；會追蹤的撲擊等於百發百中」，
+            // 但沒有停止距離的話貓會一路走到鼠標腳邊（135 px/s 走 3 秒 = 405 px，
+            // 而 stalkRange 只有 250），實測貼到 2.08 px，撲擊只飛 1 帧——撲空需要
+            // 鼠標達 3600 px/s，結構上不可能。停在 250 px 上，撲擊飛 0.114 秒，
+            // 撲空門檻降到 528 px/s，剛好在撲擊觸發速度 400 px/s 之上：快到足以
+            // 觸發撲擊的甩動，就有實際機會閃過。
+            //
+            // speed 0 讓 Kinematics.step 只轉不走（step = speed × dt = 0），
+            // 所以「朝向跟隨鼠標」仍然成立。
             move(toward: cursor, dt: dt,
-                 speed: cfg.catSpeed * Timings.stalkSpeedFactor, cfg: cfg)
+                 speed: distance > cfg.teaserStalkRange
+                     ? cfg.catSpeed * Timings.stalkSpeedFactor : 0,
+                 cfg: cfg)
             if cursorSpeed > cfg.teaserPounceTriggerSpeed || phaseElapsed >= cfg.teaserStalkTimeout {
                 enter(.teaserWindup, cursor: cursor, cfg: cfg)
             }

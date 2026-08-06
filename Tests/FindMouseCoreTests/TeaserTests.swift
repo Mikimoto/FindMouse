@@ -8,14 +8,15 @@ private let center = CGPoint(x: 960, y: 540)
 
 /// 把貓帶到「已鎖定、正在飛行」的狀態，回傳（鎖定點, 起飛點）。
 ///
-/// 為什麼要這麼繞：`teaserStalking` 沒有停止距離，以 135 px/s 朝鼠標走，
-/// 3 秒 stalkTimeout 內走 405 px 而 stalkRange 只有 250，所以「靠 timeout 進 windup」
-/// 的路徑貓已經貼在鼠標上（實測 2.08 px），撲擊只飛 1 帧——那條路徑測不到飛行段。
-///
 /// 構造：跑到 stalking 後，下一帧把鼠標往遠處跳 150 px。一帧跳 150 px 等於
 /// 9000 px/s，遠超 teaserPounceTriggerSpeed(400)，所以立刻進 windup；而 windup
 /// 期間貓不移動（`teaserWindup` 沒有 move），分離距離就被凍結在約 376 px，
 /// 鎖定後才有 11 帧的真實彈道飛行。
+///
+/// 為什麼要跳鼠標而不是等 stalkTimeout：這個構造同時是
+/// `teaserPounceTriggerSpeed` 那條離開條件的唯一覆蓋。等 timeout 的路徑由
+/// `stalkingKeepsItsDistanceSoThePounceHasARealFlight` 覆蓋，它也有飛行段
+/// （潛行的停止距離讓貓停在 stalkRange 上）。
 private func lockOnFromAfar(_ h: Harness) -> (lock: CGPoint, launch: CGPoint) {
     h.step(cursor: center, commands: [.setTeaser(true)])
     #expect(h.run(until: .teaserStalking, cursor: center))
@@ -62,6 +63,47 @@ private func stepWhile(_ h: Harness, phase: CatPhase, cursor: CGPoint, limit: In
     // 鼠標不動，靠 stalkTimeout（3 秒）觸發
     #expect(h.run(until: .teaserWindup, cursor: center, maxSeconds: 6))
     #expect(h.run(until: .teaserPouncing, cursor: center, maxSeconds: 2))
+}
+
+/// 潛行有停止距離：貓進到 stalkRange 之後就不再靠近，於是等 timeout 的撲擊
+/// 也有真實飛行段。
+///
+/// 這條規則的理由在 `CatSessionUseCase` 的 `case .teaserStalking` 註解裡：
+/// 沒有停止距離的話貓會貼到鼠標腳邊，撲擊只飛 1 帧，撲空結構上不可能，
+/// 而 spec 第 4.5 節說撲空正是逗貓棒的全部樂趣。
+@Test func stalkingKeepsItsDistanceSoThePounceHasARealFlight() {
+    let h = Harness()
+    h.step(cursor: center, commands: [.setTeaser(true)])
+    #expect(h.run(until: .teaserStalking, cursor: center))
+
+    // 鼠標全程不動，所以離開 stalking 只能靠 stalkTimeout（3 秒）。
+    // 潛行期間距離一次都不許減少——這就是「不再靠近」。
+    // 停住的位置比 stalkRange 略小，最多小兩個 approach 步長（2 × 900/60 = 30 px）：
+    // teaserApproach 的離開判定用的是**移動前**的距離，所以跨過 250 的那一帧不觸發
+    // （當帧移動前還 > 250），下一帧才觸發，而那一帧又走了 15 px。實測 229.3 px。
+    let atEntry = h.last.distanceToCursor
+    let approachStep = h.config.value.catSpeed / 60
+    #expect(atEntry > h.config.value.teaserStalkRange - 2 * approachStep - 1,
+            "進入潛行時距離只有 \(atEntry) px，構造有問題")
+    var closest = atEntry
+    var frames = 0
+    while h.last.phase == .teaserStalking && frames < 240 {
+        h.step(cursor: center)
+        closest = min(closest, h.last.distanceToCursor)
+        frames += 1
+    }
+    #expect(h.last.phase == .teaserWindup)
+    #expect(closest >= atEntry - 0.001,
+            "潛行從 \(atEntry) px 靠近到 \(closest) px，停止距離沒有生效")
+
+    // 貓在 windup 期間不移動，所以起飛點就是潛行停住的位置，
+    // 而彈道是直線且末帧精確落在鎖定點，因此飛行距離恰等於停住時的距離。
+    let launch = h.last.body.position
+    #expect(h.run(until: .teaserPouncing, cursor: center, maxSeconds: 2))
+    let flightFrames = stepWhile(h, phase: .teaserPouncing, cursor: center)
+    let flown = hypot(h.last.body.position.x - launch.x, h.last.body.position.y - launch.y)
+    #expect(flightFrames > 5, "撲擊只飛了 \(flightFrames) 帧")
+    #expect(abs(flown - atEntry) < 0.001, "撲擊飛了 \(flown) px，停住時距離是 \(atEntry) px")
 }
 
 @Test func pounceHitsWhenCursorStaysPut() {
