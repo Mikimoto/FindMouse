@@ -44,9 +44,12 @@ struct ArchitectureBoundaryTests {
         // Core 只依賴 Domain
         "FindMouseCore": ["Foundation", "CoreGraphics", "FindMouseDomain"],
         // Adapters：允許碰系統框架與 UI，但依賴方向仍然只能往內（Core、Domain）
+        // FindMouseWire 在這裡而不在 Core：把 domain 型別翻譯成對外 JSON 契約
+        // 是 adapter 的工作。Core 若能 import Wire，狀態機就會開始為了
+        // 「JSON 好看」而長出欄位，而那正是 Wire 單獨存在要防的事。
         "FindMouseAdapters": ["Foundation", "CoreGraphics", "AppKit", "QuartzCore",
                               "ImageIO", "UniformTypeIdentifiers", "OSLog",
-                              "FindMouseCore", "FindMouseDomain"],
+                              "FindMouseCore", "FindMouseDomain", "FindMouseWire"],
         // app（驅動層）：可以碰 UI 與系統框架，這是依賴方向的最外層
         "FindMouse": ["Foundation", "CoreGraphics", "AppKit", "QuartzCore",
                       "Carbon", "OSLog",

@@ -19,14 +19,15 @@ let package = Package(
         // .process 會對 PNG 做最佳化並可能改寫結構。
         .target(
             name: "FindMouseAdapters",
-            dependencies: ["FindMouseCore", "FindMouseDomain"],
+            dependencies: ["FindMouseCore", "FindMouseDomain", "FindMouseWire"],
             resources: [.copy("Resources/Packs")]),
         .executableTarget(
             name: "FindMouse",
             dependencies: ["FindMouseAdapters", "FindMouseCore", "FindMouseDomain"]),
         .testTarget(
             name: "FindMouseAdaptersTests",
-            dependencies: ["FindMouseAdapters", "FindMouseCore", "FindMouseDomain"],
+            dependencies: ["FindMouseAdapters", "FindMouseCore", "FindMouseDomain",
+                           "FindMouseWire"],
             resources: [.copy("Fixtures")]),
         .testTarget(name: "FindMouseDomainTests", dependencies: ["FindMouseDomain"]),
         .testTarget(name: "FindMouseCoreTests", dependencies: ["FindMouseCore", "FindMouseDomain"]),
