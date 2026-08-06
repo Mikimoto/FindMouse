@@ -10,6 +10,7 @@ cd "${ROOT}"
 swift build -c "${CONFIG}" --product FindMouseApp --product findmouse
 BIN_DIR="$(swift build -c "${CONFIG}" --show-bin-path)"
 
+
 APP="${ROOT}/build/FindMouse.app"
 rm -rf "${APP}"
 mkdir -p "${APP}/Contents/MacOS" "${APP}/Contents/Resources"

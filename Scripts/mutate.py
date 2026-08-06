@@ -22,10 +22,12 @@ mutations.json：
 """
 import atexit
 import json
+import os
 import re
 import signal
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -97,7 +99,21 @@ def apply_patch(path, find, replace):
         return None, f"find 片段出現 {text.count(find)} 次，必須剛好 1 次"
     _patched[str(path)] = text
     path.write_text(text.replace(find, replace))
+    _bump_mtime(path)
     return text, None
+
+
+def _bump_mtime(path):
+    """把 mtime 推到未來一點。
+
+    **沒有這一步，整批 mutation 可能全部在測同一個舊 binary。**
+    Swift 的建置系統靠 mtime 判斷要不要重編，而程式化編輯常常落在
+    「上一次建置的同一秒」裡——實測過：連續四次 `swift build` 都回
+    「Build complete (0.16s)」而編出來的執行檔一個字都沒變，
+    `touch` 之後才真的重編。手打編輯不會遇到，因為人沒那麼快。
+    """
+    future = time.time() + 2
+    os.utime(path, (future, future))
 
 
 def main():
