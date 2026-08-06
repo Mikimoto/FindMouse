@@ -1,0 +1,81 @@
+{
+  "actions" : {
+    "brake" : {
+      "fps" : 10,
+      "frames" : 2,
+      "loop" : false
+    },
+    "lieDown" : {
+      "fps" : 10,
+      "frames" : 2,
+      "loop" : false
+    },
+    "retreat" : {
+      "fps" : 10,
+      "frames" : 2,
+      "loop" : false
+    },
+    "run" : {
+      "fps" : 10,
+      "frames" : 2,
+      "loop" : true
+    },
+    "scratch" : {
+      "fps" : 10,
+      "frames" : 2,
+      "loop" : false
+    },
+    "sit" : {
+      "fps" : 10,
+      "frames" : 2,
+      "loop" : false
+    },
+    "sitIdle" : {
+      "fps" : 10,
+      "frames" : 2,
+      "loop" : true
+    },
+    "sleep" : {
+      "fps" : 10,
+      "frames" : 2,
+      "loop" : true
+    },
+    "stalk" : {
+      "fps" : 10,
+      "frames" : 2,
+      "loop" : true
+    },
+    "stretch" : {
+      "fps" : 10,
+      "frames" : 2,
+      "loop" : false
+    },
+    "tumble" : {
+      "fps" : 10,
+      "frames" : 2,
+      "loop" : false
+    },
+    "windup" : {
+      "fps" : 10,
+      "frames" : 2,
+      "loop" : true
+    },
+    "yawn" : {
+      "fps" : 10,
+      "frames" : 2,
+      "loop" : false
+    }
+  },
+  "anchor" : {
+    "x" : 0.5,
+    "y" : 0.90000000000000002
+  },
+  "author" : "FindMouse",
+  "facing" : "right",
+  "id" : "bad-missing-teaser",
+  "license" : "CC0",
+  "logicalHeight" : 96,
+  "mirrorForOpposite" : true,
+  "name" : "測試方塊",
+  "schemaVersion" : 1
+}

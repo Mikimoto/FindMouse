@@ -22,6 +22,10 @@ let package = Package(
         .executableTarget(
             name: "FindMouse",
             dependencies: ["FindMouseAdapters", "FindMouseCore", "FindMouseDomain"]),
+        .testTarget(
+            name: "FindMouseAdaptersTests",
+            dependencies: ["FindMouseAdapters", "FindMouseCore", "FindMouseDomain"],
+            resources: [.copy("Fixtures")]),
         .testTarget(name: "FindMouseDomainTests", dependencies: ["FindMouseDomain"]),
         .testTarget(name: "FindMouseCoreTests", dependencies: ["FindMouseCore", "FindMouseDomain"]),
     ]
