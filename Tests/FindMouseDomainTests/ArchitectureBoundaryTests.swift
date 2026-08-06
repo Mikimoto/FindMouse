@@ -40,6 +40,10 @@ struct ArchitectureBoundaryTests {
         "FindMouseDomain": ["Foundation", "CoreGraphics"],
         // Core 只依賴 Domain
         "FindMouseCore": ["Foundation", "CoreGraphics", "FindMouseDomain"],
+        // app（驅動層）：可以碰 UI 與系統框架，這是依賴方向的最外層
+        "FindMouse": ["Foundation", "CoreGraphics", "AppKit", "QuartzCore",
+                      "Carbon", "OSLog",
+                      "FindMouseCore", "FindMouseDomain", "FindMouseAdapters"],
     ]
 
     /// 往上找到含 Package.swift 的目錄。
