@@ -38,6 +38,9 @@ struct ArchitectureBoundaryTests {
     /// 逼作者明確宣告它的政策，而不是讓它靜默地不受檢查。
     private static let allowedImports: [String: Set<String>] = [
         "FindMouseDomain": ["Foundation", "CoreGraphics"],
+        // Wire：只有 Foundation。這是 CLI 與 App 的共同契約，
+        // 碰到 Domain 就等於把 domain 型別洩漏進對外 JSON。
+        "FindMouseWire": ["Foundation"],
         // Core 只依賴 Domain
         "FindMouseCore": ["Foundation", "CoreGraphics", "FindMouseDomain"],
         // Adapters：允許碰系統框架與 UI，但依賴方向仍然只能往內（Core、Domain）
