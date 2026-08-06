@@ -26,22 +26,34 @@ expect() {
     else bad "${what}（期望 ${wanted}，實際 ${actual}）"; fi
 }
 
-# 兩個名字都要殺：.app 裡的執行檔叫 FindMouse，而直接跑 SwiftPM 產物時
-# process 名是 FindMouseApp。只殺其中一個的話，殘留的那個仍然握著 socket，
-# 之後每一次 `open` 都會被判成「第二個實例」而自己退出——於是 CLI 一直在跟
-# 一個**舊 binary** 說話。實測被這件事騙了好幾輪。
-cleanup() { killall FindMouse FindMouseApp 2>/dev/null; }
+# 用自己的 socket 路徑跑，不要碰使用者真正在用的那個。
+#
+# App 與 CLI 都讀 FINDMOUSE_SOCKET（共用 FindMouseWire 的 ControlSocket.path），
+# 而 `open --env` 可以把環境變數傳進 .app。這樣 e2e 就不必 killall 使用者的
+# 實例、也不會搶走它的 socket——之前那些 killall 體操是因為兩邊都寫死路徑。
+export FINDMOUSE_SOCKET="/tmp/fm-e2e-$$.sock"
+
+# 只收拾自己啟動的那些 pid。使用者自己的 FindMouse 不關我們的事。
+STARTED_PIDS=""
+cleanup() {
+    for pid in ${STARTED_PIDS}; do kill "${pid}" 2>/dev/null; done
+    rm -f "${FINDMOUSE_SOCKET}"
+}
 trap cleanup EXIT
 
-# 起跑前一定要是乾淨的，否則整份報告都在描述別的 process
-assert_no_instances() {
-    local n
-    n="$(pgrep -f 'FindMouse.app/Contents/MacOS/FindMouse|Products/Debug/FindMouseApp' | wc -l | tr -d ' ')"
-    if [[ "${n}" != "0" ]]; then
-        echo "錯誤：還有 ${n} 個 FindMouse 在跑，先關掉再測（它們握著 socket）" >&2
-        pgrep -fl 'FindMouse.app/Contents/MacOS/FindMouse|Products/Debug/FindMouseApp' >&2
-        exit 1
-    fi
+# 啟動一個實例並記下 pid（用 -n 強制開新的，不要只是 activate 既有的）
+launch_app() {
+    local before after
+    before="$(pgrep -f 'FindMouse.app/Contents/MacOS/FindMouse' | tr '\n' ' ')"
+    open -n --env "FINDMOUSE_SOCKET=${FINDMOUSE_SOCKET}" "${APP}"
+    sleep 2
+    after="$(pgrep -f 'FindMouse.app/Contents/MacOS/FindMouse' | tr '\n' ' ')"
+    for pid in ${after}; do
+        case " ${before} " in
+            *" ${pid} "*) ;;
+            *) STARTED_PIDS="${STARTED_PIDS} ${pid}" ;;
+        esac
+    done
 }
 
 step "建置"
@@ -51,10 +63,8 @@ FM="${BIN}/findmouse"
 APP="${ROOT}/build/FindMouse.app"
 echo "  findmouse：${FM}"
 
-# 每次從乾淨狀態開始，腳本才能重複執行
-killall FindMouse FindMouseApp 2>/dev/null
-sleep 1
-assert_no_instances
+echo "  socket：${FINDMOUSE_SOCKET}（不是使用者的那個）"
+rm -f "${FINDMOUSE_SOCKET}"
 
 # --- 1 -----------------------------------------------------------------------
 step "1. App 沒開時 status → exit 3、APP_NOT_RUNNING"
@@ -65,7 +75,7 @@ expect "$(echo "${OUT}" | /usr/bin/python3 -c 'import json,sys; print(json.load(
 
 # --- 2 -----------------------------------------------------------------------
 step "2. 啟動 App → visible == false"
-open "${APP}"
+launch_app
 for _ in $(seq 1 40); do "${FM}" status >/dev/null 2>&1 && break; sleep 0.5; done
 json() { "${FM}" status --json 2>/dev/null; }
 field() { json | /usr/bin/python3 -c "import json,sys; d=json.load(sys.stdin)['data']; print($1)"; }
@@ -127,33 +137,34 @@ expect "$("${FM}" config get rest.duration | awk '{print $3}')" "10" "拒絕不�
 
 # --- 6 -----------------------------------------------------------------------
 step "6. 座標系：鼠標往上移，cursor.y 要變大（AppKit 全域座標 Y 向上）"
-# warp-cursor 會印出**實際**落點：系統不保證游標停在要求的位置
-# （多螢幕錯位時要求的點可能不在任何一片上）。拿實際落點來比對，
-# 才是在測 App 有沒有如實回報，而不是在測那支小腳本準不準。
-LOW_ACTUAL="$(swift "${ROOT}/Scripts/warp-cursor.swift" 400 200 2>/dev/null)"
-sleep 0.6
-LOW_Y="$(field 'd["cursor"]["y"]')"
-HIGH_ACTUAL="$(swift "${ROOT}/Scripts/warp-cursor.swift" 400 700 2>/dev/null)"
-sleep 0.6
-HIGH_Y="$(field 'd["cursor"]["y"]')"
+# 比對的是「同一時刻的真實游標」與「App 回報的游標」的**變化方向**，
+# 不是「我要求的位置」——本機的游標會自己漂移（要求 (400,300)，一秒後可能
+# 停在 (1111,477)），拿要求值去比會偶發失敗，而失敗的原因與被測物無關。
+#
+# 方向就是 spec 第 8.4 節真正承諾的東西：事件座標系是 Y 向下的，
+# 所以「真實 y 變大時回報的 y 也變大」分得出兩個座標系。
+read_pair() {
+    local real seen
+    seen="$(field 'd["cursor"]["y"]')"
+    real="$(swift "${ROOT}/Scripts/read-cursor.swift" 2>/dev/null | awk '{print $2}')"
+    echo "${real} ${seen}"
+}
+swift "${ROOT}/Scripts/warp-cursor.swift" 400 250 >/dev/null 2>&1
+sleep 0.8
+read -r LOW_REAL LOW_SEEN <<< "$(read_pair)"
+swift "${ROOT}/Scripts/warp-cursor.swift" 400 700 >/dev/null 2>&1
+sleep 0.8
+read -r HIGH_REAL HIGH_SEEN <<< "$(read_pair)"
 
-if /usr/bin/python3 -c "import sys; sys.exit(0 if ${HIGH_Y} > ${LOW_Y} else 1)"; then
-    ok "往上移之後 y 從 ${LOW_Y} 變成 ${HIGH_Y}（變大）"
+if /usr/bin/python3 -c "import sys; sys.exit(0 if abs(${HIGH_REAL} - ${LOW_REAL}) > 100 else 1)"; then
+    if /usr/bin/python3 -c "import sys; sys.exit(0 if (${HIGH_SEEN}-${LOW_SEEN})*(${HIGH_REAL}-${LOW_REAL}) > 0 else 1)"; then
+        ok "回報的 y 與真實 y 同向變化（真實 ${LOW_REAL}→${HIGH_REAL}、回報 ${LOW_SEEN}→${HIGH_SEEN}）"
+    else
+        bad "方向相反：真實 ${LOW_REAL}→${HIGH_REAL}，回報 ${LOW_SEEN}→${HIGH_SEEN}——座標系翻轉了"
+    fi
 else
-    bad "y 沒有變大：低點 ${LOW_Y}、高點 ${HIGH_Y}——座標系翻轉了"
+    bad "游標沒有真的移動（${LOW_REAL} → ${HIGH_REAL}），這一條無法判定"
 fi
-# 這裡**刻意只驗方向，不驗數值**。
-#
-# 方向就是 spec 第 8.4 節真正承諾的東西：全域座標 Y 向上。事件座標系是
-# Y 向下的，所以「要求更大的 y、回報的 y 也更大」這件事分得出兩者，
-# 而它在本機每一輪都穩定成立。
-#
-# 數值相等則驗不了：實測本機的游標會持續漂移（要求 warp 到 (400, 300)，
-# 一秒後實際停在 (1111, 477)，而且每次讀都不同）。App 沒有任何一行會移動
-# 游標——`CursorGateway` 只讀不寫，全 repo 只有 Scripts/warp-cursor.swift
-# 呼叫過 CGWarpMouseCursorPosition——所以那是環境，不是被測物。
-# 在會漂移的游標上斷言「兩次讀數相等」，測到的是漂移速度。
-echo "  （實際落點：低 ${LOW_ACTUAL} / 高 ${HIGH_ACTUAL}；只驗方向，理由見註解）"
 
 # --- 6b ----------------------------------------------------------------------
 step "6b. 貓不可見時 status 的鼠標也要是現在的"
@@ -198,13 +209,12 @@ step "8. 第二個實例不會搶走 socket"
 # 真正會壞事的是它**搶走 socket**——啟動流程若沒先偵測就 unlink + bind，
 # 第一個 App 會從此對 CLI 隱形，而它的畫面完全正常。
 BEFORE_PHASE="$(field 'd["phase"]')"
-open -n "${APP}" 2>/dev/null
-sleep 3
+launch_app
+sleep 1
 "${FM}" status >/dev/null 2>&1
 expect "$?" "0" "原本的實例仍然在服務 CLI"
 expect "$(field 'd["pack"]["id"]')" "test-blocks" "回應來自一個正常載入 pack 的實例"
-echo "  （目前有 $(pgrep -x FindMouse | wc -l | tr -d ' ') 個 FindMouse process；"
-echo "    第二個停在提示視窗，收工時一併關掉）"
+echo "  （本次啟動的 pid：${STARTED_PIDS}；第二個停在提示視窗，收工時一併關掉）"
 
 step "結果"
 printf '  通過 %d、失敗 %d\n' "${PASS}" "${FAIL}"

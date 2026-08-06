@@ -65,6 +65,7 @@ import Testing
 /// 逐一列出而不是迴圈，改名時測試要紅在具體那一行。
 @Test func errorCodeRawValuesMatchTheSpec() {
     #expect(WireErrorCode.appNotRunning.rawValue == "APP_NOT_RUNNING")
+    #expect(WireErrorCode.appNotResponding.rawValue == "APP_NOT_RESPONDING")
     #expect(WireErrorCode.protocolMismatch.rawValue == "PROTOCOL_MISMATCH")
     #expect(WireErrorCode.unknownCommand.rawValue == "UNKNOWN_COMMAND")
     #expect(WireErrorCode.invalidArgument.rawValue == "INVALID_ARGUMENT")
@@ -78,6 +79,8 @@ import Testing
 /// spec 第 8.5 節：3 與 1 分開，腳本才能區分「命令失敗」與「程式沒開」。
 @Test func exitCodesSeparateNotRunningFromFailure() {
     #expect(WireErrorCode.appNotRunning.exitCode == 3)
+    // 「在跑但沒回應」不可以是 3：3 的語意是「去把它打開」，而它已經開著
+    #expect(WireErrorCode.appNotResponding.exitCode == 1)
     #expect(WireErrorCode.invalidArgument.exitCode == 2)
     #expect(WireErrorCode.unknownCommand.exitCode == 2)
     #expect(WireErrorCode.teaserUnavailable.exitCode == 1)

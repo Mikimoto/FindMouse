@@ -290,3 +290,28 @@ private func settingsError(_ body: () throws -> Void) -> SettingsError? {
         }
     }
 }
+
+/// 衍生預設也必須落在自己宣告的範圍內。
+///
+/// `arrive.radius` 未設定時是 0.8 × 體高 × 縮放。`PackValidator` 允許體高 24–400、
+/// `cat.scale` 允許 0.5–2.0，所以衍生值的跨度是 9.6–640，而 key 的範圍是 20–400。
+/// 不夾的話，極端組合下 `config get` 會回一個 `config set` 拒收的值——
+/// 「讀出來的值餵回去一定被接受」那個保證就破了，而破的時候不會有任何訊號。
+///
+/// （`wake.threshold` 沒有這個問題：3 × rehunt 的跨度是 120–3000，而它的範圍是
+/// 0–3000，剛好包得住。那是算術上的巧合，不是設計，所以這裡一併釘住。）
+@Test func derivedDefaultsStayInsideTheirOwnRange() throws {
+    for (height, scale) in [(24.0, "0.5"), (24.0, "2"), (400.0, "0.5"),
+                            (400.0, "2"), (96.0, "1")] {
+        let settings = makeUseCase(logicalHeight: CGFloat(height))
+        try settings.set("cat.scale", to: scale)
+
+        for key in ["arrive.radius", "wake.threshold"] {
+            let value = try settings.get(key)
+            // 讀出來的值一定要餵得回去——這就是那個保證本身
+            try settings.set(key, to: value)
+            #expect(try settings.get(key) == value,
+                    "體高 \(height) × 縮放 \(scale) 的 \(key) 衍生預設 \(value) 不被 set 接受")
+        }
+    }
+}

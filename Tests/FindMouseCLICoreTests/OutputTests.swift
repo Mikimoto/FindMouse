@@ -184,3 +184,32 @@ private let statusPayload = StatusPayload(
     #expect(rendered.text.contains("summon"))
     #expect(rendered.exitCode == 0)
 }
+
+/// client 端的連線失敗要分成三種 exit code，因為**該做的事完全不同**。
+///
+/// 全部收斂成 3（原本的做法）有具體代價：腳本看到 3 會去啟動 App，
+/// 而 App 卡住時那只會多開一個實例、多跳一個要人按的提示視窗。
+@Test func clientFailuresMapToThreeDifferentExitCodes() {
+    let path = "/tmp/whatever.sock"
+
+    let notRunning = Output.failure(for: .appNotRunning, socketPath: path)
+    #expect(notRunning.code == .appNotRunning)
+    #expect(notRunning.code.exitCode == 3, "3 = 去把它打開")
+
+    let wedged = Output.failure(for: .noResponse, socketPath: path)
+    #expect(wedged.code == .appNotResponding)
+    #expect(wedged.code.exitCode == 1, "它已經開著了，再開一次沒有用")
+
+    let refused = Output.failure(for: .connectionFailed(errno: 13), socketPath: path)
+    #expect(refused.code == .appNotResponding)
+    #expect(refused.message.contains("13"), "errno 要留在訊息裡，否則查不下去")
+
+    let tooLong = Output.failure(for: .pathTooLong(path), socketPath: path)
+    #expect(tooLong.code == .invalidArgument)
+    #expect(tooLong.code.exitCode == 2, "路徑是呼叫端給的，屬用法錯誤")
+
+    // 四種都要給出不同的組合，否則這個分類等於沒做
+    let codes = [notRunning, wedged, refused, tooLong].map(\.code)
+    #expect(Set(codes).count == 3)
+    #expect(Set(codes.map(\.exitCode)) == [1, 2, 3])
+}

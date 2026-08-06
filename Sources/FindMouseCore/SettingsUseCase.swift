@@ -77,6 +77,8 @@ public struct SettingEntry: Sendable, Equatable {
     }
 }
 
+private let arriveRadiusBounds = Double(BehaviorConfig.arriveRadiusRange.lowerBound)...Double(BehaviorConfig.arriveRadiusRange.upperBound)
+
 /// spec 第 9 節的 23 個設定項：讀、寫、值域驗證、還原。
 ///
 /// CLI 與設定視窗走同一個實例，所以值域只有一份。
@@ -263,7 +265,8 @@ public final class SettingsUseCase {
             cg("cat.turnRate", 90...1800, \.catTurnRate),
             SettingSpec(
                 key: "arrive.radius",
-                kind: .number(20...400),
+                // 範圍取自 Domain：衍生預設也夾在同一個範圍內，只能有一份定義
+                kind: .number(arriveRadiusBounds),
                 storage: .domain(.init(
                     read: { c, h in .number(Double(c.arriveRadius(logicalHeight: h))) },
                     write: { v, c in

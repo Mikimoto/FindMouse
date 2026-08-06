@@ -9,16 +9,10 @@ import FindMouseWire
 /// `Sources/findmouse` 與 `Sources/FindMouse` 是**同一個目錄**，
 /// 照計畫命名的話 CLI 的原始碼會直接掉進 App target 裡（實測踩過）。
 
-/// socket 路徑。與 App 端的 `UnixSocketServer.defaultPath` 必須一致，
-/// 但 CLI 只能依賴 `FindMouseWire`（spec 第 7.1 節），所以這裡自己算一次。
-///
-/// 兩份計算漂開的話會怎樣：`Scripts/e2e.sh` 真的啟動 App 再跑真的 CLI，
-/// 路徑一旦不一致，第一個案例就會回 APP_NOT_RUNNING。
-let socketPath: String = {
-    if let override = ProcessInfo.processInfo.environment["FINDMOUSE_SOCKET"] { return override }
-    let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-    return base.appendingPathComponent("FindMouse/control.sock").path
-}()
+/// socket 路徑。與 App 端共用 `ControlSocket.path`（住在 FindMouseWire），
+/// 所以兩邊不可能漂開——這裡原本各算一次，而那正是「CLI 永遠回 APP_NOT_RUNNING
+/// 而 App 一切正常」的那種 bug 的溫床。
+let socketPath = ControlSocket.path
 
 func emit(_ text: String, to handle: FileHandle = .standardOutput) {
     handle.write(Data((text + "\n").utf8))
@@ -68,12 +62,13 @@ do {
 let line: Data
 do {
     line = try WireClient.send(parsed.request, to: socketPath)
-} catch WireClient.ClientError.appNotRunning {
-    fail(.appNotRunning, "FindMouse 沒在執行（\(socketPath)）", json: parsed.json)
-} catch WireClient.ClientError.noResponse {
-    fail(.appNotRunning, "連上了但 FindMouse 沒有回應（可能卡住了）", json: parsed.json)
+} catch let error as WireClient.ClientError {
+    // 對應住在 Output.failure（CLICore），因為 exit code 的分岔是對外契約，
+    // 而 main.swift 沒有任何測試碰得到。
+    let wire = Output.failure(for: error, socketPath: socketPath)
+    fail(wire.code, wire.message, json: parsed.json)
 } catch {
-    fail(.appNotRunning, "連不上 FindMouse：\(error)", json: parsed.json)
+    fail(.appNotResponding, "連不上 FindMouse：\(error)", json: parsed.json)
 }
 
 let rendered = Output.render(line, for: parsed.request)

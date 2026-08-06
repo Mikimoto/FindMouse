@@ -17,12 +17,9 @@ public final class UnixSocketServer: @unchecked Sendable {
         case cannotListen(errno: Int32)
     }
 
-    /// `~/Library/Application Support/FindMouse/control.sock`
-    public static var defaultPath: String {
-        let base = FileManager.default.urls(for: .applicationSupportDirectory,
-                                            in: .userDomainMask)[0]
-        return base.appendingPathComponent("FindMouse/control.sock").path
-    }
+    /// `~/Library/Application Support/FindMouse/control.sock`，可用
+    /// `FINDMOUSE_SOCKET` 覆寫。定義在 `FindMouseWire`，與 CLI 共用同一份。
+    public static var defaultPath: String { ControlSocket.path }
 
     private let path: String
     private let handle: @Sendable (WireRequest) -> Data

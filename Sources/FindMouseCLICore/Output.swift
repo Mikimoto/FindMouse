@@ -21,6 +21,33 @@ public enum Output {
         public let exitCode: Int32
     }
 
+    /// client 端的連線失敗 → 錯誤碼。
+    ///
+    /// 住在這裡而不是 `main.swift`，是為了測得到：exit code 的分岔是對外契約，
+    /// 而 `main.swift` 只有 I/O，沒有任何測試碰得到它。
+    ///
+    /// 三條分岔對應三種**該做的事完全不同**的情況：把 App 打開（3）、
+    /// App 在跑但有問題（1）、你給的 socket 路徑不對（2）。
+    /// 全部收斂成 3 的話，`WireClient` 那份 errno 分類就完全觀察不到，
+    /// 而腳本看到 3 會去啟動第二個實例——對一個卡住的 App 那只會多一個提示視窗。
+    public static func failure(for error: WireClient.ClientError,
+                               socketPath: String) -> WireError {
+        switch error {
+        case .appNotRunning:
+            return WireError(code: .appNotRunning, message: "FindMouse 沒在執行（\(socketPath)）")
+        case .noResponse:
+            return WireError(code: .appNotResponding,
+                             message: "連上了但 FindMouse 沒有回應（可能卡住了）")
+        case .connectionFailed(let code):
+            return WireError(code: .appNotResponding,
+                             message: "連線失敗（errno \(code)）：\(socketPath)")
+        case .pathTooLong(let path):
+            // 呼叫端給錯了（多半是 FINDMOUSE_SOCKET 設太長），屬用法錯誤
+            return WireError(code: .invalidArgument,
+                             message: "socket 路徑超過 sun_path 的長度上限：\(path)")
+        }
+    }
+
     public static func render(_ line: Data, for request: WireRequest) -> Rendered {
         guard let envelope = try? JSONDecoder().decode(Envelope.self, from: line) else {
             return Rendered(text: "App 回了看不懂的東西：\(String(decoding: line, as: UTF8.self))",

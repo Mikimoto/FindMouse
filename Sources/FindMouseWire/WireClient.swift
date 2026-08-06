@@ -7,6 +7,26 @@ import Foundation
 /// 而測試也要一個 client。放這裡，CLI、單元測試、e2e 腳本走的是**同一份**
 /// 連線邏輯——尤其是「連不上 = App 沒在跑」那個判定，它是 exit code 3 的唯一依據，
 /// 有兩份實作就會有兩種判法。
+/// control socket 的位置。
+///
+/// 住在 Wire，是因為**兩端都要用同一個答案**：App 綁在這裡、CLI 連到這裡。
+/// 各自算一次的話，兩份計算漂開的那一刻，症狀是 CLI 永遠回 APP_NOT_RUNNING
+/// 而 App 一切正常——最難聯想的那種。
+///
+/// `FINDMOUSE_SOCKET` 覆寫讓測試不必動到使用者真正的 socket。App 那端也讀它
+/// （用 `open --env` 傳進去），所以 e2e 可以跑在自己的路徑上，
+/// 不會把使用者正在用的那個實例殺掉或搶走。
+public enum ControlSocket {
+    public static var path: String {
+        if let override = ProcessInfo.processInfo.environment["FINDMOUSE_SOCKET"] {
+            return override
+        }
+        let base = FileManager.default.urls(for: .applicationSupportDirectory,
+                                            in: .userDomainMask)[0]
+        return base.appendingPathComponent("FindMouse/control.sock").path
+    }
+}
+
 public enum WireClient {
 
     public enum ClientError: Error, Equatable {
