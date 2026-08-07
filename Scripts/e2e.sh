@@ -33,11 +33,55 @@ expect() {
 # 實例、也不會搶走它的 socket——之前那些 killall 體操是因為兩邊都寫死路徑。
 export FINDMOUSE_SOCKET="/tmp/fm-e2e-$$.sock"
 
+# socket 隔離得了，**設定隔離不了**：`SettingsGateway` 用 `UserDefaults.standard`
+# （`SettingsGateway.swift:15`），domain 是 .app 的 bundle id，沒有環境變數可以改。
+# 而 `pack use` 成功時會把 `pack.id` 寫進去（`AppDelegate.performSwap` 的副作用），
+# 所以跑一次 e2e 使用者的貓就換一套，而且**跑完不會有任何訊號**。
+#
+# 兩件事一起做：先記下原值供 cleanup 還原，再把它釘成內建那套。
+# 釘住是因為「剛啟動載入的是 test-blocks」這類斷言否則會跟著使用者上次選了什麼
+# 而變——失敗的原因與被測物無關（實測踩過：使用者在設定視窗把 rest.duration
+# 調成 5，寫死出廠值 10 的那條斷言就紅了）。
+DEFAULTS_DOMAIN="com.findmouse.app"
+SAVED_PACK_ID="$(defaults read "${DEFAULTS_DOMAIN}" pack.id 2>/dev/null || true)"
+defaults write "${DEFAULTS_DOMAIN}" pack.id -string "test-blocks"
+
+# 使用者放自己 pack 的地方（`PackCatalogRepository.userPacksDirectory`）。
+# 這裡面可能有使用者自己的東西，所以只記下**自己造的 id**，收工只刪這些。
+USER_PACKS="${HOME}/Library/Application Support/FindMouse/Packs"
+CREATED_PACK_IDS=""
+
 # 只收拾自己啟動的那些 pid。使用者自己的 FindMouse 不關我們的事。
 STARTED_PIDS=""
-cleanup() {
+
+# 殺掉自己啟動的實例，並**等到它們真的不在了**才回來。
+# 不等的話，接下來的 `defaults write` 可能與 App 最後的寫入交錯，
+# 而還原失敗是靜默的——要到使用者下次開 App 才會看到貓換了一套。
+kill_started() {
+    local pid alive
     for pid in ${STARTED_PIDS}; do kill "${pid}" 2>/dev/null; done
+    for _ in $(seq 1 40); do
+        alive=0
+        for pid in ${STARTED_PIDS}; do kill -0 "${pid}" 2>/dev/null && alive=1; done
+        [[ "${alive}" -eq 0 ]] && break
+        sleep 0.25
+    done
+    STARTED_PIDS=""
+}
+
+cleanup() {
+    kill_started
     rm -f "${FINDMOUSE_SOCKET}"
+    # 只刪自己造的那幾套。`rm -rf` 整個 Packs 目錄會刪掉使用者自己放的 pack，
+    # 而那是不可逆的。
+    for id in ${CREATED_PACK_IDS}; do rm -rf "${USER_PACKS:?}/${id}"; done
+    # 還原設定。刻意不走 `findmouse config set`：cleanup 掛在 trap EXIT 上，
+    # 失敗路徑上 App 可能早就不在了（那時 CLI 只會回 exit 3）。
+    if [[ -n "${SAVED_PACK_ID}" ]]; then
+        defaults write "${DEFAULTS_DOMAIN}" pack.id -string "${SAVED_PACK_ID}"
+    else
+        defaults delete "${DEFAULTS_DOMAIN}" pack.id 2>/dev/null || true
+    fi
 }
 trap cleanup EXIT
 
@@ -54,6 +98,24 @@ launch_app() {
             *) STARTED_PIDS="${STARTED_PIDS} ${pid}" ;;
         esac
     done
+}
+
+# 造一套 e2e 專用的 pack 到使用者目錄。參數同 `make-test-blocks.swift`：
+# <id> <體高> <色相偏移> [<要略過的動作>...]
+#
+# 用產生器現做而不是複製 `Tests/.../Fixtures` 裡的 fixture：目錄名必須等於
+# manifest id（`idDirectoryMismatch` 是 error），而 `e2e-` 前綴讓它不可能撞到
+# 使用者自己的 pack。撞到了就整條停下——寧可少驗一條，也不要覆蓋別人的檔案。
+make_pack() {
+    local id="$1"; shift
+    if [[ -e "${USER_PACKS}/${id}" ]]; then
+        bad "使用者目錄裡已經有 ${id}；不覆蓋、也不會刪它"
+        return 1
+    fi
+    mkdir -p "${USER_PACKS}"
+    swift "${ROOT}/Scripts/make-test-blocks.swift" "${USER_PACKS}" "${id}" "$@" >/dev/null \
+        || { bad "產不出 pack ${id}"; return 1; }
+    CREATED_PACK_IDS="${CREATED_PACK_IDS} ${id}"
 }
 
 step "建置"
@@ -129,11 +191,17 @@ expect "$?" "2" "路徑讀不到是用法錯誤（2），不是 pack 壞掉（1�
 
 # --- 5 -----------------------------------------------------------------------
 step "5. config set 超出範圍 → exit 1、CONFIG_VALUE_OUT_OF_RANGE"
+# 比對的是「跟送出前一樣」而不是出廠值 10：設定是使用者共用的
+# （見檔案開頭 `SAVED_PACK_ID` 那段），而使用者在設定視窗調過 rest.duration
+# 之後，寫死 10 的那條斷言就會紅——紅的原因與「拒絕不是 clamp」無關。
+# 這一條真正要證明的是「被拒絕的值一格都沒被寫進去」，而那與原值是多少無關。
+BEFORE_REST="$("${FM}" config get rest.duration | awk '{print $3}')"
 OUT="$("${FM}" config set rest.duration 999999 --json 2>&1)"; CODE=$?
 expect "${CODE}" "1" "exit code 1"
 expect "$(echo "${OUT}" | /usr/bin/python3 -c 'import json,sys; print(json.load(sys.stdin)["error"]["code"])')" \
        "CONFIG_VALUE_OUT_OF_RANGE" "錯誤碼正確"
-expect "$("${FM}" config get rest.duration | awk '{print $3}')" "10" "拒絕不是 clamp——值完全沒被改動"
+expect "$("${FM}" config get rest.duration | awk '{print $3}')" "${BEFORE_REST}" \
+       "拒絕不是 clamp——值完全沒被改動（送出前是 ${BEFORE_REST}）"
 
 # --- 6 -----------------------------------------------------------------------
 step "6. 座標系：鼠標往上移，cursor.y 要變大（AppKit 全域座標 Y 向上）"
@@ -215,6 +283,124 @@ sleep 1
 expect "$?" "0" "原本的實例仍然在服務 CLI"
 expect "$(field 'd["pack"]["id"]')" "test-blocks" "回應來自一個正常載入 pack 的實例"
 echo "  （本次啟動的 pid：${STARTED_PIDS}；第二個停在提示視窗，收工時一併關掉）"
+
+# 以下四條是 spec 第 15 節 M4 的驗收條件。**它們是 M4 唯一能證明自己做完的東西**——
+# 每一層的單元測試都綠，證明不了接線是對的（M3 的教訓：CLI 的 summon 回 ok
+# 而貓永遠不出現，兩邊的單元測試全綠）。
+
+# 取 --json 輸出裡的錯誤碼。取不到時回一句看得懂的話，不要回空字串——
+# 空字串在 expect 的失敗訊息裡與「欄位存在但是空的」分不出來。
+errcode() {
+    echo "$1" | /usr/bin/python3 -c \
+        'import json,sys; d=json.load(sys.stdin); print(d.get("error",{}).get("code","（沒有 error 欄位，ok=%s）" % d.get("ok")))' \
+        2>/dev/null
+}
+
+# `pack list --json` 裡指名那一套的欄位。
+# 驗收條件說「缺 core 的 pack 被**紅字**拒絕」，而紅字在設定視窗與選單列，
+# e2e 驅動不了 UI；但那兩處畫的就是這份 usable / errors（`SettingsForm` 與
+# `MenuBarController` 都吃 `PackSummary`），所以驗這份資料等於驗紅字的內容來源。
+packentry() {
+    "${FM}" pack list --json 2>/dev/null | /usr/bin/python3 -c \
+        "import json,sys
+ps = {p['id']: p for p in json.load(sys.stdin)['data']['packs']}
+try: print($1)
+except KeyError: print('（清單裡沒有這個 id）')"
+}
+
+# --- 9 -----------------------------------------------------------------------
+step "9. 換 pack（M4 驗收條件一：放入第二套 pack 能切換）"
+# **先把貓叫出來再換。** spec 第 6.5 節的時序（先淡出、換完立刻重新召喚）
+# 只在貓在場時才走得到——貓不在場時 `PackSwapUseCase.request` 當場回 `.swap`，
+# 「先淡出」那條路一步都沒踩到，這條 e2e 就沒有涵蓋 6.5。
+expect "$(field 'd["pack"]["id"]')" "test-blocks" "前提：現在跑的是內建 test-blocks"
+"${FM}" summon >/dev/null
+for _ in $(seq 1 40); do
+    [[ "$(field 'd["visible"]')" == "True" ]] && break
+    sleep 0.5
+done
+expect "$(field 'd["visible"]')" "True" "前提：貓在場，所以待會走的是「先淡出」那條"
+
+"${FM}" pack use test-blocks-tall >/dev/null
+for _ in $(seq 1 40); do
+    [[ "$(field 'd["pack"]["id"]')" == "test-blocks-tall" ]] && break
+    sleep 0.5
+done
+expect "$(field 'd["pack"]["id"]')" "test-blocks-tall" "pack.id 換過去了"
+# **這條才是真正的驗收。** 只比對 id 的話，「更新了 packID 欄位、七個協作者
+# 一個都沒換」會照樣通過，而那正是 M4 最大的風險（`SpriteRepository` 有七個
+# 持有者）。體高讀的是 `pack.sprites.logicalHeight`，換的是整包 `PackBinding`。
+# 轉成 int 再比：JSONEncoder 把 240.0 寫成 `240`，python 那頭是 int 還是 float
+# 取決於編碼細節，拿字面值比會為了與被測物無關的理由紅。
+expect "$(field 'int(d["pack"]["logicalHeight"])')" "240" "體高也跟著換（不是只換了 id）"
+
+# 換完貓要自己回來——那是 6.5 的另一半，也是唯一抓得到「換個 pack 貓就永久消失」
+# 的觀測：`pack use` 與 `summon` 兩個命令都回 ok，少掉的只有畫面上那隻貓。
+for _ in $(seq 1 40); do
+    [[ "$(field 'd["visible"]')" == "True" ]] && break
+    sleep 0.5
+done
+expect "$(field 'd["visible"]')" "True" "換完之後貓自己回來了（換完立刻重新召喚）"
+
+# --- 10 ----------------------------------------------------------------------
+step "10. 缺 core 的 pack 不能選（M4 驗收條件二）"
+make_pack e2e-bad-core 96 180 sit   # 少了 sit（core 級）→ 整套無效
+expect "$(packentry 'ps["e2e-bad-core"]["usable"]')" "False" "清單裡列得出來，但不可用"
+if packentry 'ps["e2e-bad-core"]["errors"]' | grep -q "必要動作"; then
+    ok "而且說得出原因（紅字的內容來源）"
+else
+    bad "errors 沒有指出缺少必要動作：$(packentry 'ps["e2e-bad-core"]["errors"]')"
+fi
+
+OUT="$("${FM}" pack use e2e-bad-core --json 2>&1)"; CODE=$?
+expect "${CODE}" "1" "壞 pack 回 exit 1"
+# 錯誤碼要一起驗：`PACK_NOT_FOUND` 的 exit code 也是 1，所以只看 exit code 的話，
+# 「這套 pack 根本沒被掃到」與「掃到了、判定不合格」分不出來——前者會讓這一條
+# 在驗證邏輯整個不存在的情況下照樣通過。
+expect "$(errcode "${OUT}")" "PACK_INVALID" "錯誤碼是 PACK_INVALID（不是沒找到）"
+expect "$(field 'd["pack"]["id"]')" "test-blocks-tall" "而且沒有真的換過去"
+
+# --- 11 ----------------------------------------------------------------------
+step "11. 缺 teaser 的 pack 讓逗貓棒不可用（M4 驗收條件三）"
+# 驗收條件的原文是「⌥⌘T 無反應」，但**合成鍵盤事件打不到 Carbon 快捷鍵**：
+# 一支獨立探針用與 `CarbonHotkeyDriver` 完全相同的方式註冊快捷鍵，
+# `osascript` 與 `CGEvent` 兩條路都打不到它（M4 交接有對照組實測）。
+# 拿那個管道驗，看到的「沒反應」證明不了任何事。
+# 改走 `findmouse teaser on`：它與快捷鍵投遞的是同一個 `.setTeaser(true)`，
+# 閘門也在同一個 `ControlUseCase`（`ControlUseCase.swift:59`）。
+expect "$(field 'd["pack"]["id"]')" "test-blocks-tall" "前提：現在跑的是缺 pounce 的那套"
+expect "$(field 'd["teaser"]["available"]')" "False" "缺 pounce → teaserAvailable: false"
+OUT="$("${FM}" teaser on --json 2>&1)"; CODE=$?
+expect "${CODE}" "1" "teaser on 回 exit 1"
+# 同樣要驗碼：`APP_NOT_RESPONDING` 也是 exit 1，而那是「App 卡住」不是「閘門擋下」。
+expect "$(errcode "${OUT}")" "TEASER_UNAVAILABLE" "錯誤碼是 TEASER_UNAVAILABLE"
+expect "$(field 'd["teaser"]["enabled"]')" "False" "而且真的沒開起來"
+
+# --- 12 ----------------------------------------------------------------------
+step "12. 使用者目錄丟進去的 pack 切得過去；它在執行期消失就退回內建"
+# 前半是驗收條件一的字面意思（「**放入**第二套 pack」——test-blocks-tall 是內建的，
+# 從 bundle 載入，證明不了使用者目錄那條路）。後半是 spec 第 10 節：
+# 「當前 pack 在執行期失效（檔案被刪）→ 退回內建 pack 並記錄 log」。
+#
+# 內建的兩套都刪不得（在 .app 的 bundle 裡），所以要先自己造一套放進使用者目錄。
+make_pack e2e-dropin 120 60
+"${FM}" pack use e2e-dropin >/dev/null
+for _ in $(seq 1 40); do
+    [[ "$(field 'd["pack"]["id"]')" == "e2e-dropin" ]] && break
+    sleep 0.5
+done
+expect "$(field 'd["pack"]["id"]')" "e2e-dropin" "使用者目錄的 pack 切得過去"
+expect "$(field 'int(d["pack"]["logicalHeight"])')" "120" "而且真的載入了它的體高"
+
+rm -rf "${USER_PACKS:?}/e2e-dropin"
+# 重啟才驗得到退回：`pack.id` 留在設定裡是 e2e-dropin（退回那條路刻意不改寫它，
+# 見 `AppDelegate.makeSettingsFormStore` 的註解），所以新實例會先去要那一套、
+# 要不到才退回內建。
+kill_started
+launch_app
+for _ in $(seq 1 40); do "${FM}" status >/dev/null 2>&1 && break; sleep 0.5; done
+expect "$(field 'd["pack"]["id"]')" "test-blocks" "正在用的 pack 被刪掉，重啟退回內建"
+expect "$(field 'int(d["pack"]["logicalHeight"])')" "96" "退回的是真的內建那套，不是只改了 id"
 
 step "結果"
 printf '  通過 %d、失敗 %d\n' "${PASS}" "${FAIL}"
