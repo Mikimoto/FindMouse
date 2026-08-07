@@ -124,7 +124,9 @@ public enum PackValidator {
     /// 這不只是寬鬆：pack id 必須等於磁碟上的目錄名，而 Swift 的 String 相等是
     /// 正規化等價，NFC 的 id 對 NFD 的目錄名會比較成相等，於是 idDirectoryMismatch
     /// 看不出正規化差異。限制成 ASCII 就從構造上消掉整個類別。
-    private static func isValidID(_ id: String) -> Bool {
+    /// 不是 private：`PackCatalogRepository.directory(for:in:)` 要用同一條規則把關
+    /// 「id 變成路徑」那一步。各寫一份的話，放寬其中一邊時另一邊不會有訊號。
+    public static func isValidID(_ id: String) -> Bool {
         !id.isEmpty && id.allSatisfy {
             ("a"..."z").contains($0) || ("0"..."9").contains($0) || $0 == "-"
         }

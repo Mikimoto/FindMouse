@@ -138,3 +138,36 @@ private func copyFixture(_ id: String, into parent: URL, as newID: String) throw
             == builtIn.appendingPathComponent("bad-missing-core"))
     #expect(PackCatalogRepository.directory(for: "no-such-pack", in: directories) == nil)
 }
+
+/// id 會被 `appendingPathComponent` 拿去組路徑，所以它必須先過值域。
+///
+/// 為什麼擋在這裡而不是各個呼叫端：啟動時的 `pack.id` 是從 UserDefaults 直讀的
+/// （`AppDelegate` 那一步拿不到 `SettingsUseCase`——它要一個 catalog，而 catalog
+/// 正是那一步要載出來的東西），所以 spec 第 9 節「值域驗證只有一份」在**讀取路徑**
+/// 上有缺口。`directory(for:in:)` 是 id 變成路徑的唯一入口，擋住它就不必寄望
+/// 每個呼叫端各自記得驗一次。
+@Test func anIDThatEscapesTheScanDirectoryNeverBecomesAPath() throws {
+    // 兄弟目錄裡要放一套**讀得起來**的 pack。`directory(for:in:)` 是靠
+    // `SpritePackRepository.load` 成不成功決定回不回傳的，所以穿越到一個沒有
+    // pack.json 的路徑本來就會回 nil——拿那種輸入當測試，守衛拿掉照樣綠，
+    // 它為了錯的理由通過。第一版就是這樣寫的，跑起來直接是綠的才發現。
+    let base = try makeUserPacksDirectory()
+    defer { try? FileManager.default.removeItem(at: base) }
+    let scanDir = base.appendingPathComponent("packs")
+    try FileManager.default.createDirectory(at: scanDir, withIntermediateDirectories: true)
+    let good = try fixtures().appendingPathComponent("bad-missing-core")
+    try FileManager.default.copyItem(at: good, to: base.appendingPathComponent("outside"))
+
+    #expect(PackCatalogRepository.directory(for: "../outside", in: [(scanDir, true)]) == nil,
+            "../outside 穿越出掃描目錄，而那裡真的有一套讀得起來的 pack")
+
+    for bad in ["", "..", "a/b", "UPPER", "with space", "./x"] {
+        #expect(PackCatalogRepository.directory(for: bad, in: [(scanDir, true)]) == nil,
+                "\(bad) 不該組得出路徑")
+    }
+
+    // 對照組：合法 id 仍然找得到。少了這條，「一律回 nil」也會讓上面全過。
+    try FileManager.default.copyItem(at: good, to: scanDir.appendingPathComponent("bad-missing-core"))
+    #expect(PackCatalogRepository.directory(for: "bad-missing-core", in: [(scanDir, true)]) != nil,
+            "合法 id 仍然要找得到，否則這條測試只是把全部都擋掉")
+}

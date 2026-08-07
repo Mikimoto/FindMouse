@@ -67,6 +67,14 @@ public enum PackCatalogRepository {
     /// 同樣是「清單順序的第一個」，否則清單顯示內建那套、切換卻切到
     /// 使用者的同名目錄。
     static func directory(for id: String, in directories: [(URL, Bool)]) -> URL? {
+        // id 在下一行就變成路徑組件，所以值域要在這裡把關，而不是寄望呼叫端。
+        //
+        // spec 第 9 節說「值域驗證只有一份」，但那一份住在 `SettingsUseCase`，
+        // 而 App 啟動時讀 `pack.id` 走的是 UserDefaults 直讀——那一步拿不到
+        // `SettingsUseCase`（它要一個 catalog，而 catalog 正是那一步要載出來的東西）。
+        // 於是 `defaults write … pack.id "../outside"` 就能讓它去載掃描目錄外的 pack。
+        // 這裡是 id 變成路徑的唯一入口，擋住它就不必在每個呼叫端各記得一次。
+        guard PackValidator.isValidID(id) else { return nil }
         for (directory, _) in directories {
             let candidate = directory.appendingPathComponent(id)
             if SpritePackRepository.load(at: candidate) != nil { return candidate }
