@@ -14,12 +14,18 @@ import FindMouseWire
 /// 得在第二層再回一次錯，而 `UNKNOWN_COMMAND` 這個碼會變得含糊。
 public final class RequestRouter {
 
-    private let control: ControlUseCase
-    private let settings: SettingsUseCase
+    private let control: () -> ControlUseCase
+    private let settings: () -> SettingsUseCase
     private let status: () -> StatusPayload
     private let packs: () -> [PackSummary]
     private let usePack: (String) -> Void
 
+    /// - Parameter control: 當下的命令佇列。**每次呼叫都重取，不在 init 綁死**——
+    ///   換 pack 會連 `ControlUseCase` 一起換掉（它的 `catalog` 是 `private let`），
+    ///   而綁死的那一份會變成沒有人排空的孤兒佇列：`findmouse summon` 回 ok、
+    ///   命令進了佇列、貓永遠不出現。M3 的 `wakeIfWorkPending` 就是同一個形狀的 bug。
+    /// - Parameter settings: 當下的設定。同樣不綁死——`SettingsUseCase` 持有
+    ///   pack 的 catalog，`arrive.radius` 的衍生預設要用它的 `logicalHeight`。
     /// - Parameter status: 產生當下狀態的快照。注入而不是自己算：
     ///   它需要 `CatFrameState`、螢幕清單與 pack 資訊，那些都住在 App 層。
     /// - Parameter packs: 當下掃得到的 pack。每次呼叫都重掃，不快取：
@@ -27,7 +33,8 @@ public final class RequestRouter {
     /// - Parameter usePack: 換 pack 的請求交給誰。**router 不自己換**——
     ///   換一套 pack 要一起換掉 App 那七個從 pack 衍生出來的持有者，
     ///   而 router 一個都碰不到。與 `status` 注入快照是同一個模式。
-    public init(control: ControlUseCase, settings: SettingsUseCase,
+    public init(control: @escaping () -> ControlUseCase,
+                settings: @escaping () -> SettingsUseCase,
                 status: @escaping () -> StatusPayload,
                 packs: @escaping () -> [PackSummary],
                 usePack: @escaping (String) -> Void) {
@@ -72,7 +79,7 @@ public final class RequestRouter {
 
     private func enqueue(_ command: Command, named name: String) -> Data {
         do {
-            try control.enqueue(command)
+            try control().enqueue(command)
             return encode(WireResponse(data: AckPayload(queued: name)))
         } catch {
             return encode(WireResponse<AckPayload>(error: wireError(for: error)))
@@ -83,11 +90,11 @@ public final class RequestRouter {
     private func configGet(_ args: [String: String]) -> Data {
         guard let key = args["key"] else {
             return encode(WireResponse(data: ConfigPayload(
-                entries: settings.getAll().map { .init(key: $0.key, value: $0.value) })))
+                entries: settings().getAll().map { .init(key: $0.key, value: $0.value) })))
         }
         do {
             return encode(WireResponse(data: ConfigPayload(
-                entries: [.init(key: key, value: try settings.get(key))])))
+                entries: [.init(key: key, value: try settings().get(key))])))
         } catch {
             return encode(WireResponse<ConfigPayload>(error: wireError(for: error)))
         }
@@ -102,9 +109,9 @@ public final class RequestRouter {
                 code: .invalidArgument, message: "config.set 需要 key 與 value")))
         }
         do {
-            try settings.set(key, to: value)
+            try settings().set(key, to: value)
             return encode(WireResponse(data: ConfigPayload(
-                entries: [.init(key: key, value: try settings.get(key))])))
+                entries: [.init(key: key, value: try settings().get(key))])))
         } catch {
             return encode(WireResponse<ConfigPayload>(error: wireError(for: error)))
         }
@@ -112,18 +119,18 @@ public final class RequestRouter {
 
     private func configReset(_ args: [String: String]) -> Data {
         if args["all"] == "true" {
-            settings.resetAll()
+            settings().resetAll()
             return encode(WireResponse(data: ConfigPayload(
-                entries: settings.getAll().map { .init(key: $0.key, value: $0.value) })))
+                entries: settings().getAll().map { .init(key: $0.key, value: $0.value) })))
         }
         guard let key = args["key"] else {
             return encode(WireResponse<ConfigPayload>(error: WireError(
                 code: .invalidArgument, message: "config.reset 需要 key 或 all=true")))
         }
         do {
-            try settings.reset(key)
+            try settings().reset(key)
             return encode(WireResponse(data: ConfigPayload(
-                entries: [.init(key: key, value: try settings.get(key))])))
+                entries: [.init(key: key, value: try settings().get(key))])))
         } catch {
             return encode(WireResponse<ConfigPayload>(error: wireError(for: error)))
         }

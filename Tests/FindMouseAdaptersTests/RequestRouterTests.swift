@@ -10,10 +10,11 @@ import FindMouseWire
 /// `SpritePackRepository.builtInPacksDirectory()` 走 `Bundle.module`，
 /// 而那個 bundle 是**每個 target 各一份**——從測試 target 拿到的是測試自己的。
 private final class RouterCatalog: AnimationCatalogPort, @unchecked Sendable {
-    let logicalHeight: CGFloat = 96
+    let logicalHeight: CGFloat
     let capabilities: PackCapabilities
 
-    init(teaser: Bool = true) {
+    init(teaser: Bool = true, logicalHeight: CGFloat = 96) {
+        self.logicalHeight = logicalHeight
         let available = teaser
             ? Set(CatAction.allCases)
             : Set(CatAction.allCases).subtracting([.pounce])
@@ -38,12 +39,33 @@ private final class Box<T>: @unchecked Sendable {
     }
 }
 
-private struct Fixture {
-    let router: RequestRouter
+/// 一套 pack 衍生出來的兩個 use case。換 pack 時 App 會把兩個一起重建
+/// （它們的 `catalog` 都是 `private let`），所以測試裡也綁成一包換。
+private struct Wiring {
     let control: ControlUseCase
     let settings: SettingsUseCase
+
+    init(teaser: Bool = true, logicalHeight: CGFloat = 96) {
+        let catalog = RouterCatalog(teaser: teaser, logicalHeight: logicalHeight)
+        control = ControlUseCase(catalog: catalog)
+        // 每個 Wiring 一個獨立的 suite：換 pack 時 store 本身不會換，但測試要能
+        // 分辨「讀到新的那份」與「讀到舊的那份」，共用 suite 就分不出來。
+        settings = SettingsUseCase(
+            store: SettingsGateway(defaults: UserDefaults(
+                suiteName: "com.findmouse.router.\(UUID().uuidString)")!),
+            catalog: catalog)
+    }
+}
+
+private struct Fixture {
+    let router: RequestRouter
+    /// router 該讀到的那一份。放在可變的盒子裡而不是 `let` 欄位，
+    /// 因為「換 pack」在這一層就是換掉它的內容。
+    let live: Box<Wiring>
     /// `pack.use` 交給 App 的 id。沒交出去就還是 nil。
     let swapped: Box<String?>
+
+    var control: ControlUseCase { live.value.control }
 
     /// 三套 pack，刻意讓每個屬性都與別的屬性**不同調**。
     ///
@@ -63,15 +85,14 @@ private struct Fixture {
     ]
 
     init(teaser: Bool = true) {
-        let catalog = RouterCatalog(teaser: teaser)
-        let store = SettingsGateway(
-            defaults: UserDefaults(suiteName: "com.findmouse.router.\(UUID().uuidString)")!)
-        control = ControlUseCase(catalog: catalog)
-        settings = SettingsUseCase(store: store, catalog: catalog)
         // 先接成區域變數再交給 closure：struct 的所有屬性都填完之前碰不到 self
+        let live = Box(Wiring(teaser: teaser))
+        self.live = live
         let swapped = Box<String?>(nil)
         self.swapped = swapped
-        router = RequestRouter(control: control, settings: settings, status: Fixture.status,
+        router = RequestRouter(control: { live.value.control },
+                               settings: { live.value.settings },
+                               status: Fixture.status,
                                packs: { Fixture.packs },
                                usePack: { id in swapped.value = id })
     }
@@ -163,6 +184,61 @@ private func decodeError(_ data: Data) throws -> WireError {
 
     // 但「關掉」照樣成功——它要的後置條件本來就成立
     #expect(try decode(f.send("teaser.off"), as: AckPayload.self).ok)
+}
+
+// MARK: - 換 pack 之後 router 讀的是誰
+
+/// 命令要進**當下**那個佇列，不是 router 建構時綁進去的那一個。
+///
+/// 這條在防 M4 Task 7 的核心風險：換 pack 一定會重建 `ControlUseCase`
+/// （它的 `catalog` 是 `private let`，改不了）。綁死在 init 的話，換完之後
+/// `findmouse summon` 會投遞進一個沒有人排空的孤兒佇列——回 ok、命令進了佇列、
+/// 貓永遠不出現，而且沒有任何錯誤訊息。M3 的 `wakeIfWorkPending` 是同一個形狀。
+///
+/// 兩邊都要斷言：只看新佇列有沒有收到，「兩個佇列都投一份」也會通過。
+@Test func commandsReachTheCurrentQueueNotTheOneCapturedAtInit() throws {
+    let f = Fixture()
+    let orphan = f.control
+
+    f.live.value = Wiring()
+    let replacement = f.control
+    #expect(orphan !== replacement, "測試自己沒換成功的話，下面兩條就沒有意義")
+
+    #expect(try decode(f.send("summon"), as: AckPayload.self).ok)
+    #expect(replacement.drain() == [.summon], "命令沒有進到換上去的那個佇列")
+    #expect(orphan.drain() == [], "命令進了孤兒佇列")
+}
+
+/// teaser 閘門問的是**當下** pack 的 capabilities。
+///
+/// 換到一套缺 pounce 的 pack 之後 `teaser on` 必須回 TEASER_UNAVAILABLE。
+/// 綁死舊的那份 `ControlUseCase` 的話這個閘門會一直用舊 pack 的答案，
+/// 而 CLI 那端看到的是 exit 0——「換完之後逗貓棒不可用」會假通過。
+@Test func theTeaserGateFollowsTheCurrentPack() throws {
+    let f = Fixture(teaser: true)
+    #expect(try decode(f.send("teaser.on"), as: AckPayload.self).ok)
+
+    f.live.value = Wiring(teaser: false)
+    #expect(try decodeError(f.send("teaser.on")).code == .teaserUnavailable)
+    #expect(try decodeError(f.send("teaser.toggle")).code == .teaserUnavailable)
+}
+
+/// 衍生預設要跟著當下 pack 的體高走。
+///
+/// `arrive.radius` 沒設定過時是 0.8 × 實際體高（spec 第 8.3 節），所以換 pack
+/// 之後同一個 key 的答案會變。綁死建構當下那個 `SettingsUseCase` 的話，
+/// `findmouse config get arrive.radius` 會一直回舊體高算出來的數字——
+/// 而那個數字看起來完全正常，沒有任何症狀。
+@Test func derivedSettingDefaultsFollowTheCurrentPack() throws {
+    // 比數值不比字串：渲染出來的是 `76.80000000000001`（0.8 在二進位不精確），
+    // 而那個尾巴與這條測試要釘的東西無關。
+    let f = Fixture()
+    let before = try #require(Double(settingValue(f, "arrive.radius")))
+    #expect(abs(before - 76.8) < 0.001, "96 × 0.8，實際拿到 \(before)")
+
+    f.live.value = Wiring(logicalHeight: 240)
+    let after = try #require(Double(settingValue(f, "arrive.radius")))
+    #expect(abs(after - 192) < 0.001, "240 × 0.8，實際拿到 \(after)")
 }
 
 // MARK: - config

@@ -19,7 +19,7 @@ final class OverlayView: NSView {
     private let maskContainer = CALayer()
     private let holeLayer = CALayer()
     private let fillerLayers = [CALayer(), CALayer(), CALayer(), CALayer()]
-    private let sprites: SpriteRepository
+    private var sprites: SpriteRepository
 
     init(sprites: SpriteRepository, feather: CGFloat) {
         self.sprites = sprites
@@ -58,6 +58,15 @@ final class OverlayView: NSView {
     }
 
     required init?(coder: NSCoder) { fatalError("不從 nib 建立") }
+
+    /// 換 pack。**只換參考**——圖片快取住在 `SpriteRepository` 自己身上
+    /// （它的 `private var cache`），換掉實例就等於換掉快取。在這裡再清一次
+    /// 是多餘的，而且會讓下一個人以為快取是 view 的責任而去維護兩份。
+    ///
+    /// `catLayer.contents` 不動：下一帧的 `apply` 會拿新 repository 的圖蓋掉它。
+    func replace(sprites: SpriteRepository) {
+        self.sprites = sprites
+    }
 
     /// 每帧呼叫。除了換 `contents` 之外不配置任何物件。
     func apply(_ vm: OverlayViewModel) {
