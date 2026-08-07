@@ -22,7 +22,9 @@ struct PackBinding {
     let sprites: SpriteRepository
     let session: CatSessionUseCase
     let control: ControlUseCase
-    let presenter: OverlayPresenter
+    /// 唯一的 `var`：它的 `catScale` 與 `feather` 來自**設定**，而設定可以在
+    /// 執行期改（M4 Task 9）。見 `refreshPresenter(config:)`。
+    private(set) var presenter: OverlayPresenter
     let settings: SettingsUseCase
 
     /// - Parameter config: 讀好的設定快照。`catScale` 與 `spotlightFeather` 來自
@@ -35,12 +37,17 @@ struct PackBinding {
         session = CatSessionUseCase(config: store, catalog: sprites, randomizer: randomizer)
         // 快捷鍵、選單列、CLI 都只透過它投遞命令，所以三條路徑共用一個佇列
         control = ControlUseCase(catalog: sprites)
-        presenter = OverlayPresenter(
-            logicalHeight: sprites.logicalHeight, catScale: config.catScale,
-            anchor: sprites.anchor, spriteFacing: sprites.spriteFacing,
-            mirrorForOpposite: sprites.mirrorForOpposite,
-            spriteAspect: sprites.spriteAspect, feather: config.spotlightFeather)
+        presenter = OverlayPresenter(sprites: sprites, config: config)
         settings = SettingsUseCase(store: store, catalog: sprites)
+    }
+
+    /// 設定改了之後重建 presenter。
+    ///
+    /// **只重建它，不重建整個 `PackBinding`。** 後者會連 `CatSessionUseCase`
+    /// 一起換掉，使用者拖 slider 拖到一半貓就消失了。presenter 是無狀態的純轉換
+    /// （`OverlayPresenter` 的 doc），重建不會打斷任何正在演的東西。
+    mutating func refreshPresenter(config: BehaviorConfig) {
+        presenter = OverlayPresenter(sprites: sprites, config: config)
     }
 }
 

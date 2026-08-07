@@ -56,8 +56,13 @@ struct ArchitectureBoundaryTests {
                               "ImageIO", "UniformTypeIdentifiers", "OSLog",
                               "FindMouseCore", "FindMouseDomain", "FindMouseWire"],
         // app（驅動層）：可以碰 UI 與系統框架，這是依賴方向的最外層
+        //
+        // SwiftUI **只給設定視窗**（M4 Task 9）。overlay 維持純 AppKit ＋ CALayer，
+        // 因為那裡有 spec 第 7.4 節的每帧預算，而設定視窗一秒鐘畫不到一次。
+        // 「只給設定視窗」這件事由 `swiftUIStaysInTheSettingsWindow` 強制，
+        // 允許清單本身的粒度是模組，管不到誰用它。
         "FindMouseApp": ["Foundation", "CoreGraphics", "AppKit", "QuartzCore",
-                         "Carbon", "OSLog",
+                         "SwiftUI", "Carbon", "OSLog",
                          "FindMouseCore", "FindMouseDomain", "FindMouseAdapters",
                          "FindMouseWire"],
         // CLI：只有 Wire 與 Foundation／Darwin。碰得到 Domain 的話，
@@ -177,6 +182,43 @@ struct ArchitectureBoundaryTests {
             }
         }
         return (files.count, offences)
+    }
+
+    /// 哪些檔案 import 了某個模組。與 `audit` 共用同一個 pattern 與同一套
+    /// 換行正規化，否則兩邊對「什麼算一行 import」的認定會漂移。
+    private static func filesImporting(_ module: String, inTarget target: String) throws -> [String] {
+        let pattern = importPattern
+        var hits: [String] = []
+        for file in swiftFiles(inTarget: target) {
+            let text = try String(contentsOf: file, encoding: .utf8)
+            let body = text.hasPrefix("\u{FEFF}") ? String(text.dropFirst()) : text
+            let normalized = body
+                .replacingOccurrences(of: "\r\n", with: "\n")
+                .replacingOccurrences(of: "\r", with: "\n")
+            for line in normalized.components(separatedBy: "\n") {
+                guard let match = try? pattern.firstMatch(in: line),
+                      let range = match[1].range, String(line[range]) == module else { continue }
+                hits.append(file.lastPathComponent)
+                break
+            }
+        }
+        return hits.sorted()
+    }
+
+    /// SwiftUI 只能出現在設定視窗。
+    ///
+    /// overlay 的每一帧都受 spec 第 7.4 節的預算約束（貓在場時每帧要跑完
+    /// tick → viewModel → CALayer 更新），所以它是純 AppKit ＋ CALayer：
+    /// 一個 `SwiftUI.View` 在那條路徑上不只多一層 diff，還會把「哪一帧畫什麼」
+    /// 交給框架決定。設定視窗沒有這個約束（一秒鐘畫不到一次）。
+    ///
+    /// 允許清單管不到這件事——它的粒度是模組，`FindMouseApp` 只要有一個檔案
+    /// 用 SwiftUI，整個 target 就對 SwiftUI 開放了。所以另外釘一條。
+    @Test func swiftUIStaysInTheSettingsWindow() throws {
+        let importers = try Self.filesImporting("SwiftUI", inTarget: "FindMouseApp")
+        // 一個都沒有的話這條測試會空洞地通過，而它守的正是「別讓 SwiftUI 擴散」
+        #expect(importers == ["SettingsWindow.swift"],
+                "SwiftUI 只給設定視窗；overlay 是純 AppKit ＋ CALayer（spec 第 7.4 節）：\(importers)")
     }
 
     @Test func everySourceTargetHasADeclaredImportPolicy() {

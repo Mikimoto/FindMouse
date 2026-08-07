@@ -9,9 +9,11 @@ final class MenuBarController {
 
     private let item: NSStatusItem
     private let onToggleCat: () -> Void
+    private let onOpenSettings: () -> Void
 
-    init(onToggleCat: @escaping () -> Void) {
+    init(onToggleCat: @escaping () -> Void, onOpenSettings: @escaping () -> Void) {
         self.onToggleCat = onToggleCat
+        self.onOpenSettings = onOpenSettings
         item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         item.button?.title = "🐱"
 
@@ -20,6 +22,13 @@ final class MenuBarController {
                                 action: #selector(toggleCat), keyEquivalent: "")
         toggle.target = self
         menu.addItem(toggle)
+        menu.addItem(.separator())
+        // `,` 是 macOS 開設定的慣例鍵；`.accessory` 的 app 沒有主選單列，
+        // 所以它只在這個選單開著的時候有效——放著是為了讓熟悉慣例的人找得到。
+        let settings = NSMenuItem(title: "設定…",
+                                  action: #selector(openSettings), keyEquivalent: ",")
+        settings.target = self
+        menu.addItem(settings)
         menu.addItem(.separator())
         menu.addItem(NSMenuItem(title: "結束 FindMouse",
                                 action: #selector(NSApplication.terminate(_:)),
@@ -48,4 +57,6 @@ final class MenuBarController {
     }
 
     @objc private func toggleCat() { onToggleCat() }
+
+    @objc private func openSettings() { onOpenSettings() }
 }

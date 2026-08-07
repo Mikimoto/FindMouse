@@ -22,6 +22,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var menuBar: MenuBarController?
     private var socket: UnixSocketServer?
     private var router: RequestRouter?
+    private var settingsWindow: SettingsWindowController?
     private let swapper = PackSwapUseCase()
 
     /// 最後一帧的狀態。`status --json` 讀的就是這一份——spec 第 7.3 節的
@@ -80,7 +81,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         self.hotkeys = hotkeys
 
-        let menuBar = MenuBarController { [weak self] in self?.enqueue(.toggle) }
+        settingsWindow = SettingsWindowController(store: makeSettingsFormStore())
+
+        let menuBar = MenuBarController(
+            onToggleCat: { [weak self] in self?.enqueue(.toggle) },
+            onOpenSettings: { [weak self] in self?.settingsWindow?.show() })
         self.menuBar = menuBar
         // 排在 menuBar 之後：註冊失敗要攤給使用者看，而那條路要有選單列才走得到
         reinstallHotkeys()
@@ -143,7 +148,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 MainActor.assumeIsolated { self?.requestPackSwap(to: id) }
             },
             onSettingsChanged: { [weak self] in
-                MainActor.assumeIsolated { self?.reinstallHotkeys() }
+                MainActor.assumeIsolated { self?.settingsDidChange() }
             })
 
         let server = UnixSocketServer(path: UnixSocketServer.defaultPath) { [weak self] request in
@@ -202,6 +207,50 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             screens: NSScreen.screens.map {
                 ScreenInfo(frame: $0.frame, scale: $0.backingScaleFactor)
             })
+    }
+
+    // MARK: - 設定
+
+    /// 設定視窗的資料來源。**每一項都是 closure，一個值都不捕獲**——
+    /// 換 pack 會把整個 `PackBinding` 換掉，捕獲一份 `SettingsUseCase` 的話
+    /// 設定視窗之後寫的是孤兒物件（UI 成功、`config get` 讀不到）。
+    /// 與 `RequestRouter` 的 `control`／`settings` 同一個模式。
+    private func makeSettingsFormStore() -> SettingsFormStore {
+        SettingsFormStore(
+            settings: { [weak self] in self?.pack?.settings },
+            packs: { PackCatalogRepository.current() },
+            // 實際跑著的那套，不是 `config get pack.id`：啟動時想要的 pack
+            // 載不起來會退回內建，而設定裡那個壞掉的 id 不會被改寫。
+            currentPackID: { [weak self] in self?.pack?.id ?? "" },
+            // 換 pack 走與 CLI `pack use` 同一條路（spec 第 6.5 節的先淡出再換）。
+            // 只寫 `pack.id` 不會換 pack，使用者會看到「選了新的、貓還是舊的」。
+            usePack: { [weak self] id in self?.requestPackSwap(to: id) },
+            onChanged: { [weak self] in self?.settingsDidChange() })
+    }
+
+    /// 設定真的改了——不管是 CLI 還是設定視窗改的，兩條路都收在這裡。
+    private func settingsDidChange() {
+        reinstallHotkeys()
+        refreshPresenter()
+        // 設定視窗開著的時候 CLI 也能改值；不重讀的話畫面停在舊值，
+        // 使用者接著動 slider 送出的是「舊值 ± 一格」，把 CLI 的改動蓋掉。
+        settingsWindow?.reload()
+    }
+
+    /// `cat.scale` 改了要讓畫面跟著變。
+    ///
+    /// presenter 的 `catScale` 是**建構時**吃進去的，而 `CatSessionUseCase`
+    /// 每帧重讀設定（`tick` 裡的 `config.config`）。不重建的話貓的移動幾何
+    /// 立刻變、畫出來的大小沒變，兩者對不上。
+    ///
+    /// 重建後要立刻重畫一次：貓不可見時 display link 是停的（spec 第 7.4 節），
+    /// 不補這一帧的話改動要等到下次叫貓才看得到。
+    private func refreshPresenter() {
+        guard pack != nil else { return }
+        pack?.refreshPresenter(config: settings.config)
+        if let state = lastState, let overlays, let presenter = pack?.presenter {
+            overlays.apply(state, presenter: presenter)
+        }
     }
 
     // MARK: - 快捷鍵
@@ -338,6 +387,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         case .swap(let id, let resummon):
             // 順序不能顛倒：`enqueue` 要進**換完之後**那個佇列。
             performSwap(to: id)
+            // 成功與失敗都要通知：失敗時下拉選單要彈回實際跑著的那一套，
+            // 而那正是「這套換不過去」的訊號（原因在選單列的降級提示裡）。
+            settingsWindow?.packSwapConcluded()
             // 換失敗時**照樣**叫回來。貓是我們上一步趕走的，不叫的話使用者
             // 看到的是「換個 pack，貓就憑空消失」——而失敗的線索只在選單列的
             // 降級提示裡。`PackSwapUseCase` 刻意不管成敗（見它的 doc），

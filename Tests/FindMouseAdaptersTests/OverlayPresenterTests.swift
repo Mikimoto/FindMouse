@@ -112,3 +112,52 @@ private func makePresenter(catScale: CGFloat = 1,
     #expect(vm.cat.frameIndex == 1)
     #expect(vm.cat.alpha == 0.25)
 }
+
+// MARK: - 從 pack ＋ 設定建構
+
+private func loadTestBlocks() throws -> SpriteRepository {
+    let packs = try #require(SpritePackRepository.builtInPacksDirectory())
+    let loaded = try #require(SpritePackRepository.load(
+        at: packs.appendingPathComponent("test-blocks")))
+    let report = PackValidator.validate(manifest: loaded.manifest,
+                                        directoryName: loaded.directoryName,
+                                        listing: loaded.listing)
+    let capabilities = try #require(report.capabilities)
+    return try #require(SpriteRepository(loaded: loaded, capabilities: capabilities))
+}
+
+/// `cat.scale` 是 presenter **建構時**吃進去的，而 `CatSessionUseCase` 每帧重讀設定。
+/// 改了設定卻沒重建 presenter，貓的移動幾何立刻變、畫出來的大小沒變。
+/// 這條釘住「重建就會拿到新的 scale」——沒有它，`AppDelegate.refreshPresenter`
+/// 可以完全不讀設定而沒有任何訊號。
+@Test func theSizeComesFromTheConfigNotFromThePack() throws {
+    let sprites = try loadTestBlocks()
+    var config = BehaviorConfig()
+
+    config.catScale = 1
+    let normal = OverlayPresenter(sprites: sprites, config: config)
+        .viewModel(for: makeState(), in: windowFrame).cat.size
+
+    config.catScale = 2
+    let doubled = OverlayPresenter(sprites: sprites, config: config)
+        .viewModel(for: makeState(), in: windowFrame).cat.size
+
+    #expect(normal.height == sprites.logicalHeight)
+    #expect(doubled.height == sprites.logicalHeight * 2)
+    #expect(doubled.width == normal.width * 2, "寬度也要跟著縮放，不然貓會被拉扁")
+}
+
+/// 其餘幾何一律取自 pack，不是設定。混淆了的話換 pack 會被使用者的
+/// `cat.scale` 蓋掉，或反過來。
+@Test func theGeometryComesFromThePackNotFromTheConfig() throws {
+    let sprites = try loadTestBlocks()
+    var config = BehaviorConfig()
+    config.spotlightFeather = 0.42
+
+    let vm = OverlayPresenter(sprites: sprites, config: config)
+        .viewModel(for: makeState(spotlight: SpotlightState(center: .zero, radius: 100,
+                                                            opacity: 0.5)),
+                   in: windowFrame)
+    #expect(vm.cat.anchorPoint.y == 1 - sprites.anchor.y)
+    #expect(try #require(vm.dim).feather == 0.42, "feather 來自設定，不是 pack")
+}

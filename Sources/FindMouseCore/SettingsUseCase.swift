@@ -111,6 +111,15 @@ public final class SettingsUseCase {
         return Self.render(currentValue(of: spec))
     }
 
+    /// 當前值，**保留型別**。
+    ///
+    /// `get` 回字串是為了 CLI 與 wire；設定視窗要的是 `Bool` 與 `Double`，
+    /// 讓它自己從 `"true"` 解回去，等於把 `render` 的規則抄第二份到 UI 裡
+    /// ——而那份抄本在 `render` 改掉的那天不會有任何訊號。
+    public func value(_ key: String) throws -> SettingValue {
+        currentValue(of: try spec(key))
+    }
+
     public func getAll() -> [SettingEntry] {
         Self.registry
             .sorted { $0.key < $1.key }
@@ -173,7 +182,9 @@ public final class SettingsUseCase {
         }
     }
 
-    private static func render(_ value: SettingValue) -> String {
+    /// 不是 private：`SettingsForm` 印值域說明與錯誤訊息時用同一份數字格式。
+    /// 各印各的話，同一個範圍在 CLI 會是 `40–1000`、在設定視窗會是 `40.0–1000.0`。
+    static func render(_ value: SettingValue) -> String {
         switch value {
         case .number(let d):
             // 整數就印整數：CLI 讀 `160` 比 `160.0` 舒服，而且再餵回 set 也解得回來
