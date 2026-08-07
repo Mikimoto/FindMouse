@@ -23,6 +23,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var socket: UnixSocketServer?
     private var router: RequestRouter?
     private var settingsWindow: SettingsWindowController?
+    /// 設定視窗與選單列 pack 子選單**共用同一份**。
+    ///
+    /// 共用而不是各自建一份：`choosePack` 已經處理了「選到正在跑的那一套就不動」
+    /// 與「寫入走抽換而不是寫 `pack.id`」，各寫一份必然漂移，而漂移的那一天
+    /// 不會有任何訊號（`FindMouseApp` 沒有測試 target）。
+    private var settingsForm: SettingsFormStore?
     private let swapper = PackSwapUseCase()
 
     /// 最後一帧的狀態。`status --json` 讀的就是這一份——spec 第 7.3 節的
@@ -81,11 +87,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         self.hotkeys = hotkeys
 
-        settingsWindow = SettingsWindowController(store: makeSettingsFormStore())
+        let form = makeSettingsFormStore()
+        settingsForm = form
+        settingsWindow = SettingsWindowController(store: form)
 
         let menuBar = MenuBarController(
             onToggleCat: { [weak self] in self?.enqueue(.toggle) },
-            onOpenSettings: { [weak self] in self?.settingsWindow?.show() })
+            onOpenSettings: { [weak self] in self?.settingsWindow?.show() },
+            // 每次打開子選單都重掃磁碟（`reload` 會呼叫 `PackCatalogRepository.current()`）：
+            // 使用者把 pack 丟進 Packs 目錄之後不該還要重開 App 才看得到。
+            packRows: { [weak self] in
+                guard let form = self?.settingsForm else { return [] }
+                form.reload()
+                return form.snapshot.packs
+            },
+            onChoosePack: { [weak self] in self?.settingsForm?.choosePack($0) })
         self.menuBar = menuBar
         // 排在 menuBar 之後：註冊失敗要攤給使用者看，而那條路要有選單列才走得到
         reinstallHotkeys()

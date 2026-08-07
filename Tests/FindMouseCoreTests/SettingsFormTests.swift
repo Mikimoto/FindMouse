@@ -142,6 +142,55 @@ private let specWindowKeys = [
     #expect(PackChoice.choices(packs: [summary("test-blocks")], current: "").count == 1)
 }
 
+// MARK: - 選單列那一列的字
+
+/// 選單裡灰掉的項目沒有任何「把游標停在我上面」的暗示，而 tooltip 要停約 1.5 秒
+/// 才浮出來。原因只掛 tooltip 的話，「這套為什麼不能選」實際上沒有人看得到——
+/// 那正是這個專案一直在獵殺的靜默失敗。
+@Test func theMenuTitleSaysWhyAPackCannotBeChosen() {
+    let rows = PackChoice.choices(
+        packs: [summary("broken", builtIn: false,
+                        errors: ["缺少必要動作：run", "宣告 8 格但只有 3 個檔"])],
+        current: "test-blocks")
+    let broken = rows[0]
+    #expect(broken.menuTitle.contains("缺少必要動作：run"))
+    #expect(broken.menuTitle.contains("宣告 8 格但只有 3 個檔"))
+    // tooltip 是標題被選單寬度截掉時的補充，一行一個原因
+    #expect(broken.menuTooltip == "缺少必要動作：run\n宣告 8 格但只有 3 個檔")
+}
+
+/// 可用的那些不該憑空多出破折號、也不該掛一個空的 tooltip
+/// （空字串的 tooltip 會浮出一個空白小框，比沒有還糟）。
+@Test func aUsablePackJustSaysItsNameAndWhetherItIsBuiltIn() {
+    let rows = PackChoice.choices(packs: [summary("test-blocks"),
+                                          summary("my-cat", builtIn: false)],
+                                  current: "test-blocks")
+    #expect(rows[0].menuTitle == "test-blocks（內建）")
+    #expect(rows[1].menuTitle == "my-cat")
+    #expect(rows[0].menuTooltip == nil)
+    #expect(rows[1].menuTooltip == nil)
+}
+
+/// 使用者把跑著的那套目錄整個刪掉：選單上那一項要說得出發生了什麼事，
+/// 不然他看到的是一個灰掉、沒有標記、和可用的長得一模一樣的項目。
+@Test func theRowOfADeletedPackExplainsItselfInTheMenu() {
+    let ghost = PackChoice.choices(packs: [summary("test-blocks")], current: "my-cat")[1]
+    #expect(ghost.menuTitle == "my-cat — 這套 pack 已經不在磁碟上")
+    #expect(ghost.menuTooltip == "這套 pack 已經不在磁碟上")
+}
+
+/// `isUsable == false` 卻沒附原因的那一列。今天從 `choices` 走不到
+/// （`problems` 來自 `PackSummary.errors`，而 `isUsable` 就是「errors 是空的」），
+/// 但 `PackChoice` 的 init 是 public。沒有這個墊底字的話，那一列在畫面上
+/// 與可用的完全無法分辨——而灰掉這件事本身在截圖裡並不明顯。
+@Test func anUnusablePackWithoutAReasonStillAdmitsItIsUnusable() {
+    let mute = PackChoice(id: "silent", isBuiltIn: false, isUsable: false,
+                          isCurrent: false, problems: [])
+    #expect(mute.menuTitle == "silent — 不可用")
+    // 空字串的 tooltip 會浮出一個空白小框，比沒有 tooltip 更難理解
+    #expect(mute.menuTooltip == nil)
+}
+
 // MARK: - 寫入路徑
 
 /// **裁決 2**：換 pack 會把整個 `PackBinding`（連同 `SettingsUseCase`）換掉。

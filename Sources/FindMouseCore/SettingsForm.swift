@@ -108,6 +108,44 @@ public struct PackChoice: Sendable, Equatable {
         }
         return rows
     }
+
+    /// 選單列那一列的字。
+    ///
+    /// **不可用的原因寫進標題，不是只掛 tooltip。** 灰掉的選單項沒有任何
+    /// 「把游標停在我上面」的暗示，而 tooltip 要停約 1.5 秒才浮出來——
+    /// 只靠它的話，「這套為什麼不能選」實際上沒有人看得到。
+    /// （設定視窗另有一份較短的標籤：它的下拉選單底下有一塊紅字區可以放原因，
+    /// 選單沒有那種地方。兩份刻意不同，不是漏改。）
+    public var menuTitle: String {
+        var text = id
+        if isBuiltIn { text += "（內建）" }
+        if !isUsable { text += " — \(reasonText)" }
+        return text
+    }
+
+    /// 標題被選單寬度截掉時的完整版；沒有原因可講就不要掛。
+    ///
+    /// 實測（macOS 27）：`autoenablesItems = false` 的選單裡，tooltip 在
+    /// `isEnabled = false` 的項目上**照樣會顯示**，所以這一份不是白寫的——
+    /// 它是標題的補充，不是替代品。
+    ///
+    /// 條件是「有沒有原因」而不是 `isUsable`：兩者今天等價，但拿 `isUsable` 判
+    /// 會讓沒附原因的不可用列掛上一個**空字串** tooltip，而那會浮出一個
+    /// 空白小框——比沒有 tooltip 更難理解。
+    public var menuTooltip: String? {
+        problems.isEmpty ? nil : problems.joined(separator: "\n")
+    }
+
+    /// `isUsable == false` 卻沒有附原因時的墊底字。
+    ///
+    /// 今天走不到（`problems` 來自 `PackSummary.errors`，而 `isUsable`
+    /// 就是「errors 是空的」）。留著是因為 `PackChoice` 的 init 是 public：
+    /// 哪天有人從別條路建出一個沒帶原因的不可用列，使用者看到的會是一個
+    /// 灰掉、沒有標記、和可用的長得一模一樣的項目——那是這個專案一直在獵殺的
+    /// 那種靜默失敗。
+    private var reasonText: String {
+        problems.isEmpty ? "不可用" : problems.joined(separator: "、")
+    }
 }
 
 /// 設定視窗的狀態與寫入路徑。
