@@ -13,10 +13,41 @@ cd "${ROOT}"
 
 PASS=0
 FAIL=0
+SKIP=0
 
 ok()   { printf '  \033[32m✓\033[0m %s\n' "$1"; PASS=$((PASS + 1)); }
 bad()  { printf '  \033[31m✗\033[0m %s\n' "$1"; FAIL=$((FAIL + 1)); }
 step() { printf '\n\033[1m%s\033[0m\n' "$1"; }
+
+# 第三種結果：這一條**沒有被評估**。
+#
+# 為什麼要跟 bad 分開：一條測不成的斷言不是產品的失敗。算成失敗，看的人會去追一個
+# 不存在的 bug（實測踩過：使用者中途動了滑鼠，兩次 warp 都被蓋掉，於是「座標系翻了」
+# 被報成失敗）；算成通過，真的 bug 就躲在「反正那條測不了」後面。兩種都不行。
+#
+# 所以它自成一類，而且**整輪的 exit code 仍然非零**（見檔尾「結果」）——
+# 無法判定的一輪沒有證明完整的接線，它只是還沒證明反面。
+#
+# 用它的前提：干擾的判準必須是**可量化、而且在閒置機器上恆不成立**的訊號
+# （「warp 之後讀回的位置與落點差超過 N 點」「輪詢期間游標累計移動超過 N 點」）。
+# 「反正就是沒動」這種含糊的推論不算——那種寫法會讓真的壞掉的斷言永遠躲在這裡面。
+skip() { printf '  \033[33m?\033[0m %s\n' "$1"; SKIP=$((SKIP + 1)); }
+
+# 「游標被外力移動」的兩個門檻（點）。兩個都**由各自的斷言反推**，不是憑感覺挑的
+# 安全邊際——門檻是「多大的位移才會改變這條斷言的結論」，訂得比它大就是在
+# 替真的壞掉的斷言開後門，訂得比它小就是把測得準的一輪誤判成測不準。
+#
+# step 3：整段輪詢期間游標的**累計**位移。這一條比的是「settled 期間看過的最小
+# distance」與 arrive.radius（76.8），而累計位移 d 最多讓那個最小值比真正的抵達
+# 距離大 d。5 點對 76.8 是 6.5%，小到不會把一次真正的抵達推過界。
+CURSOR_STILL_TOLERANCE=5
+# step 6 / 6b：**單次** warp 的落點與稍後量到的位置之差。這兩條比的是相隔
+# 450 / 650 點的兩個取樣之間的方向與落差，所以只有「與那個間距同量級」的位移
+# 才改變得了結論；50 點是它的九分之一，翻不動任何一個號誌。
+# 下限那邊也要留餘裕：實測游標被手碰到時的位移是 250–2600 點，而閒置時恆為 0，
+# 中間這一段是空的，門檻放在空檔裡就好（曾經訂 5 點，一次 5.33 點的輕碰
+# 就讓一條**其實測得準**的斷言變成無法判定）。
+WARP_DRIFT_TOLERANCE=50
 
 # 期望值比較。第三個參數是說明，出錯時把實際值印出來——
 # 只印「失敗」的斷言會讓人得自己重跑一次才知道發生什麼事。
@@ -146,28 +177,96 @@ expect "$(field 'd["visible"]')" "False" "剛啟動時貓不可見"
 expect "$(field 'd["pack"]["id"]')" "test-blocks" "載入的是內建 pack"
 
 # --- 3 -----------------------------------------------------------------------
-step "3. summon → 輪詢到 resting → distance <= arrive.radius"
+step "3. summon → 抵達 resting，而且貓宣稱抵達時真的在游標附近"
 "${FM}" summon >/dev/null
-PHASE=""
-DIST=""
-for _ in $(seq 1 40); do
-    # phase 與 distance 一定要取自**同一份快照**。分兩次 status 讀的話，
-    # 兩次之間游標會動，於是「抵達時的距離」變成「抵達後某個時刻的距離」——
-    # 而抵達之後貓是靜止的，游標一漂走距離就超標，斷言隨機失敗。
-    read -r PHASE DIST <<< "$(json | /usr/bin/python3 -c \
-        'import json,sys; d=json.load(sys.stdin)["data"]; print(d["phase"], d["distance"])')"
-    [[ "${PHASE}" == "resting" ]] && break
-    sleep 0.5
-done
-expect "${PHASE}" "resting" "20 秒內抵達 resting"
 
-# 只在**抵達的那一刻**成立：resting 的貓允許游標漂到 rehunt.threshold（160）
-# 才重新追，所以「休息中的貓距離一定 <= arrive.radius」是假的。
-ARRIVE="$("${FM}" config get arrive.radius | awk '{print $3}')"
-if /usr/bin/python3 -c "import sys; sys.exit(0 if ${DIST} <= ${ARRIVE} else 1)"; then
-    ok "抵達當下 distance ${DIST} <= arrive.radius ${ARRIVE}"
+# 整段輪詢搬進**一個** python process。回傳一行：
+#   <最後看到的 phase> <settled 期間看過的最小 distance（沒有就是 none）> <游標累計位移> <取樣數>
+#
+# 為什麼要搬：(1) 要記的是浮點數的最小值與累加位移，bash 沒有浮點運算；
+# (2) 原本每取一次樣就開一個 python，取樣頻率被 process 啟動成本綁死在 0.5 秒，
+#     而「貓剛坐下」那一段比 0.5 秒短得多。
+#
+# phase、distance、cursor 一定要取自**同一份快照**：分幾次讀的話，中間游標會動，
+# 讀到的就不是同一個時刻的系統狀態，比對出來的關係是拼湊的。
+arrival_probe() {
+    /usr/bin/python3 - "${FM}" <<'PY'
+import json, math, subprocess, sys, time
+
+fm = sys.argv[1]
+BUDGET, INTERVAL = 20.0, 0.15
+# 「貓宣稱自己抵達了」的三個 phase。這三個之下貓是靜止的，不再往鼠標移動
+# （`CatSessionUseCase.advance`：只有 hunting / exiting / teaser* 會呼叫 move）。
+SETTLED = {"arriving", "sitting", "resting"}
+
+phase, samples, travel, prev, best = "（沒取到任何狀態）", 0, 0.0, None, None
+deadline = time.monotonic() + BUDGET
+while time.monotonic() < deadline:
+    try:
+        out = subprocess.run([fm, "status", "--json"],
+                             capture_output=True, timeout=5).stdout
+        d = json.loads(out)["data"]
+    except Exception:
+        time.sleep(INTERVAL)
+        continue
+    samples += 1
+    phase = d["phase"]
+    cur = (d["cursor"]["x"], d["cursor"]["y"])
+    if prev is not None:
+        travel += math.hypot(cur[0] - prev[0], cur[1] - prev[1])
+    prev = cur
+    if phase in SETTLED:
+        best = d["distance"] if best is None else min(best, d["distance"])
+    if phase == "resting":
+        break
+    time.sleep(INTERVAL)
+
+print(phase, "none" if best is None else repr(best), repr(travel), samples)
+PY
+}
+read -r PHASE MIN_SETTLED TRAVEL SAMPLES <<< "$(arrival_probe)"
+
+# 有沒有外力介入。這一步 e2e 一次都沒碰游標，所以任何位移都來自外力。
+#
+# 用 App 回報的游標算而不是 read-cursor.swift：要的是**整段期間的累計位移**
+# （只比對頭尾會漏掉「移開又移回來」），而每開一支 swift 腳本要一秒，逐次取樣付不起。
+# 產品若謊報游標，這個訊號會把斷言推向「無法判定」而不是「通過」；而且下面兩條要抓的
+# bug（貓一直沒坐下、貓停在遠處就宣稱抵達）本身都不會製造游標位移，躲不進來。
+# 回報的游標是否忠實另有 step 6 / 6b 在守。
+DISTURBED=0
+if /usr/bin/python3 -c "import sys; sys.exit(0 if ${TRAVEL} > ${CURSOR_STILL_TOLERANCE} else 1)"; then
+    DISTURBED=1
+fi
+
+# resting 的貓一旦被拉開超過 rehunt.threshold（160）就會起身重追，所以
+# 「20 秒內一定會休息」在游標持續被移動時根本不是系統承諾的性質——不是產品壞了。
+if [[ "${PHASE}" == "resting" ]]; then
+    ok "20 秒內抵達 resting（${SAMPLES} 次取樣）"
+elif [[ "${DISTURBED}" -eq 1 ]]; then
+    skip "20 秒內沒抵達 resting（停在 ${PHASE}），但期間游標被外力移動了 ${TRAVEL} 點，貓一直在重新追逐 → 無法判定"
 else
-    bad "抵達當下 distance ${DIST} 超過 arrive.radius ${ARRIVE}"
+    bad "20 秒內沒抵達 resting（停在 ${PHASE}），而且期間游標累計只動了 ${TRAVEL} 點"
+fi
+
+# 原本這一條寫成「輪詢到 resting 之後讀一次 distance，要求 <= arrive.radius」，**那是錯的**：
+# 系統保證的只有「進入 sitting 的那一帧 distance <= arrive.radius」，之後貓就不動了，
+# 而休息中的貓允許游標漂到 rehunt.threshold（160）才重新追。0.5 秒一次的輪詢抓不到
+# 那一帧，抓到的是「抵達後某個時刻」——那個時刻的距離沒有任何上界約束，
+# 所以原本的斷言在斷言一個系統根本不維持的性質（實測 108.18 > 76.8）。
+#
+# 改成「settled 期間看過的**最小** distance」：這三個 phase 下貓是靜止的，游標漂走
+# 只會讓距離變大，所以最小值對干擾是穩健的；同時 arrive.radius 這個緊上限保得住——
+# 貓若停在 500 點外就宣稱抵達，每一次取樣都會超標，一個都不會低於 76.8。
+# （只放寬上限到 160 就不行：那等於承認「貓可以停在 rehunt 邊界上」，
+#   而那正是 rehunt 會立刻把它拉回去的距離，斷言變成沒有經驗內容的恆真句。）
+ARRIVE="$("${FM}" config get arrive.radius | awk '{print $3}')"
+if [[ "${MIN_SETTLED}" != "none" ]] \
+   && /usr/bin/python3 -c "import sys; sys.exit(0 if ${MIN_SETTLED} <= ${ARRIVE} else 1)"; then
+    ok "貓宣稱抵達時真的在游標附近（最小 distance ${MIN_SETTLED} <= arrive.radius ${ARRIVE}）"
+elif [[ "${DISTURBED}" -eq 1 ]]; then
+    skip "settled 期間最小 distance 是 ${MIN_SETTLED}（arrive.radius ${ARRIVE}），但期間游標被外力移動了 ${TRAVEL} 點 → 無法判定"
+else
+    bad "貓宣稱抵達時距離游標 ${MIN_SETTLED}，超過 arrive.radius ${ARRIVE}（期間游標累計只動了 ${TRAVEL} 點）"
 fi
 
 # --- 4 -----------------------------------------------------------------------
@@ -206,32 +305,59 @@ expect "$("${FM}" config get rest.duration | awk '{print $3}')" "${BEFORE_REST}"
 # --- 6 -----------------------------------------------------------------------
 step "6. 座標系：鼠標往上移，cursor.y 要變大（AppKit 全域座標 Y 向上）"
 # 比對的是「同一時刻的真實游標」與「App 回報的游標」的**變化方向**，
-# 不是「我要求的位置」——本機的游標會自己漂移（要求 (400,300)，一秒後可能
-# 停在 (1111,477)），拿要求值去比會偶發失敗，而失敗的原因與被測物無關。
+# 不是「我要求的位置」——多螢幕錯位排列下，我要求的點可能不在任何一片螢幕上，
+# 系統會把游標吸到最近的合法位置，拿要求值去比會為了與被測物無關的理由失敗。
 #
 # 方向就是 spec 第 8.4 節真正承諾的東西：事件座標系是 Y 向下的，
 # 所以「真實 y 變大時回報的 y 也變大」分得出兩個座標系。
-read_pair() {
-    local real seen
-    seen="$(field 'd["cursor"]["y"]')"
-    real="$(swift "${ROOT}/Scripts/read-cursor.swift" 2>/dev/null | awk '{print $2}')"
-    echo "${real} ${seen}"
-}
-swift "${ROOT}/Scripts/warp-cursor.swift" 400 250 >/dev/null 2>&1
-sleep 0.8
-read -r LOW_REAL LOW_SEEN <<< "$(read_pair)"
-swift "${ROOT}/Scripts/warp-cursor.swift" 400 700 >/dev/null 2>&1
-sleep 0.8
-read -r HIGH_REAL HIGH_SEEN <<< "$(read_pair)"
+#
+# 原本這裡拿「兩次量到的真實 y 相差 > 100 點」當作「warp 生效了、可以判斷方向」的
+# 前提，前提不成立就走 else 記一筆**失敗**，訊息卻寫著「無法判定」——訊息是對的，
+# 歸類是錯的。使用者中途動滑鼠會把兩次 warp 都蓋掉（實測位移只剩 45.6 點），
+# 於是一條沒被評估的斷言被算成產品失敗。
+#
+# 現在干擾有自己的判準：warp 腳本印出的**實際落點**與稍後量到的真實位置之差。
+# 那個差在閒置機器上恆為 0，一旦超過 WARP_DRIFT_TOLERANCE 就記「無法判定」；
+# 「> 100 點」那個檢查留著，但語意收窄成「warp 根本沒生效」——游標沒被外力動過
+# 卻還是沒到位，那才是真的該紅（例如主螢幕放不下這兩個 y）。
 
-if /usr/bin/python3 -c "import sys; sys.exit(0 if abs(${HIGH_REAL} - ${LOW_REAL}) > 100 else 1)"; then
-    if /usr/bin/python3 -c "import sys; sys.exit(0 if (${HIGH_SEEN}-${LOW_SEEN})*(${HIGH_REAL}-${LOW_REAL}) > 0 else 1)"; then
-        ok "回報的 y 與真實 y 同向變化（真實 ${LOW_REAL}→${HIGH_REAL}、回報 ${LOW_SEEN}→${HIGH_SEEN}）"
-    else
-        bad "方向相反：真實 ${LOW_REAL}→${HIGH_REAL}，回報 ${LOW_SEEN}→${HIGH_SEEN}——座標系翻轉了"
+# warp 到指定的全域座標，等 App 取樣一輪，回傳一行：
+#   <落點x> <落點y> <之後量到的真實x> <之後量到的真實y> <App 回報的 y>
+# 任何一段讀不到東西就回 ERR——空字串會讓下游的 python 算式語法錯誤，
+# 而那個錯誤看起來會像「斷言失敗」。
+warp_then_read() {
+    local wx wy rx ry seen
+    read -r wx wy <<< "$(swift "${ROOT}/Scripts/warp-cursor.swift" "$1" "$2" 2>/dev/null)"
+    sleep 0.8
+    # 先讀 App 再讀真實位置：干擾偵測的窗口要**涵蓋 App 那一次取樣**。
+    # 反過來讀的話，落在兩者之間的外力移動會被判成「沒被動過」。
+    seen="$(field 'd["cursor"]["y"]')"
+    read -r rx ry <<< "$(swift "${ROOT}/Scripts/read-cursor.swift" 2>/dev/null)"
+    if [[ -z "${wx}" || -z "${wy}" || -z "${rx}" || -z "${ry}" || -z "${seen}" ]]; then
+        echo "ERR"; return
     fi
+    echo "${wx} ${wy} ${rx} ${ry} ${seen}"
+}
+
+# 兩點距離（<x1> <y1> <x2> <y2>）。
+gap() { /usr/bin/python3 -c "import math; print(math.hypot($3-$1, $4-$2))"; }
+
+read -r LOW_WX LOW_WY LOW_RX LOW_RY LOW_SEEN <<< "$(warp_then_read 400 250)"
+read -r HIGH_WX HIGH_WY HIGH_RX HIGH_RY HIGH_SEEN <<< "$(warp_then_read 400 700)"
+if [[ "${LOW_WX}" == "ERR" || "${HIGH_WX}" == "ERR" ]]; then
+    bad "讀不到游標位置（warp-cursor.swift / read-cursor.swift / status 有一支沒吐出東西）"
 else
-    bad "游標沒有真的移動（${LOW_REAL} → ${HIGH_REAL}），這一條無法判定"
+    LOW_DRIFT="$(gap "${LOW_WX}" "${LOW_WY}" "${LOW_RX}" "${LOW_RY}")"
+    HIGH_DRIFT="$(gap "${HIGH_WX}" "${HIGH_WY}" "${HIGH_RX}" "${HIGH_RY}")"
+    if /usr/bin/python3 -c "import sys; sys.exit(0 if max(${LOW_DRIFT}, ${HIGH_DRIFT}) > ${WARP_DRIFT_TOLERANCE} else 1)"; then
+        skip "warp 之後游標被外力移走（偏離落點 ${LOW_DRIFT} / ${HIGH_DRIFT} 點），量到的不是我放的位置 → 無法判定"
+    elif ! /usr/bin/python3 -c "import sys; sys.exit(0 if abs(${HIGH_RY} - ${LOW_RY}) > 100 else 1)"; then
+        bad "游標沒被外力動過，卻也沒被 warp 挪開（${LOW_RY} → ${HIGH_RY}）：warp 沒生效，或主螢幕放不下這兩個 y"
+    elif /usr/bin/python3 -c "import sys; sys.exit(0 if (${HIGH_SEEN}-${LOW_SEEN})*(${HIGH_RY}-${LOW_RY}) > 0 else 1)"; then
+        ok "回報的 y 與真實 y 同向變化（真實 ${LOW_RY}→${HIGH_RY}、回報 ${LOW_SEEN}→${HIGH_SEEN}）"
+    else
+        bad "方向相反：真實 ${LOW_RY}→${HIGH_RY}，回報 ${LOW_SEEN}→${HIGH_SEEN}——座標系翻轉了"
+    fi
 fi
 
 # --- 6b ----------------------------------------------------------------------
@@ -244,19 +370,31 @@ for _ in $(seq 1 40); do
     [[ "$(field 'd["visible"]')" == "False" ]] && break
     sleep 0.5
 done
-swift "${ROOT}/Scripts/warp-cursor.swift" 300 250 >/dev/null 2>&1
-sleep 0.8
-HIDDEN_LOW="$(field 'd["cursor"]["y"]')"
-swift "${ROOT}/Scripts/warp-cursor.swift" 300 900 >/dev/null 2>&1
-sleep 0.8
-HIDDEN_HIGH="$(field 'd["cursor"]["y"]')"
-
 expect "$(field 'd["visible"]')" "False" "前提：貓確實不可見"
-# 漂移是幾十點，這裡的位移是 650 點，所以門檻設 300 分得開
-if /usr/bin/python3 -c "import sys; sys.exit(0 if ${HIDDEN_HIGH} - ${HIDDEN_LOW} > 300 else 1)"; then
-    ok "hidden 狀態下鼠標仍然跟著動（${HIDDEN_LOW} → ${HIDDEN_HIGH}）"
+
+# 這一條用的是與 step 6 完全相同的 warp 手法，所以**同樣會被使用者的手蓋掉**。
+# 它的門檻是 300 點（位移 650 點）而 step 6 是 100 點（位移 450 點），看起來比較寬，
+# 其實兩者都要求外力位移小於 350 點才判得準——step 6 先撞到只是運氣。
+# 既然成因相同，處置也相同：干擾走「無法判定」，其餘照舊。
+read -r HL_WX HL_WY HL_RX HL_RY HIDDEN_LOW <<< "$(warp_then_read 300 250)"
+read -r HH_WX HH_WY HH_RX HH_RY HIDDEN_HIGH <<< "$(warp_then_read 300 900)"
+if [[ "${HL_WX}" == "ERR" || "${HH_WX}" == "ERR" ]]; then
+    bad "讀不到游標位置（warp-cursor.swift / read-cursor.swift / status 有一支沒吐出東西）"
 else
-    bad "hidden 狀態下鼠標凍住了：${HIDDEN_LOW} → ${HIDDEN_HIGH}"
+    HL_DRIFT="$(gap "${HL_WX}" "${HL_WY}" "${HL_RX}" "${HL_RY}")"
+    HH_DRIFT="$(gap "${HH_WX}" "${HH_WY}" "${HH_RX}" "${HH_RY}")"
+    if /usr/bin/python3 -c "import sys; sys.exit(0 if max(${HL_DRIFT}, ${HH_DRIFT}) > ${WARP_DRIFT_TOLERANCE} else 1)"; then
+        skip "warp 之後游標被外力移走（偏離落點 ${HL_DRIFT} / ${HH_DRIFT} 點）→ 無法判定"
+    elif ! /usr/bin/python3 -c "import sys; sys.exit(0 if ${HH_RY} - ${HL_RY} > 300 else 1)"; then
+        bad "游標沒被外力動過，卻也沒被 warp 挪開（真實 ${HL_RY} → ${HH_RY}）：warp 沒生效，或主螢幕放不下這兩個 y"
+    elif /usr/bin/python3 -c "import sys; sys.exit(0 if ${HIDDEN_HIGH} - ${HIDDEN_LOW} > 300 else 1)"; then
+        ok "hidden 狀態下鼠標仍然跟著動（回報 ${HIDDEN_LOW} → ${HIDDEN_HIGH}，真實 ${HL_RY} → ${HH_RY}）"
+    else
+        # 訊息只講量到的東西，不指定成因：這一條紅起來可能是「凍在啟動位置」
+        # （它本來要防的），也可能是回報的座標系翻了或縮放錯了（實測用 mutation
+        # 把回報的 y 換成事件座標時，紅的就是這一行）。寫死一個成因會害人追錯方向。
+        bad "hidden 狀態下回報的鼠標跟不上真實鼠標：真實 ${HL_RY} → ${HH_RY}，回報卻是 ${HIDDEN_LOW} → ${HIDDEN_HIGH}"
+    fi
 fi
 
 # --- 7 -----------------------------------------------------------------------
@@ -403,5 +541,18 @@ expect "$(field 'd["pack"]["id"]')" "test-blocks" "正在用的 pack 被刪掉�
 expect "$(field 'int(d["pack"]["logicalHeight"])')" "96" "退回的是真的內建那套，不是只改了 id"
 
 step "結果"
-printf '  通過 %d、失敗 %d\n' "${PASS}" "${FAIL}"
-[[ "${FAIL}" -eq 0 ]]
+printf '  通過 %d、失敗 %d、無法判定 %d\n' "${PASS}" "${FAIL}" "${SKIP}"
+if [[ "${SKIP}" -gt 0 ]]; then
+    printf '  有 %d 條偵測到游標被外力移動，沒有被評估——既不算通過也不算失敗。\n' "${SKIP}"
+    printf '  請在沒有人操作滑鼠的情況下重跑 Scripts/e2e.sh（或先關掉會自動移動游標的工具）。\n'
+fi
+# 無法判定不得被當成通過：只要有一條沒被評估，這一輪就沒有證明接線是完整的。
+#
+# 這裡刻意**不設**「無法判定的比例低於 X 就放行」的門檻。理由有二：
+# (1) 任何一條無法判定都已經讓 exit code 非零，比例門檻沒有可放行的區間可管；
+# (2) 「某條在沒有人碰滑鼠時也一直回無法判定」這個退化情境進不來——skip 的三個
+#     觸發點都要求一個實測到的位移量超過 CURSOR_STILL_TOLERANCE 或
+#     WARP_DRIFT_TOLERANCE，而閒置機器上那些量恆為 0（實測：連續 5 遍全部
+#     通過 39、失敗 0、無法判定 0）；訊息也把量到的值印出來，真的出現
+#     「無人碰滑鼠卻量到位移」就是那個數字自己在說話。
+[[ "${FAIL}" -eq 0 && "${SKIP}" -eq 0 ]]
