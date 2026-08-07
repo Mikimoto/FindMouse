@@ -19,6 +19,7 @@ public final class RequestRouter {
     private let status: () -> StatusPayload
     private let packs: () -> [PackSummary]
     private let usePack: (String) -> Void
+    private let onSettingsChanged: () -> Void
 
     /// - Parameter control: 當下的命令佇列。**每次呼叫都重取，不在 init 綁死**——
     ///   換 pack 會連 `ControlUseCase` 一起換掉（它的 `catalog` 是 `private let`），
@@ -33,16 +34,23 @@ public final class RequestRouter {
     /// - Parameter usePack: 換 pack 的請求交給誰。**router 不自己換**——
     ///   換一套 pack 要一起換掉 App 那七個從 pack 衍生出來的持有者，
     ///   而 router 一個都碰不到。與 `status` 注入快照是同一個模式。
+    /// - Parameter onSettingsChanged: 設定**真的變了**之後通知一次。今天只有
+    ///   `hotkey.*` 需要它（M4 Task 8：改了不必重啟就生效），但這裡刻意不帶 key
+    ///   ——「哪些 key 改了要做什麼」是 App 的政策，router 只知道「有東西變了」。
+    ///   **失敗的 set 不會呼叫它**：值域擋下的寫入沒有改變任何東西，通知了只會讓
+    ///   App 白白重新註冊一次快捷鍵（那期間快捷鍵是不存在的）。
     public init(control: @escaping () -> ControlUseCase,
                 settings: @escaping () -> SettingsUseCase,
                 status: @escaping () -> StatusPayload,
                 packs: @escaping () -> [PackSummary],
-                usePack: @escaping (String) -> Void) {
+                usePack: @escaping (String) -> Void,
+                onSettingsChanged: @escaping () -> Void) {
         self.control = control
         self.settings = settings
         self.status = status
         self.packs = packs
         self.usePack = usePack
+        self.onSettingsChanged = onSettingsChanged
     }
 
     public func handle(_ request: WireRequest) -> Data {
@@ -110,6 +118,7 @@ public final class RequestRouter {
         }
         do {
             try settings().set(key, to: value)
+            onSettingsChanged()
             return encode(WireResponse(data: ConfigPayload(
                 entries: [.init(key: key, value: try settings().get(key))])))
         } catch {
@@ -120,6 +129,7 @@ public final class RequestRouter {
     private func configReset(_ args: [String: String]) -> Data {
         if args["all"] == "true" {
             settings().resetAll()
+            onSettingsChanged()
             return encode(WireResponse(data: ConfigPayload(
                 entries: settings().getAll().map { .init(key: $0.key, value: $0.value) })))
         }
@@ -129,6 +139,9 @@ public final class RequestRouter {
         }
         do {
             try settings().reset(key)
+            // `reset` 與 `set` 是兩條路，只接一條的話「改壞了想 reset 回來」
+            // 會失效——而那正是使用者最需要它當場生效的時刻。
+            onSettingsChanged()
             return encode(WireResponse(data: ConfigPayload(
                 entries: [.init(key: key, value: try settings().get(key))])))
         } catch {

@@ -64,6 +64,9 @@ private struct Fixture {
     let live: Box<Wiring>
     /// `pack.use` 交給 App 的 id。沒交出去就還是 nil。
     let swapped: Box<String?>
+    /// `onSettingsChanged` 被叫了幾次。App 端收到就重讀 `hotkey.*` 重新註冊，
+    /// 所以「有沒有叫」與「叫幾次」在這一層就要釘住。
+    let settingsChanges: Box<Int>
 
     var control: ControlUseCase { live.value.control }
 
@@ -90,11 +93,14 @@ private struct Fixture {
         self.live = live
         let swapped = Box<String?>(nil)
         self.swapped = swapped
+        let settingsChanges = Box(0)
+        self.settingsChanges = settingsChanges
         router = RequestRouter(control: { live.value.control },
                                settings: { live.value.settings },
                                status: Fixture.status,
                                packs: { Fixture.packs },
-                               usePack: { id in swapped.value = id })
+                               usePack: { id in swapped.value = id },
+                               onSettingsChanged: { settingsChanges.value += 1 })
     }
 
     static func status() -> StatusPayload {
@@ -310,6 +316,77 @@ private func decodeError(_ data: Data) throws -> WireError {
 private func settingValue(_ f: Fixture, _ key: String) throws -> String {
     let response = try decode(f.send("config.get", ["key": key]), as: ConfigPayload.self)
     return try #require(response.data?.entries.first?.value)
+}
+
+// MARK: - 設定變更的通知（M4 Task 8：hotkey 熱更新）
+
+/// 成功的 `set` 要通知 App，否則 `hotkey.summon` 改了還是得重啟。
+@Test func aSuccessfulConfigSetNotifiesTheApp() throws {
+    let f = Fixture()
+    _ = f.send("config.set", ["key": "hotkey.summon", "value": "⌃⌥C"])
+    #expect(f.settingsChanges.value == 1)
+    _ = f.send("config.set", ["key": "cat.speed", "value": "1500"])
+    #expect(f.settingsChanges.value == 2, "通知不該挑 key——那是 App 的政策")
+}
+
+/// **被值域擋下的 `set` 不能通知。**
+///
+/// 通知了的話 App 會白白 unregister＋register 一輪，而那期間快捷鍵是不存在的
+/// ——使用者打錯一個值，換來的是「舊快捷鍵閃了一下」。設定根本沒變。
+@Test func aRejectedConfigSetNotifiesNobody() throws {
+    let f = Fixture()
+    #expect(try decodeError(f.send("config.set", ["key": "hotkey.summon", "value": "F"])).code
+            == .invalidArgument)
+    #expect(try decodeError(f.send("config.set", ["key": "cat.speed", "value": "99999"])).code
+            == .configValueOutOfRange)
+    #expect(try decodeError(f.send("config.set", ["key": "cat.spede", "value": "1"])).code
+            == .configKeyUnknown)
+    #expect(try decodeError(f.send("config.set", ["key": "cat.speed"])).code == .invalidArgument)
+    #expect(f.settingsChanges.value == 0)
+
+    // 而且舊值原封不動——「拒絕不是 clamp」在這一層也要成立
+    #expect(try settingValue(f, "hotkey.summon") == "⌥⌘F")
+    #expect(try settingValue(f, "cat.speed") == "900")
+}
+
+/// `reset` 與 `reset --all` 是另外兩條路。只接 `set` 的話，
+/// 「改壞了想 reset 回來」不會生效——而那正是最需要它當場生效的時刻。
+@Test func bothResetPathsNotifyTheApp() throws {
+    let f = Fixture()
+    _ = f.send("config.reset", ["key": "hotkey.summon"])
+    #expect(f.settingsChanges.value == 1)
+    _ = f.send("config.reset", ["all": "true"])
+    #expect(f.settingsChanges.value == 2)
+
+    // 失敗的 reset 一樣不通知
+    _ = f.send("config.reset", ["key": "hotkey.summonn"])
+    _ = f.send("config.reset")
+    #expect(f.settingsChanges.value == 2)
+}
+
+/// 讀取不是變更。`config get` 也通知的話，App 會被 `findmouse config get`
+/// 這種純查詢牽著重新註冊快捷鍵。
+@Test func readingConfigNotifiesNobody() throws {
+    let f = Fixture()
+    _ = f.send("config.get")
+    _ = f.send("config.get", ["key": "hotkey.summon"])
+    _ = f.send("status")
+    #expect(f.settingsChanges.value == 0)
+}
+
+/// 快捷鍵的值域驗證在 `SettingsUseCase`（spec 第 9 節：只有一份），
+/// 而 router 要把它翻成 `INVALID_ARGUMENT` 並附上看得懂的期望格式。
+@Test func hotkeyValuesAreValidatedBeforeTheyAreStored() throws {
+    let f = Fixture()
+    let error = try decodeError(f.send("config.set", ["key": "hotkey.teaser", "value": "⌥⌘"]))
+    #expect(error.code == .invalidArgument)
+    #expect(error.message.contains("⌥⌘F"), "訊息要給一個能照抄的例子：\(error.message)")
+
+    // 存進去的是正規化後的字串，不是使用者打的那個
+    let response = try decode(f.send("config.set", ["key": "hotkey.teaser", "value": "⌘⌥t"]),
+                              as: ConfigPayload.self)
+    #expect(response.data?.entries.first?.value == "⌥⌘T")
+    #expect(try settingValue(f, "hotkey.teaser") == "⌥⌘T")
 }
 
 // MARK: - pack validate

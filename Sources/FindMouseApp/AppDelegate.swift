@@ -28,6 +28,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// 「畫面與 status 讀同一份」在實作上就是這個欄位只有一個。
     private var lastState: CatFrameState?
 
+    /// 現在真的註冊著的那一組。`onSettingsChanged` 對**任何**設定變更都會來，
+    /// 沒有這兩個欄位的話改 `cat.speed` 也會 unregister＋register 一輪：
+    /// 期間快捷鍵短暫不存在，而且衝突警告會在選單列裡一次一次疊上去。
+    private var installedSummon: HotkeySpec?
+    private var installedTeaser: HotkeySpec?
+
     /// 任何 pack 都載不起來時的最後一條路。
     ///
     /// 與 `SettingsUseCase.registry` 裡 `pack.id` 的 defaultValue 是同一個字串，
@@ -72,12 +78,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             case .toggleTeaser: self?.enqueue(.toggleTeaser)
             }
         }
-        hotkeys.install()
         self.hotkeys = hotkeys
 
         let menuBar = MenuBarController { [weak self] in self?.enqueue(.toggle) }
-        menuBar.showHotkeyFailure(hotkeys.failed.map { "\($0)" })
         self.menuBar = menuBar
+        // 排在 menuBar 之後：註冊失敗要攤給使用者看，而那條路要有選單列才走得到
+        reinstallHotkeys()
 
         startSocket(initial: binding, menuBar: menuBar)
 
@@ -135,6 +141,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             packs: { PackCatalogRepository.current() },
             usePack: { [weak self] id in
                 MainActor.assumeIsolated { self?.requestPackSwap(to: id) }
+            },
+            onSettingsChanged: { [weak self] in
+                MainActor.assumeIsolated { self?.reinstallHotkeys() }
             })
 
         let server = UnixSocketServer(path: UnixSocketServer.defaultPath) { [weak self] request in
@@ -193,6 +202,49 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             screens: NSScreen.screens.map {
                 ScreenInfo(frame: $0.frame, scale: $0.backingScaleFactor)
             })
+    }
+
+    // MARK: - 快捷鍵
+
+    /// 從設定讀出兩個快捷鍵並註冊。啟動時與**每次設定變更後**都走這裡，
+    /// 所以 `hotkey.*` 改了不必重啟（M3 交接下來的那筆帳）。
+    ///
+    /// 沒變就不動：見 `installedSummon` 的說明。
+    private func reinstallHotkeys() {
+        guard let hotkeys, let settings = pack?.settings else { return }
+        guard let summon = hotkeySpec(settings, "hotkey.summon",
+                                      fallback: HotkeySpec.defaultSummonText),
+              let teaser = hotkeySpec(settings, "hotkey.teaser",
+                                      fallback: HotkeySpec.defaultTeaserText) else {
+            // 連出廠值都解不開才會到這裡，而 `theShippedDefaultsParse` 釘住它解得開。
+            // 留著是因為 `HotkeySpec` 的 init 是 failable，不是因為預期它會發生。
+            log.fault("出廠快捷鍵解不開，維持上一組")
+            return
+        }
+        guard summon != installedSummon || teaser != installedTeaser else { return }
+
+        hotkeys.install(summon: summon, teaser: teaser)
+        installedSummon = summon
+        installedTeaser = teaser
+        menuBar?.showHotkeyFailure(hotkeys.failed.map { "\($0)" })
+        log.notice("""
+            快捷鍵已註冊：summon=\(summon.displayString, privacy: .public) \
+            teaser=\(teaser.displayString, privacy: .public) \
+            failures=\(hotkeys.failed.count, privacy: .public)
+            """)
+    }
+
+    /// 讀一個 `hotkey.*` 的當前值並解析。
+    ///
+    /// 解不開就退回出廠值。`SettingsUseCase` 已經擋掉解不開的值（spec 第 9 節），
+    /// 所以走到這裡代表有人繞過它直接改了 UserDefaults（`defaults write`）——
+    /// 那時「快捷鍵整組消失」比「回到出廠值」難查得多。
+    private func hotkeySpec(_ settings: SettingsUseCase, _ key: String,
+                            fallback: String) -> HotkeySpec? {
+        let stored = try? settings.get(key)
+        if let stored, let spec = HotkeySpec(stored) { return spec }
+        log.error("\(key, privacy: .public) 的值解不開，改用出廠值：\(stored ?? "nil", privacy: .public)")
+        return HotkeySpec(fallback)
     }
 
     // MARK: - 每帧
