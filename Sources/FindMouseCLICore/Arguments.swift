@@ -30,6 +30,8 @@ public enum Arguments {
           config get [key]                 讀設定（不給 key 就列全部）
           config set <key> <value>         寫設定
           config reset <key> | --all       還原設定
+          pack list                        列出所有 pack（* 是正在用的那套）
+          pack use <id>                    換成另一套 pack
           pack validate <path>             驗證一套 sprite pack
 
         全域旗標：
@@ -75,18 +77,7 @@ public enum Arguments {
             return try parseConfig(rest, json: json)
 
         case "pack":
-            guard rest.first == "validate" else {
-                // pack list / pack use 是 M4。明講它不在，比回「未知命令」清楚——
-                // 後者會讓人以為自己打錯字。
-                if let sub = rest.first, ["list", "use"].contains(sub) {
-                    throw ParseError.usage("pack \(sub) 尚未實作（M4）")
-                }
-                throw ParseError.usage("pack 目前只支援 validate <path>")
-            }
-            guard rest.count == 2 else {
-                throw ParseError.usage("pack validate 要接一個路徑")
-            }
-            return request("pack.validate", ["path": rest[1]])
+            return try parsePack(rest, json: json)
 
         default:
             throw ParseError.usage("未知命令：\(command)")
@@ -121,6 +112,37 @@ public enum Arguments {
 
         default:
             throw ParseError.usage("config 要接 get、set 或 reset")
+        }
+    }
+
+    private static func parsePack(_ rest: [String], json: Bool) throws -> Parsed {
+        func parsed(_ name: String, _ params: [String: String] = [:]) -> Parsed {
+            Parsed(request: WireRequest(command: name, args: params), json: json)
+        }
+
+        switch rest.first {
+        case "list":
+            try expectNoExtra(Array(rest.dropFirst()), "pack list")
+            return parsed("pack.list")
+
+        case "use":
+            // 少了 id 就在這裡停。送出去的話 App 會回 INVALID_ARGUMENT，
+            // 於是「你少打一個 id」變成 App 端的抱怨，要查的地方差很遠。
+            guard rest.count == 2 else {
+                throw ParseError.usage("pack use 要接一個 pack id（用 pack list 看有哪些）")
+            }
+            // id 原樣送出去，不補前綴也不轉小寫：哪些 id 存在只有 App 那份
+            // 掃描結果知道，在這裡猜只會讓 PACK_NOT_FOUND 指向錯的原因。
+            return parsed("pack.use", ["id": rest[1]])
+
+        case "validate":
+            guard rest.count == 2 else {
+                throw ParseError.usage("pack validate 要接一個路徑")
+            }
+            return parsed("pack.validate", ["path": rest[1]])
+
+        default:
+            throw ParseError.usage("pack 要接 list、use <id> 或 validate <path>")
         }
     }
 

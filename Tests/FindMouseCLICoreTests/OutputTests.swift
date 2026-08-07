@@ -177,6 +177,117 @@ private let statusPayload = StatusPayload(
     #expect(text.contains("警告：某個警告"))
 }
 
+// MARK: - pack list / pack use
+
+private let packList = PackListPayload(packs: [
+    .init(id: "test-blocks", builtIn: true, logicalHeight: 96, usable: true,
+          current: true, teaserAvailable: true, errors: [], warnings: []),
+    .init(id: "test-blocks-tall", builtIn: true, logicalHeight: 240, usable: true,
+          current: false, teaserAvailable: false, errors: [],
+          warnings: ["缺少逗貓棒動作"]),
+    // 不可用的 pack 仍有體高：manifest 讀得出來才會被列進清單，
+    // 它是**宣告值**（`PackCatalogRepository.scan` 直接抄 manifest），
+    // 壞的是格數對不上這種事。
+    .init(id: "my-broken-pack", builtIn: false, logicalHeight: 128, usable: false,
+          current: false, teaserAvailable: false,
+          errors: ["run 宣告 8 格，實際 2 個檔案"], warnings: []),
+])
+
+/// 清單裡的每一套都要印出來，包含**不能用的那些**。
+///
+/// 三種漏法各自沒有訊號，所以三個都要斷言：只印 usable 的（使用者會以為
+/// 自己放進去的 pack 不見了）、丟掉 errors（只知道不能用、不知道缺什麼）、
+/// 丟掉 current 標記（清單看起來完全正常，只是不知道現在用的是哪套）。
+@Test func packListShowsEveryPackIncludingTheUnusableOnes() {
+    let rendered = Output.render(encode(WireResponse(data: packList)),
+                                 for: WireRequest(command: "pack.list"))
+    #expect(rendered.exitCode == 0)
+    let lines = rendered.text.split(separator: "\n", omittingEmptySubsequences: false)
+
+    // 三套各一行 ＋ 一個錯誤 ＋ 一個警告；行數對不上就是有東西被吃掉了
+    #expect(lines.count == 5, "實際輸出：\n\(rendered.text)")
+    for id in ["test-blocks", "test-blocks-tall", "my-broken-pack"] {
+        #expect(rendered.text.contains(id), "少了 \(id)：\n\(rendered.text)")
+    }
+    #expect(rendered.text.contains("run 宣告 8 格，實際 2 個檔案"))
+    #expect(rendered.text.contains("缺少逗貓棒動作"))
+    #expect(rendered.text.contains("不可用"))
+    // 內建與使用者安裝要分得出來：後者才是使用者自己能修的
+    #expect(rendered.text.contains("內建") && rendered.text.contains("使用者"))
+    // 體高會決定貓有多大，是換之前唯一看得到的線索
+    #expect(rendered.text.contains("96") && rendered.text.contains("240"))
+
+    // 只有當前那一套帶標記。`test-blocks` 是 `test-blocks-tall` 的前綴，
+    // 所以用「哪一行含這個 id」找會抓到兩行——要從行首的標記本身判斷。
+    let marked = lines.filter { $0.hasPrefix(Output.currentPackMarker) }
+    #expect(marked.count == 1)
+    #expect(marked.first?.contains("test-blocks ") == true, "標記落在錯的一行：\(marked)")
+
+    // 標記只在用法裡解釋一次；符號改了而用法沒改，CLI 就在說謊
+    #expect(Arguments.usageText.contains(Output.currentPackMarker.trimmingCharacters(in: .whitespaces)))
+}
+
+/// id 是使用者取的目錄名，對齊不能把它切壞。
+///
+/// `padding(toLength:)` 數的是 UTF-16 單元而 `count` 數字元，兩者對 `a🐱`
+/// 分別是 3 與 2——拿字元數去 `padding` 會從代理對中間切下去，印出 `a\u{FFFD}`
+/// （實測過）。內建 pack 的 id 全是 ASCII，所以這條只有使用者自己放的 pack 會踩到。
+@Test func packIDsSurviveColumnAlignmentIntact() {
+    let payload = PackListPayload(packs: [
+        .init(id: "a🐱", builtIn: false, logicalHeight: 96, usable: true,
+              current: false, teaserAvailable: false, errors: [], warnings: []),
+        .init(id: "ab", builtIn: true, logicalHeight: 96, usable: true,
+              current: true, teaserAvailable: false, errors: [], warnings: []),
+    ])
+    let text = Output.render(encode(WireResponse(data: payload)),
+                             for: WireRequest(command: "pack.list")).text
+    #expect(text.contains("a🐱"), "id 被切壞了：\n\(text)")
+    #expect(text.contains("\u{FFFD}") == false, "輸出裡有替代字元：\n\(text)")
+}
+
+/// 一套都沒有時要說出來，不能印一個空字串。
+///
+/// 空輸出與「命令壞掉了」在終端機上長得一模一樣。實務上內建 pack 隨 bundle
+/// 出貨、掃不到才是真的有問題，所以更不能靜靜地印零行。
+@Test func emptyPackListStillSaysSomething() {
+    let rendered = Output.render(encode(WireResponse(data: PackListPayload(packs: []))),
+                                 for: WireRequest(command: "pack.list"))
+    #expect(rendered.exitCode == 0)
+    #expect(rendered.text.isEmpty == false)
+}
+
+/// `pack use` 的 exit code 由錯誤碼決定，**沒有** `pack validate` 那個特例。
+///
+/// 兩個命令都是 `pack.*` 且都會回 PACK_NOT_FOUND，所以最容易犯的錯是把特例
+/// 寫成 `hasPrefix("pack.")`。那樣 `pack use 打錯的id` 會回 2（用法錯誤），
+/// 但打的字沒有錯——錯的是那套 pack 不存在，該做的事是先 `pack list`。
+@Test func packUseHasNoExitCodeSpecialCase() {
+    let use = WireRequest(command: "pack.use", args: ["id": "nope"])
+    #expect(Output.render(errorLine(.packNotFound), for: use).exitCode == 1)
+    #expect(Output.render(errorLine(.packInvalid), for: use).exitCode == 1)
+    // id 根本沒送到（本地擋不住的形狀）仍是用法錯誤
+    #expect(Output.render(errorLine(.invalidArgument), for: use).exitCode == 2)
+
+    // 成功走的是通用 ack 那條路
+    let ack = Output.render(encode(WireResponse(data: AckPayload(queued: "pack.use"))), for: use)
+    #expect(ack.text.contains("pack.use"))
+    #expect(ack.exitCode == 0)
+}
+
+/// PACK_INVALID 帶著 `details`（缺什麼），那是使用者唯一能拿去修的東西。
+///
+/// 只印 message 的話畫面上是「不合格，不能使用」——然後呢？
+@Test func errorDetailsAreShownNotSwallowed() {
+    let line = encode(WireResponse<AckPayload>(error: WireError(
+        code: .packInvalid, message: "my-pack 不合格，不能使用",
+        details: ["run 宣告 8 格，實際 2 個檔案", "缺少 sitIdle"])))
+    let rendered = Output.render(line, for: WireRequest(command: "pack.use",
+                                                        args: ["id": "my-pack"]))
+    #expect(rendered.text.contains("run 宣告 8 格，實際 2 個檔案"))
+    #expect(rendered.text.contains("缺少 sitIdle"))
+    #expect(rendered.exitCode == 1)
+}
+
 /// 動作命令的回應簡短但要說出排進去的是什麼。
 @Test func ackTextNamesTheQueuedCommand() {
     let rendered = Output.render(encode(WireResponse(data: AckPayload(queued: "summon"))),

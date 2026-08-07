@@ -93,6 +93,15 @@ public enum Output {
                     .joined(separator: "\n"),
                 exitCode: 0)
 
+        case "pack.list":
+            guard let p = try? decoder.decode(WireResponse<PackListPayload>.self,
+                                              from: line).data
+            else { return malformed(line) }
+            // 清單裡有不可用的 pack **不是**命令失敗（對比 `pack.validate`：
+            // 那個命令問的就是「這套能不能用」）。這裡問的是「有哪些」，
+            // 答出來就是 0；換不過去要等 `pack use` 自己回錯。
+            return Rendered(text: describe(p), exitCode: 0)
+
         case "pack.validate":
             guard let p = try? decoder.decode(WireResponse<PackValidatePayload>.self,
                                               from: line).data
@@ -109,6 +118,46 @@ public enum Output {
             else { return malformed(line) }
             return Rendered(text: "已排入：\(a.queued)", exitCode: 0)
         }
+    }
+
+    /// 正在用的那一套的行首標記。
+    ///
+    /// 抽成常數是因為它出現在兩個地方：這裡印，`Arguments.usageText` 解釋它。
+    /// 只改一邊，CLI 就會印一個沒人解釋過的符號。
+    static let currentPackMarker = "* "
+
+    /// 一套一行，不能用的那些也列，理由跟在下一行。
+    ///
+    /// 「標紅字」在終端機裡用**文字**表達而不是 ANSI 顏色：這支 CLI 全程沒有
+    /// 跳脫序列，而導進管線或檔案時那些序列會變成雜訊（`grep` 也就跟著白費）。
+    private static func describe(_ p: PackListPayload) -> String {
+        // 印零行與「命令壞掉了」在終端機上長得一模一樣。內建 pack 隨 bundle
+        // 出貨，掃不到反而是最該說出口的狀況。
+        guard !p.packs.isEmpty else { return "找不到任何 pack" }
+
+        let width = p.packs.map(\.id.count).max() ?? 0
+        let blank = String(repeating: " ", count: currentPackMarker.count)
+        return p.packs.flatMap { pack -> [String] in
+            // 不可用擺第一個：那一列使用者唯一要做的事是看下一行的原因。
+            var details: [String] = pack.usable ? [] : ["不可用"]
+            details.append("體高 " + fixed(pack.logicalHeight))
+            if pack.teaserAvailable { details.append("逗貓棒") }
+
+            // 補空白而不用 `padding(toLength:)`：後者數的是 UTF-16 單元，
+            // 而 id 是**使用者取的目錄名**——`a🐱` 的 count 是 2、UTF-16 是 3，
+            // 對齊到 2 會從代理對中間切下去，印出一個 U+FFFD（實測）。
+            // 「內建」比「使用者」少一個字，補兩格：等寬終端機一個 CJK 字佔兩格，
+            // 而任何以字元數為單位的補法都對不齊它。
+            let head = (pack.current ? currentPackMarker : blank)
+                + pack.id + String(repeating: " ", count: max(0, width - pack.id.count))
+                + "  " + (pack.builtIn ? "內建  " : "使用者")
+                + "  " + details.joined(separator: "、")
+            // 縮排比 `pack validate` 深一層：那邊只有一套，這邊要看得出
+            // 這行理由屬於上面哪一列。
+            return [head]
+                + pack.errors.map { "      錯誤：\($0)" }
+                + pack.warnings.map { "      警告：\($0)" }
+        }.joined(separator: "\n")
     }
 
     private static func malformed(_ line: Data) -> Rendered {
