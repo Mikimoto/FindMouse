@@ -211,14 +211,61 @@ private let specWindowKeys = [
 }
 
 /// 使用者一開始改，紅字就該消失——那是「我知道你在修了」。
+///
+/// 打的字串必須與現有草稿**不同**，因為「一次編輯」在畫面上本來就不可能字字相同：
+/// 多打一個字元、刪掉一個字元、換掉一個字元，長度或內容一定會變。相同的那一種
+/// 不是編輯而是 AppKit 的回送（見 `theEchoAfterARejectedCommitKeepsTheComplaint`）。
 @Test @MainActor func editingClearsThePreviousComplaint() {
     let harness = FormHarness()
     harness.store.reload()
     harness.store.submit("hotkey.summon", "F")
     #expect(harness.store.snapshot.errors["hotkey.summon"] != nil)
 
-    harness.store.draft("hotkey.summon", "F")
+    harness.store.draft("hotkey.summon", "⌥F")
     #expect(harness.store.snapshot.errors["hotkey.summon"] == nil)
+}
+
+/// **靜默拒絕**：失焦提交被拒絕之後，AppKit 會把欄位內容原字回送一次到
+/// `TextField` binding 的 `set:`，於是 `draft` 緊接在 `commitDraft` 之後又被呼叫，
+/// 而 `draft` 無條件清紅字——剛設好的那句話當場被自己抹掉。
+///
+/// 實測到的順序（在「貓的大小」打 `abc` 再把焦點移到「休息時間」）：
+///     commitDraft cat.scale draft="abc" → submit → error=「abc」不合法…
+///     binding-set cat.scale value="abc" focused=rest.duration   ← 回送
+///     draft       cat.scale incoming="abc" existingDraft="abc"  ← 紅字在這裡消失
+/// 回送的字串與草稿**逐字相同**，所以守衛比字串就夠。
+/// 按 Enter 走 `onSubmit`、焦點沒變、沒有那次回送，所以只有失焦會靜默——
+/// 使用者看到的是「值被擋下來，而畫面上沒有任何理由」。
+@Test @MainActor func theEchoAfterARejectedCommitKeepsTheComplaint() throws {
+    let harness = FormHarness()
+    harness.store.reload()
+
+    harness.store.draft("cat.scale", "abc")
+    #expect(harness.store.commitDraft("cat.scale") == false)
+    #expect(harness.store.snapshot.errors["cat.scale"] != nil, "前提：紅字先被設起來")
+
+    harness.store.draft("cat.scale", "abc")     // AppKit 的回送
+
+    #expect(harness.store.snapshot.errors["cat.scale"] == "「abc」不合法，要的是 數字",
+            "回送把紅字清掉了——值被擋下來而使用者看不到任何理由")
+    #expect(harness.store.snapshot.text("cat.scale") == "abc")
+    #expect(try harness.settings.get("cat.scale") == "1")
+}
+
+/// 回送在 hotkey 欄位一樣會發生——`editableField` 是三種列共用的那一塊，
+/// 只守數值欄的話另外兩種列照樣靜默。
+@Test @MainActor func theEchoAfterARejectedHotkeyKeepsTheComplaintToo() {
+    let harness = FormHarness()
+    harness.store.reload()
+
+    harness.store.draft("hotkey.summon", "F")
+    #expect(harness.store.commitDraft("hotkey.summon") == false)
+    let complaint = harness.store.snapshot.errors["hotkey.summon"]
+    #expect(complaint != nil, "前提：紅字先被設起來")
+
+    harness.store.draft("hotkey.summon", "F")   // AppKit 的回送
+
+    #expect(harness.store.snapshot.errors["hotkey.summon"] == complaint)
 }
 
 /// 關視窗時會對**全部** 8 個 key 各提交一次（`SettingsWindowController`

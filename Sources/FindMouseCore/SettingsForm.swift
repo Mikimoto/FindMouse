@@ -215,7 +215,15 @@ public final class SettingsFormStore {
     /// 只是在告訴使用者「你還沒打完」。驗證時機是按 Enter、失焦、或關掉視窗
     /// （三條路都走 `commitDraft`；關視窗那條是後備，見 `SettingsWindowController`）。
     /// 紅字在他開始改的當下就清掉——那是「我知道你在修了」。
+    ///
+    /// **與現有草稿逐字相同的那一次不算「開始改」。** AppKit 在結束編輯時會把
+    /// 欄位內容原字回送一次到 binding 的 `set:`，而那一下正好落在失焦提交之後：
+    /// `commitDraft` 剛把紅字設好，回送就把它清掉，於是值被擋下來而畫面上
+    /// 沒有任何理由（按 Enter 走 `onSubmit`、焦點沒變、沒有回送，所以只有失焦會靜默）。
+    /// 用字串相同當判準是因為實測回送帶的就是草稿本身，而使用者打不出這種輸入——
+    /// 真的編輯一定會讓長度或內容變掉。
     public func draft(_ key: String, _ text: String) {
+        guard snapshot.drafts[key] != text else { return }
         snapshot.drafts[key] = text
         snapshot.errors.removeValue(forKey: key)
     }
