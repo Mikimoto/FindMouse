@@ -212,7 +212,8 @@ public final class SettingsFormStore {
     /// 打字中：只記草稿，**不寫入也不驗**。
     ///
     /// 為什麼不邊打邊驗：`⌥⌘F` 打到第一個字元時必然非法，一邊打一邊紅框
-    /// 只是在告訴使用者「你還沒打完」。驗證時機是失焦或按 Enter（見 `commit`）。
+    /// 只是在告訴使用者「你還沒打完」。驗證時機是按 Enter、失焦、或關掉視窗
+    /// （三條路都走 `commitDraft`；關視窗那條是後備，見 `SettingsWindowController`）。
     /// 紅字在他開始改的當下就清掉——那是「我知道你在修了」。
     public func draft(_ key: String, _ text: String) {
         snapshot.drafts[key] = text

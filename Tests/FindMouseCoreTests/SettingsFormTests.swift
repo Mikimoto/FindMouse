@@ -221,6 +221,32 @@ private let specWindowKeys = [
     #expect(harness.store.snapshot.errors["hotkey.summon"] == nil)
 }
 
+/// 關視窗時會對**全部** 8 個 key 各提交一次（`SettingsWindowController`
+/// 的後備路徑）。沒動過任何欄位的話那一輪必須完全不寫——不然每次開關設定
+/// 都會重新註冊一次快捷鍵，而那期間快捷鍵是不存在的。
+@Test @MainActor func closingAnUntouchedWindowWritesNothing() throws {
+    let harness = FormHarness()
+    harness.store.reload()
+    let before = try SettingsUseCase.declaredKeys.map { try harness.settings.get($0) }
+
+    for key in SettingsForm.windowKeys { harness.store.commitDraft(key) }
+
+    #expect(harness.changeNotifications == 0)
+    #expect(try SettingsUseCase.declaredKeys.map { try harness.settings.get($0) } == before)
+}
+
+/// 打了字沒按 Enter 就關視窗，那個編輯要生效——「我明明打了，關掉再開卻沒生效」
+/// 是完全沒有訊號的資料遺失。
+@Test @MainActor func closingTheWindowCommitsWhatWasTyped() throws {
+    let harness = FormHarness()
+    harness.store.reload()
+    harness.store.draft("hotkey.teaser", "⌃⇧G")
+
+    for key in SettingsForm.windowKeys { harness.store.commitDraft(key) }
+
+    #expect(try harness.settings.get("hotkey.teaser") == "⌃⇧G")
+}
+
 /// 只是點進去看一眼就失焦，不該觸發一輪快捷鍵重新註冊
 /// （那期間快捷鍵是不存在的）。
 @Test @MainActor func leavingAnUntouchedFieldWritesNothing() {

@@ -11,7 +11,7 @@ import SwiftUI
 /// 所有判斷都在 `SettingsFormStore`（Core，有測試）。這一層剩下版面配置，
 /// 而版面配置本來就只能用眼睛驗——`FindMouseApp` 沒有測試 target。
 @MainActor
-final class SettingsWindowController {
+final class SettingsWindowController: NSObject, NSWindowDelegate {
 
     private let model: SettingsViewModel
     private var window: NSWindow?
@@ -31,12 +31,25 @@ final class SettingsWindowController {
             // 關掉再打開要是同一個視窗。少了這行，關閉會釋放它而下次
             // `makeKeyAndOrderFront` 打在已釋放的物件上。
             created.isReleasedWhenClosed = false
+            created.delegate = self
             created.center()
             window = created
         }
         // `.accessory` 政策的 app 不會自動變成前景，不叫的話視窗收不到鍵盤輸入
         NSApp.activate()
         window?.makeKeyAndOrderFront(nil)
+    }
+
+    /// 打了字但沒按 Enter 就把視窗關掉——把還沒提交的都提交掉。
+    ///
+    /// 為什麼要這個而不是只靠失焦（`SettingsRootView` 的 `onChange(of: focused)`）：
+    /// 關視窗時焦點變化不保證會走到那條路，而「我明明打了，關掉再開卻沒生效」
+    /// 是完全沒有訊號的資料遺失。這裡重複提交是安全的——`commitDraft` 對
+    /// 「沒有草稿」與「草稿等於現值」都是 no-op（`leavingAnUntouchedFieldWritesNothing`）。
+    ///
+    /// 非法值在這裡照樣被拒絕、照樣不寫入；使用者下次打開會看到那個紅字。
+    func windowWillClose(_ notification: Notification) {
+        for key in SettingsForm.windowKeys { model.commitDraft(key) }
     }
 
     /// 值被別人改了（CLI 的 `config set`／`config reset`）。
