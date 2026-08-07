@@ -7,7 +7,16 @@ CONFIG="${1:-debug}"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "${ROOT}"
 
-swift build -c "${CONFIG}" --product FindMouseApp --product findmouse
+# 一個 product 一次呼叫。`--product A --product B` **不是**「兩個都建」——
+# 後面那個把前面的蓋掉，於是 FindMouseApp 從來沒被重建過，`.app` 裡裝的是
+# `.build` 裡剛好還留著的那一份。實測（Swift 6.4）：改掉 AppDelegate.swift 之後
+# 跑那條命令回 `Build complete! (0.17秒)` 且產物 md5 一個位元都沒變，
+# 換成單一 `--product FindMouseApp` 才真的重編。
+#
+# 這件事讓 e2e 整個失去意義：它跑的是舊 binary，而「跑起來的東西有沒有反映
+# 我的原始碼」在外面完全看不出來——`Build complete!` 照印、e2e 照綠。
+swift build -c "${CONFIG}" --product FindMouseApp
+swift build -c "${CONFIG}" --product findmouse
 BIN_DIR="$(swift build -c "${CONFIG}" --show-bin-path)"
 
 

@@ -13,10 +13,41 @@ cd "${ROOT}"
 
 PASS=0
 FAIL=0
+SKIP=0
 
 ok()   { printf '  \033[32m✓\033[0m %s\n' "$1"; PASS=$((PASS + 1)); }
 bad()  { printf '  \033[31m✗\033[0m %s\n' "$1"; FAIL=$((FAIL + 1)); }
 step() { printf '\n\033[1m%s\033[0m\n' "$1"; }
+
+# 第三種結果：這一條**沒有被評估**。
+#
+# 為什麼要跟 bad 分開：一條測不成的斷言不是產品的失敗。算成失敗，看的人會去追一個
+# 不存在的 bug（實測踩過：使用者中途動了滑鼠，兩次 warp 都被蓋掉，於是「座標系翻了」
+# 被報成失敗）；算成通過，真的 bug 就躲在「反正那條測不了」後面。兩種都不行。
+#
+# 所以它自成一類，而且**整輪的 exit code 仍然非零**（見檔尾「結果」）——
+# 無法判定的一輪沒有證明完整的接線，它只是還沒證明反面。
+#
+# 用它的前提：干擾的判準必須是**可量化、而且在閒置機器上恆不成立**的訊號
+# （「warp 之後讀回的位置與落點差超過 N 點」「輪詢期間游標累計移動超過 N 點」）。
+# 「反正就是沒動」這種含糊的推論不算——那種寫法會讓真的壞掉的斷言永遠躲在這裡面。
+skip() { printf '  \033[33m?\033[0m %s\n' "$1"; SKIP=$((SKIP + 1)); }
+
+# 「游標被外力移動」的兩個門檻（點）。兩個都**由各自的斷言反推**，不是憑感覺挑的
+# 安全邊際——門檻是「多大的位移才會改變這條斷言的結論」，訂得比它大就是在
+# 替真的壞掉的斷言開後門，訂得比它小就是把測得準的一輪誤判成測不準。
+#
+# step 3：整段輪詢期間游標的**累計**位移。這一條比的是「settled 期間看過的最小
+# distance」與 arrive.radius（76.8），而累計位移 d 最多讓那個最小值比真正的抵達
+# 距離大 d。5 點對 76.8 是 6.5%，小到不會把一次真正的抵達推過界。
+CURSOR_STILL_TOLERANCE=5
+# step 6 / 6b：**單次** warp 的落點與稍後量到的位置之差。這兩條比的是相隔
+# 450 / 650 點的兩個取樣之間的方向與落差，所以只有「與那個間距同量級」的位移
+# 才改變得了結論；50 點是它的九分之一，翻不動任何一個號誌。
+# 下限那邊也要留餘裕：實測游標被手碰到時的位移是 250–2600 點，而閒置時恆為 0，
+# 中間這一段是空的，門檻放在空檔裡就好（曾經訂 5 點，一次 5.33 點的輕碰
+# 就讓一條**其實測得準**的斷言變成無法判定）。
+WARP_DRIFT_TOLERANCE=50
 
 # 期望值比較。第三個參數是說明，出錯時把實際值印出來——
 # 只印「失敗」的斷言會讓人得自己重跑一次才知道發生什麼事。
@@ -33,11 +64,55 @@ expect() {
 # 實例、也不會搶走它的 socket——之前那些 killall 體操是因為兩邊都寫死路徑。
 export FINDMOUSE_SOCKET="/tmp/fm-e2e-$$.sock"
 
+# socket 隔離得了，**設定隔離不了**：`SettingsGateway` 用 `UserDefaults.standard`
+# （`SettingsGateway.swift:15`），domain 是 .app 的 bundle id，沒有環境變數可以改。
+# 而 `pack use` 成功時會把 `pack.id` 寫進去（`AppDelegate.performSwap` 的副作用），
+# 所以跑一次 e2e 使用者的貓就換一套，而且**跑完不會有任何訊號**。
+#
+# 兩件事一起做：先記下原值供 cleanup 還原，再把它釘成內建那套。
+# 釘住是因為「剛啟動載入的是 test-blocks」這類斷言否則會跟著使用者上次選了什麼
+# 而變——失敗的原因與被測物無關（實測踩過：使用者在設定視窗把 rest.duration
+# 調成 5，寫死出廠值 10 的那條斷言就紅了）。
+DEFAULTS_DOMAIN="com.findmouse.app"
+SAVED_PACK_ID="$(defaults read "${DEFAULTS_DOMAIN}" pack.id 2>/dev/null || true)"
+defaults write "${DEFAULTS_DOMAIN}" pack.id -string "test-blocks"
+
+# 使用者放自己 pack 的地方（`PackCatalogRepository.userPacksDirectory`）。
+# 這裡面可能有使用者自己的東西，所以只記下**自己造的 id**，收工只刪這些。
+USER_PACKS="${HOME}/Library/Application Support/FindMouse/Packs"
+CREATED_PACK_IDS=""
+
 # 只收拾自己啟動的那些 pid。使用者自己的 FindMouse 不關我們的事。
 STARTED_PIDS=""
-cleanup() {
+
+# 殺掉自己啟動的實例，並**等到它們真的不在了**才回來。
+# 不等的話，接下來的 `defaults write` 可能與 App 最後的寫入交錯，
+# 而還原失敗是靜默的——要到使用者下次開 App 才會看到貓換了一套。
+kill_started() {
+    local pid alive
     for pid in ${STARTED_PIDS}; do kill "${pid}" 2>/dev/null; done
+    for _ in $(seq 1 40); do
+        alive=0
+        for pid in ${STARTED_PIDS}; do kill -0 "${pid}" 2>/dev/null && alive=1; done
+        [[ "${alive}" -eq 0 ]] && break
+        sleep 0.25
+    done
+    STARTED_PIDS=""
+}
+
+cleanup() {
+    kill_started
     rm -f "${FINDMOUSE_SOCKET}"
+    # 只刪自己造的那幾套。`rm -rf` 整個 Packs 目錄會刪掉使用者自己放的 pack，
+    # 而那是不可逆的。
+    for id in ${CREATED_PACK_IDS}; do rm -rf "${USER_PACKS:?}/${id}"; done
+    # 還原設定。刻意不走 `findmouse config set`：cleanup 掛在 trap EXIT 上，
+    # 失敗路徑上 App 可能早就不在了（那時 CLI 只會回 exit 3）。
+    if [[ -n "${SAVED_PACK_ID}" ]]; then
+        defaults write "${DEFAULTS_DOMAIN}" pack.id -string "${SAVED_PACK_ID}"
+    else
+        defaults delete "${DEFAULTS_DOMAIN}" pack.id 2>/dev/null || true
+    fi
 }
 trap cleanup EXIT
 
@@ -54,6 +129,24 @@ launch_app() {
             *) STARTED_PIDS="${STARTED_PIDS} ${pid}" ;;
         esac
     done
+}
+
+# 造一套 e2e 專用的 pack 到使用者目錄。參數同 `make-test-blocks.swift`：
+# <id> <體高> <色相偏移> [<要略過的動作>...]
+#
+# 用產生器現做而不是複製 `Tests/.../Fixtures` 裡的 fixture：目錄名必須等於
+# manifest id（`idDirectoryMismatch` 是 error），而 `e2e-` 前綴讓它不可能撞到
+# 使用者自己的 pack。撞到了就整條停下——寧可少驗一條，也不要覆蓋別人的檔案。
+make_pack() {
+    local id="$1"; shift
+    if [[ -e "${USER_PACKS}/${id}" ]]; then
+        bad "使用者目錄裡已經有 ${id}；不覆蓋、也不會刪它"
+        return 1
+    fi
+    mkdir -p "${USER_PACKS}"
+    swift "${ROOT}/Scripts/make-test-blocks.swift" "${USER_PACKS}" "${id}" "$@" >/dev/null \
+        || { bad "產不出 pack ${id}"; return 1; }
+    CREATED_PACK_IDS="${CREATED_PACK_IDS} ${id}"
 }
 
 step "建置"
@@ -84,28 +177,96 @@ expect "$(field 'd["visible"]')" "False" "剛啟動時貓不可見"
 expect "$(field 'd["pack"]["id"]')" "test-blocks" "載入的是內建 pack"
 
 # --- 3 -----------------------------------------------------------------------
-step "3. summon → 輪詢到 resting → distance <= arrive.radius"
+step "3. summon → 抵達 resting，而且貓宣稱抵達時真的在游標附近"
 "${FM}" summon >/dev/null
-PHASE=""
-DIST=""
-for _ in $(seq 1 40); do
-    # phase 與 distance 一定要取自**同一份快照**。分兩次 status 讀的話，
-    # 兩次之間游標會動，於是「抵達時的距離」變成「抵達後某個時刻的距離」——
-    # 而抵達之後貓是靜止的，游標一漂走距離就超標，斷言隨機失敗。
-    read -r PHASE DIST <<< "$(json | /usr/bin/python3 -c \
-        'import json,sys; d=json.load(sys.stdin)["data"]; print(d["phase"], d["distance"])')"
-    [[ "${PHASE}" == "resting" ]] && break
-    sleep 0.5
-done
-expect "${PHASE}" "resting" "20 秒內抵達 resting"
 
-# 只在**抵達的那一刻**成立：resting 的貓允許游標漂到 rehunt.threshold（160）
-# 才重新追，所以「休息中的貓距離一定 <= arrive.radius」是假的。
-ARRIVE="$("${FM}" config get arrive.radius | awk '{print $3}')"
-if /usr/bin/python3 -c "import sys; sys.exit(0 if ${DIST} <= ${ARRIVE} else 1)"; then
-    ok "抵達當下 distance ${DIST} <= arrive.radius ${ARRIVE}"
+# 整段輪詢搬進**一個** python process。回傳一行：
+#   <最後看到的 phase> <settled 期間看過的最小 distance（沒有就是 none）> <游標累計位移> <取樣數>
+#
+# 為什麼要搬：(1) 要記的是浮點數的最小值與累加位移，bash 沒有浮點運算；
+# (2) 原本每取一次樣就開一個 python，取樣頻率被 process 啟動成本綁死在 0.5 秒，
+#     而「貓剛坐下」那一段比 0.5 秒短得多。
+#
+# phase、distance、cursor 一定要取自**同一份快照**：分幾次讀的話，中間游標會動，
+# 讀到的就不是同一個時刻的系統狀態，比對出來的關係是拼湊的。
+arrival_probe() {
+    /usr/bin/python3 - "${FM}" <<'PY'
+import json, math, subprocess, sys, time
+
+fm = sys.argv[1]
+BUDGET, INTERVAL = 20.0, 0.15
+# 「貓宣稱自己抵達了」的三個 phase。這三個之下貓是靜止的，不再往鼠標移動
+# （`CatSessionUseCase.advance`：只有 hunting / exiting / teaser* 會呼叫 move）。
+SETTLED = {"arriving", "sitting", "resting"}
+
+phase, samples, travel, prev, best = "（沒取到任何狀態）", 0, 0.0, None, None
+deadline = time.monotonic() + BUDGET
+while time.monotonic() < deadline:
+    try:
+        out = subprocess.run([fm, "status", "--json"],
+                             capture_output=True, timeout=5).stdout
+        d = json.loads(out)["data"]
+    except Exception:
+        time.sleep(INTERVAL)
+        continue
+    samples += 1
+    phase = d["phase"]
+    cur = (d["cursor"]["x"], d["cursor"]["y"])
+    if prev is not None:
+        travel += math.hypot(cur[0] - prev[0], cur[1] - prev[1])
+    prev = cur
+    if phase in SETTLED:
+        best = d["distance"] if best is None else min(best, d["distance"])
+    if phase == "resting":
+        break
+    time.sleep(INTERVAL)
+
+print(phase, "none" if best is None else repr(best), repr(travel), samples)
+PY
+}
+read -r PHASE MIN_SETTLED TRAVEL SAMPLES <<< "$(arrival_probe)"
+
+# 有沒有外力介入。這一步 e2e 一次都沒碰游標，所以任何位移都來自外力。
+#
+# 用 App 回報的游標算而不是 read-cursor.swift：要的是**整段期間的累計位移**
+# （只比對頭尾會漏掉「移開又移回來」），而每開一支 swift 腳本要一秒，逐次取樣付不起。
+# 產品若謊報游標，這個訊號會把斷言推向「無法判定」而不是「通過」；而且下面兩條要抓的
+# bug（貓一直沒坐下、貓停在遠處就宣稱抵達）本身都不會製造游標位移，躲不進來。
+# 回報的游標是否忠實另有 step 6 / 6b 在守。
+DISTURBED=0
+if /usr/bin/python3 -c "import sys; sys.exit(0 if ${TRAVEL} > ${CURSOR_STILL_TOLERANCE} else 1)"; then
+    DISTURBED=1
+fi
+
+# resting 的貓一旦被拉開超過 rehunt.threshold（160）就會起身重追，所以
+# 「20 秒內一定會休息」在游標持續被移動時根本不是系統承諾的性質——不是產品壞了。
+if [[ "${PHASE}" == "resting" ]]; then
+    ok "20 秒內抵達 resting（${SAMPLES} 次取樣）"
+elif [[ "${DISTURBED}" -eq 1 ]]; then
+    skip "20 秒內沒抵達 resting（停在 ${PHASE}），但期間游標被外力移動了 ${TRAVEL} 點，貓一直在重新追逐 → 無法判定"
 else
-    bad "抵達當下 distance ${DIST} 超過 arrive.radius ${ARRIVE}"
+    bad "20 秒內沒抵達 resting（停在 ${PHASE}），而且期間游標累計只動了 ${TRAVEL} 點"
+fi
+
+# 原本這一條寫成「輪詢到 resting 之後讀一次 distance，要求 <= arrive.radius」，**那是錯的**：
+# 系統保證的只有「進入 sitting 的那一帧 distance <= arrive.radius」，之後貓就不動了，
+# 而休息中的貓允許游標漂到 rehunt.threshold（160）才重新追。0.5 秒一次的輪詢抓不到
+# 那一帧，抓到的是「抵達後某個時刻」——那個時刻的距離沒有任何上界約束，
+# 所以原本的斷言在斷言一個系統根本不維持的性質（實測 108.18 > 76.8）。
+#
+# 改成「settled 期間看過的**最小** distance」：這三個 phase 下貓是靜止的，游標漂走
+# 只會讓距離變大，所以最小值對干擾是穩健的；同時 arrive.radius 這個緊上限保得住——
+# 貓若停在 500 點外就宣稱抵達，每一次取樣都會超標，一個都不會低於 76.8。
+# （只放寬上限到 160 就不行：那等於承認「貓可以停在 rehunt 邊界上」，
+#   而那正是 rehunt 會立刻把它拉回去的距離，斷言變成沒有經驗內容的恆真句。）
+ARRIVE="$("${FM}" config get arrive.radius | awk '{print $3}')"
+if [[ "${MIN_SETTLED}" != "none" ]] \
+   && /usr/bin/python3 -c "import sys; sys.exit(0 if ${MIN_SETTLED} <= ${ARRIVE} else 1)"; then
+    ok "貓宣稱抵達時真的在游標附近（最小 distance ${MIN_SETTLED} <= arrive.radius ${ARRIVE}）"
+elif [[ "${DISTURBED}" -eq 1 ]]; then
+    skip "settled 期間最小 distance 是 ${MIN_SETTLED}（arrive.radius ${ARRIVE}），但期間游標被外力移動了 ${TRAVEL} 點 → 無法判定"
+else
+    bad "貓宣稱抵達時距離游標 ${MIN_SETTLED}，超過 arrive.radius ${ARRIVE}（期間游標累計只動了 ${TRAVEL} 點）"
 fi
 
 # --- 4 -----------------------------------------------------------------------
@@ -129,41 +290,74 @@ expect "$?" "2" "路徑讀不到是用法錯誤（2），不是 pack 壞掉（1�
 
 # --- 5 -----------------------------------------------------------------------
 step "5. config set 超出範圍 → exit 1、CONFIG_VALUE_OUT_OF_RANGE"
+# 比對的是「跟送出前一樣」而不是出廠值 10：設定是使用者共用的
+# （見檔案開頭 `SAVED_PACK_ID` 那段），而使用者在設定視窗調過 rest.duration
+# 之後，寫死 10 的那條斷言就會紅——紅的原因與「拒絕不是 clamp」無關。
+# 這一條真正要證明的是「被拒絕的值一格都沒被寫進去」，而那與原值是多少無關。
+BEFORE_REST="$("${FM}" config get rest.duration | awk '{print $3}')"
 OUT="$("${FM}" config set rest.duration 999999 --json 2>&1)"; CODE=$?
 expect "${CODE}" "1" "exit code 1"
 expect "$(echo "${OUT}" | /usr/bin/python3 -c 'import json,sys; print(json.load(sys.stdin)["error"]["code"])')" \
        "CONFIG_VALUE_OUT_OF_RANGE" "錯誤碼正確"
-expect "$("${FM}" config get rest.duration | awk '{print $3}')" "10" "拒絕不是 clamp——值完全沒被改動"
+expect "$("${FM}" config get rest.duration | awk '{print $3}')" "${BEFORE_REST}" \
+       "拒絕不是 clamp——值完全沒被改動（送出前是 ${BEFORE_REST}）"
 
 # --- 6 -----------------------------------------------------------------------
 step "6. 座標系：鼠標往上移，cursor.y 要變大（AppKit 全域座標 Y 向上）"
 # 比對的是「同一時刻的真實游標」與「App 回報的游標」的**變化方向**，
-# 不是「我要求的位置」——本機的游標會自己漂移（要求 (400,300)，一秒後可能
-# 停在 (1111,477)），拿要求值去比會偶發失敗，而失敗的原因與被測物無關。
+# 不是「我要求的位置」——多螢幕錯位排列下，我要求的點可能不在任何一片螢幕上，
+# 系統會把游標吸到最近的合法位置，拿要求值去比會為了與被測物無關的理由失敗。
 #
 # 方向就是 spec 第 8.4 節真正承諾的東西：事件座標系是 Y 向下的，
 # 所以「真實 y 變大時回報的 y 也變大」分得出兩個座標系。
-read_pair() {
-    local real seen
-    seen="$(field 'd["cursor"]["y"]')"
-    real="$(swift "${ROOT}/Scripts/read-cursor.swift" 2>/dev/null | awk '{print $2}')"
-    echo "${real} ${seen}"
-}
-swift "${ROOT}/Scripts/warp-cursor.swift" 400 250 >/dev/null 2>&1
-sleep 0.8
-read -r LOW_REAL LOW_SEEN <<< "$(read_pair)"
-swift "${ROOT}/Scripts/warp-cursor.swift" 400 700 >/dev/null 2>&1
-sleep 0.8
-read -r HIGH_REAL HIGH_SEEN <<< "$(read_pair)"
+#
+# 原本這裡拿「兩次量到的真實 y 相差 > 100 點」當作「warp 生效了、可以判斷方向」的
+# 前提，前提不成立就走 else 記一筆**失敗**，訊息卻寫著「無法判定」——訊息是對的，
+# 歸類是錯的。使用者中途動滑鼠會把兩次 warp 都蓋掉（實測位移只剩 45.6 點），
+# 於是一條沒被評估的斷言被算成產品失敗。
+#
+# 現在干擾有自己的判準：warp 腳本印出的**實際落點**與稍後量到的真實位置之差。
+# 那個差在閒置機器上恆為 0，一旦超過 WARP_DRIFT_TOLERANCE 就記「無法判定」；
+# 「> 100 點」那個檢查留著，但語意收窄成「warp 根本沒生效」——游標沒被外力動過
+# 卻還是沒到位，那才是真的該紅（例如主螢幕放不下這兩個 y）。
 
-if /usr/bin/python3 -c "import sys; sys.exit(0 if abs(${HIGH_REAL} - ${LOW_REAL}) > 100 else 1)"; then
-    if /usr/bin/python3 -c "import sys; sys.exit(0 if (${HIGH_SEEN}-${LOW_SEEN})*(${HIGH_REAL}-${LOW_REAL}) > 0 else 1)"; then
-        ok "回報的 y 與真實 y 同向變化（真實 ${LOW_REAL}→${HIGH_REAL}、回報 ${LOW_SEEN}→${HIGH_SEEN}）"
-    else
-        bad "方向相反：真實 ${LOW_REAL}→${HIGH_REAL}，回報 ${LOW_SEEN}→${HIGH_SEEN}——座標系翻轉了"
+# warp 到指定的全域座標，等 App 取樣一輪，回傳一行：
+#   <落點x> <落點y> <之後量到的真實x> <之後量到的真實y> <App 回報的 y>
+# 任何一段讀不到東西就回 ERR——空字串會讓下游的 python 算式語法錯誤，
+# 而那個錯誤看起來會像「斷言失敗」。
+warp_then_read() {
+    local wx wy rx ry seen
+    read -r wx wy <<< "$(swift "${ROOT}/Scripts/warp-cursor.swift" "$1" "$2" 2>/dev/null)"
+    sleep 0.8
+    # 先讀 App 再讀真實位置：干擾偵測的窗口要**涵蓋 App 那一次取樣**。
+    # 反過來讀的話，落在兩者之間的外力移動會被判成「沒被動過」。
+    seen="$(field 'd["cursor"]["y"]')"
+    read -r rx ry <<< "$(swift "${ROOT}/Scripts/read-cursor.swift" 2>/dev/null)"
+    if [[ -z "${wx}" || -z "${wy}" || -z "${rx}" || -z "${ry}" || -z "${seen}" ]]; then
+        echo "ERR"; return
     fi
+    echo "${wx} ${wy} ${rx} ${ry} ${seen}"
+}
+
+# 兩點距離（<x1> <y1> <x2> <y2>）。
+gap() { /usr/bin/python3 -c "import math; print(math.hypot($3-$1, $4-$2))"; }
+
+read -r LOW_WX LOW_WY LOW_RX LOW_RY LOW_SEEN <<< "$(warp_then_read 400 250)"
+read -r HIGH_WX HIGH_WY HIGH_RX HIGH_RY HIGH_SEEN <<< "$(warp_then_read 400 700)"
+if [[ "${LOW_WX}" == "ERR" || "${HIGH_WX}" == "ERR" ]]; then
+    bad "讀不到游標位置（warp-cursor.swift / read-cursor.swift / status 有一支沒吐出東西）"
 else
-    bad "游標沒有真的移動（${LOW_REAL} → ${HIGH_REAL}），這一條無法判定"
+    LOW_DRIFT="$(gap "${LOW_WX}" "${LOW_WY}" "${LOW_RX}" "${LOW_RY}")"
+    HIGH_DRIFT="$(gap "${HIGH_WX}" "${HIGH_WY}" "${HIGH_RX}" "${HIGH_RY}")"
+    if /usr/bin/python3 -c "import sys; sys.exit(0 if max(${LOW_DRIFT}, ${HIGH_DRIFT}) > ${WARP_DRIFT_TOLERANCE} else 1)"; then
+        skip "warp 之後游標被外力移走（偏離落點 ${LOW_DRIFT} / ${HIGH_DRIFT} 點），量到的不是我放的位置 → 無法判定"
+    elif ! /usr/bin/python3 -c "import sys; sys.exit(0 if abs(${HIGH_RY} - ${LOW_RY}) > 100 else 1)"; then
+        bad "游標沒被外力動過，卻也沒被 warp 挪開（${LOW_RY} → ${HIGH_RY}）：warp 沒生效，或主螢幕放不下這兩個 y"
+    elif /usr/bin/python3 -c "import sys; sys.exit(0 if (${HIGH_SEEN}-${LOW_SEEN})*(${HIGH_RY}-${LOW_RY}) > 0 else 1)"; then
+        ok "回報的 y 與真實 y 同向變化（真實 ${LOW_RY}→${HIGH_RY}、回報 ${LOW_SEEN}→${HIGH_SEEN}）"
+    else
+        bad "方向相反：真實 ${LOW_RY}→${HIGH_RY}，回報 ${LOW_SEEN}→${HIGH_SEEN}——座標系翻轉了"
+    fi
 fi
 
 # --- 6b ----------------------------------------------------------------------
@@ -176,19 +370,31 @@ for _ in $(seq 1 40); do
     [[ "$(field 'd["visible"]')" == "False" ]] && break
     sleep 0.5
 done
-swift "${ROOT}/Scripts/warp-cursor.swift" 300 250 >/dev/null 2>&1
-sleep 0.8
-HIDDEN_LOW="$(field 'd["cursor"]["y"]')"
-swift "${ROOT}/Scripts/warp-cursor.swift" 300 900 >/dev/null 2>&1
-sleep 0.8
-HIDDEN_HIGH="$(field 'd["cursor"]["y"]')"
-
 expect "$(field 'd["visible"]')" "False" "前提：貓確實不可見"
-# 漂移是幾十點，這裡的位移是 650 點，所以門檻設 300 分得開
-if /usr/bin/python3 -c "import sys; sys.exit(0 if ${HIDDEN_HIGH} - ${HIDDEN_LOW} > 300 else 1)"; then
-    ok "hidden 狀態下鼠標仍然跟著動（${HIDDEN_LOW} → ${HIDDEN_HIGH}）"
+
+# 這一條用的是與 step 6 完全相同的 warp 手法，所以**同樣會被使用者的手蓋掉**。
+# 它的門檻是 300 點（位移 650 點）而 step 6 是 100 點（位移 450 點），看起來比較寬，
+# 其實兩者都要求外力位移小於 350 點才判得準——step 6 先撞到只是運氣。
+# 既然成因相同，處置也相同：干擾走「無法判定」，其餘照舊。
+read -r HL_WX HL_WY HL_RX HL_RY HIDDEN_LOW <<< "$(warp_then_read 300 250)"
+read -r HH_WX HH_WY HH_RX HH_RY HIDDEN_HIGH <<< "$(warp_then_read 300 900)"
+if [[ "${HL_WX}" == "ERR" || "${HH_WX}" == "ERR" ]]; then
+    bad "讀不到游標位置（warp-cursor.swift / read-cursor.swift / status 有一支沒吐出東西）"
 else
-    bad "hidden 狀態下鼠標凍住了：${HIDDEN_LOW} → ${HIDDEN_HIGH}"
+    HL_DRIFT="$(gap "${HL_WX}" "${HL_WY}" "${HL_RX}" "${HL_RY}")"
+    HH_DRIFT="$(gap "${HH_WX}" "${HH_WY}" "${HH_RX}" "${HH_RY}")"
+    if /usr/bin/python3 -c "import sys; sys.exit(0 if max(${HL_DRIFT}, ${HH_DRIFT}) > ${WARP_DRIFT_TOLERANCE} else 1)"; then
+        skip "warp 之後游標被外力移走（偏離落點 ${HL_DRIFT} / ${HH_DRIFT} 點）→ 無法判定"
+    elif ! /usr/bin/python3 -c "import sys; sys.exit(0 if ${HH_RY} - ${HL_RY} > 300 else 1)"; then
+        bad "游標沒被外力動過，卻也沒被 warp 挪開（真實 ${HL_RY} → ${HH_RY}）：warp 沒生效，或主螢幕放不下這兩個 y"
+    elif /usr/bin/python3 -c "import sys; sys.exit(0 if ${HIDDEN_HIGH} - ${HIDDEN_LOW} > 300 else 1)"; then
+        ok "hidden 狀態下鼠標仍然跟著動（回報 ${HIDDEN_LOW} → ${HIDDEN_HIGH}，真實 ${HL_RY} → ${HH_RY}）"
+    else
+        # 訊息只講量到的東西，不指定成因：這一條紅起來可能是「凍在啟動位置」
+        # （它本來要防的），也可能是回報的座標系翻了或縮放錯了（實測用 mutation
+        # 把回報的 y 換成事件座標時，紅的就是這一行）。寫死一個成因會害人追錯方向。
+        bad "hidden 狀態下回報的鼠標跟不上真實鼠標：真實 ${HL_RY} → ${HH_RY}，回報卻是 ${HIDDEN_LOW} → ${HIDDEN_HIGH}"
+    fi
 fi
 
 # --- 7 -----------------------------------------------------------------------
@@ -216,6 +422,137 @@ expect "$?" "0" "原本的實例仍然在服務 CLI"
 expect "$(field 'd["pack"]["id"]')" "test-blocks" "回應來自一個正常載入 pack 的實例"
 echo "  （本次啟動的 pid：${STARTED_PIDS}；第二個停在提示視窗，收工時一併關掉）"
 
+# 以下四條是 spec 第 15 節 M4 的驗收條件。**它們是 M4 唯一能證明自己做完的東西**——
+# 每一層的單元測試都綠，證明不了接線是對的（M3 的教訓：CLI 的 summon 回 ok
+# 而貓永遠不出現，兩邊的單元測試全綠）。
+
+# 取 --json 輸出裡的錯誤碼。取不到時回一句看得懂的話，不要回空字串——
+# 空字串在 expect 的失敗訊息裡與「欄位存在但是空的」分不出來。
+errcode() {
+    echo "$1" | /usr/bin/python3 -c \
+        'import json,sys; d=json.load(sys.stdin); print(d.get("error",{}).get("code","（沒有 error 欄位，ok=%s）" % d.get("ok")))' \
+        2>/dev/null
+}
+
+# `pack list --json` 裡指名那一套的欄位。
+# 驗收條件說「缺 core 的 pack 被**紅字**拒絕」，而紅字在設定視窗與選單列，
+# e2e 驅動不了 UI；但那兩處畫的就是這份 usable / errors（`SettingsForm` 與
+# `MenuBarController` 都吃 `PackSummary`），所以驗這份資料等於驗紅字的內容來源。
+packentry() {
+    "${FM}" pack list --json 2>/dev/null | /usr/bin/python3 -c \
+        "import json,sys
+ps = {p['id']: p for p in json.load(sys.stdin)['data']['packs']}
+try: print($1)
+except KeyError: print('（清單裡沒有這個 id）')"
+}
+
+# --- 9 -----------------------------------------------------------------------
+step "9. 換 pack（M4 驗收條件一：放入第二套 pack 能切換）"
+# **先把貓叫出來再換。** spec 第 6.5 節的時序（先淡出、換完立刻重新召喚）
+# 只在貓在場時才走得到——貓不在場時 `PackSwapUseCase.request` 當場回 `.swap`，
+# 「先淡出」那條路一步都沒踩到，這條 e2e 就沒有涵蓋 6.5。
+expect "$(field 'd["pack"]["id"]')" "test-blocks" "前提：現在跑的是內建 test-blocks"
+"${FM}" summon >/dev/null
+for _ in $(seq 1 40); do
+    [[ "$(field 'd["visible"]')" == "True" ]] && break
+    sleep 0.5
+done
+expect "$(field 'd["visible"]')" "True" "前提：貓在場，所以待會走的是「先淡出」那條"
+
+"${FM}" pack use test-blocks-tall >/dev/null
+for _ in $(seq 1 40); do
+    [[ "$(field 'd["pack"]["id"]')" == "test-blocks-tall" ]] && break
+    sleep 0.5
+done
+expect "$(field 'd["pack"]["id"]')" "test-blocks-tall" "pack.id 換過去了"
+# **這條才是真正的驗收。** 只比對 id 的話，「更新了 packID 欄位、七個協作者
+# 一個都沒換」會照樣通過，而那正是 M4 最大的風險（`SpriteRepository` 有七個
+# 持有者）。體高讀的是 `pack.sprites.logicalHeight`，換的是整包 `PackBinding`。
+# 轉成 int 再比：JSONEncoder 把 240.0 寫成 `240`，python 那頭是 int 還是 float
+# 取決於編碼細節，拿字面值比會為了與被測物無關的理由紅。
+expect "$(field 'int(d["pack"]["logicalHeight"])')" "240" "體高也跟著換（不是只換了 id）"
+
+# 換完貓要自己回來——那是 6.5 的另一半，也是唯一抓得到「換個 pack 貓就永久消失」
+# 的觀測：`pack use` 與 `summon` 兩個命令都回 ok，少掉的只有畫面上那隻貓。
+for _ in $(seq 1 40); do
+    [[ "$(field 'd["visible"]')" == "True" ]] && break
+    sleep 0.5
+done
+expect "$(field 'd["visible"]')" "True" "換完之後貓自己回來了（換完立刻重新召喚）"
+
+# --- 10 ----------------------------------------------------------------------
+step "10. 缺 core 的 pack 不能選（M4 驗收條件二）"
+make_pack e2e-bad-core 96 180 sit   # 少了 sit（core 級）→ 整套無效
+expect "$(packentry 'ps["e2e-bad-core"]["usable"]')" "False" "清單裡列得出來，但不可用"
+if packentry 'ps["e2e-bad-core"]["errors"]' | grep -q "必要動作"; then
+    ok "而且說得出原因（紅字的內容來源）"
+else
+    bad "errors 沒有指出缺少必要動作：$(packentry 'ps["e2e-bad-core"]["errors"]')"
+fi
+
+OUT="$("${FM}" pack use e2e-bad-core --json 2>&1)"; CODE=$?
+expect "${CODE}" "1" "壞 pack 回 exit 1"
+# 錯誤碼要一起驗：`PACK_NOT_FOUND` 的 exit code 也是 1，所以只看 exit code 的話，
+# 「這套 pack 根本沒被掃到」與「掃到了、判定不合格」分不出來——前者會讓這一條
+# 在驗證邏輯整個不存在的情況下照樣通過。
+expect "$(errcode "${OUT}")" "PACK_INVALID" "錯誤碼是 PACK_INVALID（不是沒找到）"
+expect "$(field 'd["pack"]["id"]')" "test-blocks-tall" "而且沒有真的換過去"
+
+# --- 11 ----------------------------------------------------------------------
+step "11. 缺 teaser 的 pack 讓逗貓棒不可用（M4 驗收條件三）"
+# 驗收條件的原文是「⌥⌘T 無反應」，但**合成鍵盤事件打不到 Carbon 快捷鍵**：
+# 一支獨立探針用與 `CarbonHotkeyDriver` 完全相同的方式註冊快捷鍵，
+# `osascript` 與 `CGEvent` 兩條路都打不到它（M4 交接有對照組實測）。
+# 拿那個管道驗，看到的「沒反應」證明不了任何事。
+# 改走 `findmouse teaser on`：它與快捷鍵投遞的是同一個 `.setTeaser(true)`，
+# 閘門也在同一個 `ControlUseCase`（`ControlUseCase.swift:59`）。
+expect "$(field 'd["pack"]["id"]')" "test-blocks-tall" "前提：現在跑的是缺 pounce 的那套"
+expect "$(field 'd["teaser"]["available"]')" "False" "缺 pounce → teaserAvailable: false"
+OUT="$("${FM}" teaser on --json 2>&1)"; CODE=$?
+expect "${CODE}" "1" "teaser on 回 exit 1"
+# 同樣要驗碼：`APP_NOT_RESPONDING` 也是 exit 1，而那是「App 卡住」不是「閘門擋下」。
+expect "$(errcode "${OUT}")" "TEASER_UNAVAILABLE" "錯誤碼是 TEASER_UNAVAILABLE"
+expect "$(field 'd["teaser"]["enabled"]')" "False" "而且真的沒開起來"
+
+# --- 12 ----------------------------------------------------------------------
+step "12. 使用者目錄丟進去的 pack 切得過去；它在執行期消失就退回內建"
+# 前半是驗收條件一的字面意思（「**放入**第二套 pack」——test-blocks-tall 是內建的，
+# 從 bundle 載入，證明不了使用者目錄那條路）。後半是 spec 第 10 節：
+# 「當前 pack 在執行期失效（檔案被刪）→ 退回內建 pack 並記錄 log」。
+#
+# 內建的兩套都刪不得（在 .app 的 bundle 裡），所以要先自己造一套放進使用者目錄。
+make_pack e2e-dropin 120 60
+"${FM}" pack use e2e-dropin >/dev/null
+for _ in $(seq 1 40); do
+    [[ "$(field 'd["pack"]["id"]')" == "e2e-dropin" ]] && break
+    sleep 0.5
+done
+expect "$(field 'd["pack"]["id"]')" "e2e-dropin" "使用者目錄的 pack 切得過去"
+expect "$(field 'int(d["pack"]["logicalHeight"])')" "120" "而且真的載入了它的體高"
+
+rm -rf "${USER_PACKS:?}/e2e-dropin"
+# 重啟才驗得到退回：`pack.id` 留在設定裡是 e2e-dropin（退回那條路刻意不改寫它，
+# 見 `AppDelegate.makeSettingsFormStore` 的註解），所以新實例會先去要那一套、
+# 要不到才退回內建。
+kill_started
+launch_app
+for _ in $(seq 1 40); do "${FM}" status >/dev/null 2>&1 && break; sleep 0.5; done
+expect "$(field 'd["pack"]["id"]')" "test-blocks" "正在用的 pack 被刪掉，重啟退回內建"
+expect "$(field 'int(d["pack"]["logicalHeight"])')" "96" "退回的是真的內建那套，不是只改了 id"
+
 step "結果"
-printf '  通過 %d、失敗 %d\n' "${PASS}" "${FAIL}"
-[[ "${FAIL}" -eq 0 ]]
+printf '  通過 %d、失敗 %d、無法判定 %d\n' "${PASS}" "${FAIL}" "${SKIP}"
+if [[ "${SKIP}" -gt 0 ]]; then
+    printf '  有 %d 條偵測到游標被外力移動，沒有被評估——既不算通過也不算失敗。\n' "${SKIP}"
+    printf '  請在沒有人操作滑鼠的情況下重跑 Scripts/e2e.sh（或先關掉會自動移動游標的工具）。\n'
+fi
+# 無法判定不得被當成通過：只要有一條沒被評估，這一輪就沒有證明接線是完整的。
+#
+# 這裡刻意**不設**「無法判定的比例低於 X 就放行」的門檻。理由有二：
+# (1) 任何一條無法判定都已經讓 exit code 非零，比例門檻沒有可放行的區間可管；
+# (2) 「某條在沒有人碰滑鼠時也一直回無法判定」這個退化情境進不來——skip 的三個
+#     觸發點都要求一個實測到的位移量超過 CURSOR_STILL_TOLERANCE 或
+#     WARP_DRIFT_TOLERANCE，而閒置機器上那些量恆為 0（實測：連續 5 遍全部
+#     通過 39、失敗 0、無法判定 0）；訊息也把量到的值印出來，真的出現
+#     「無人碰滑鼠卻量到位移」就是那個數字自己在說話。
+[[ "${FAIL}" -eq 0 && "${SKIP}" -eq 0 ]]

@@ -24,7 +24,7 @@ final class OverlayEnsemble {
     }
 
     private var panes: [Pane] = []
-    private let sprites: SpriteRepository
+    private var sprites: SpriteRepository
     private let feather: CGFloat
     private let level: CGWindowLevelKey
 
@@ -54,6 +54,17 @@ final class OverlayEnsemble {
             window.orderFrontRegardless()
             return Pane(window: window, view: view)
         }
+    }
+
+    /// 換 pack 的圖，但**不重建視窗**：重建會讓每一片 overlay 閃一下，
+    /// 而換 pack 已經有「貓走掉再跑回來」的動畫在演了。
+    ///
+    /// 自己的 `sprites` 也要換，不是只更新現有的 view——`rebuild(screens:)`
+    /// 用它建新 view，漏了的話換 pack 之後插拔一次螢幕就悄悄退回舊圖，
+    /// 而那時離換 pack 已經很遠了，沒有人會把兩件事連起來。
+    func replace(sprites: SpriteRepository) {
+        self.sprites = sprites
+        for pane in panes { pane.view.replace(sprites: sprites) }
     }
 
     /// 把同一份狀態畫到每一片螢幕上。

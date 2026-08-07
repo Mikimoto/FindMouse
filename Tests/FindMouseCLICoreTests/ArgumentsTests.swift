@@ -32,6 +32,9 @@ private func request(_ line: String) throws -> WireRequest {
             == WireRequest(command: "config.reset", args: ["key": "cat.speed"]))
     #expect(try request("config reset --all")
             == WireRequest(command: "config.reset", args: ["all": "true"]))
+    #expect(try request("pack list") == WireRequest(command: "pack.list"))
+    #expect(try request("pack use test-blocks-tall")
+            == WireRequest(command: "pack.use", args: ["id": "test-blocks-tall"]))
     #expect(try request("pack validate /tmp/p")
             == WireRequest(command: "pack.validate", args: ["path": "/tmp/p"]))
 }
@@ -62,23 +65,29 @@ private func request(_ line: String) throws -> WireRequest {
                  "config", "config frobnicate", "config get a b",
                  "config set cat.speed", "config set", "config reset",
                  "config reset --everything", "pack", "pack validate",
-                 "pack validate a b"] {
+                 "pack validate a b", "pack list all", "pack use a b",
+                 "pack frobnicate"] {
         #expect(throws: (any Error).self, "「\(line)」應該被擋下來") { try parse(line) }
     }
 }
 
-/// M4 的命令要明講「還沒實作」，不能回「未知命令」。
+/// `pack use` 少了 id 要在**本地**擋下。
 ///
-/// 後者會讓人以為自己打錯字，然後去查拼寫。
-@Test func notYetImplementedPackCommandsSayS() {
-    for sub in ["list", "use"] {
-        var message = ""
-        #expect(throws: (any Error).self) {
-            do { _ = try parse("pack \(sub)") }
-            catch let Arguments.ParseError.usage(text) { message = text; throw Arguments.ParseError.usage(text) }
+/// 這條原本是 M3 的「pack list / use 尚未實作」；命令實作之後該防的形狀
+/// 換了，但仍在同一個位置——送一個沒有 id 的 `pack.use` 出去，App 會回
+/// INVALID_ARGUMENT，於是「你少打一個 id」變成 App 端的抱怨，
+/// 要查的地方差很遠（與 `config set` 漏值同一個道理）。
+@Test func packUseWithoutAnIDIsRejectedLocally() {
+    var message = ""
+    #expect(throws: (any Error).self) {
+        do { _ = try parse("pack use") }
+        catch let Arguments.ParseError.usage(text) {
+            message = text
+            throw Arguments.ParseError.usage(text)
         }
-        #expect(message.contains("M4"), "實際訊息：\(message)")
     }
+    // 訊息要說出缺的是什麼，否則跟「pack 這個命令不對」分不開
+    #expect(message.contains("id"), "實際訊息：\(message)")
 }
 
 /// 沒有參數、或明確要說明時走 help，而不是「未知命令」。
@@ -98,6 +107,19 @@ private func request(_ line: String) throws -> WireRequest {
     // 四種 exit code 都要列出來，腳本才知道 3 與 1 的差別
     for code in ["0", "1", "2", "3"] {
         #expect(Arguments.usageText.contains(code))
+    }
+}
+
+/// spec 第 8.3 節列的每一個命令都要出現在用法裡。
+///
+/// 沒列到的命令等於不存在——使用者不會去猜。而漏一行沒有任何訊號：
+/// 解析照樣成功，只是沒人知道可以打（`pack list` / `pack use` 在 M4
+/// 就是這樣被整個漏掉的，直到 e2e 腳本吃到 exit 2）。
+@Test func usageDocumentsEveryCommand() {
+    for command in ["summon", "dismiss", "toggle", "teaser", "status",
+                    "config get", "config set", "config reset",
+                    "pack list", "pack use", "pack validate"] {
+        #expect(Arguments.usageText.contains(command), "用法沒提到 \(command)")
     }
 }
 

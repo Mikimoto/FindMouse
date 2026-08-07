@@ -199,12 +199,66 @@ private func settingsError(_ body: () throws -> Void) -> SettingsError? {
     try settings.set("hotkey.summon", to: "⌃⌘F")
     #expect(try settings.get("pack.id") == "fluffy-orange")
     #expect(try settings.get("hotkey.summon") == "⌃⌘F")
-    // hotkey.* 仍然只要求非空
-    #expect(settingsError { try settings.set("hotkey.summon", to: "  ") }
-            == .invalidValue(key: "hotkey.summon", value: "  ", expected: "非空字串"))
 
     try settings.reset("pack.id")
     #expect(try settings.get("pack.id") == before, "reset 後回到內建 pack")
+}
+
+/// `hotkey.*` 只收 `HotkeySpec` 解得開的字串。
+///
+/// **這是熱更新的前置條件，不是格式潔癖。** M4 Task 8 之後改設定就當場重新註冊，
+/// 所以一個寫得進去、卻解不出 spec 的值等於「快捷鍵靜默消失」——而使用者打的
+/// 那個值還好端端存在設定裡，重啟也救不回來。spec 第 9 節要求值域只有一份，
+/// 所以它在這裡，不能留給設定視窗（Task 9 的手動驗收第 4 條驗的就是這件事）。
+///
+/// 兩個 key 都要驗：只改 summon 的 kind 的話，這條若只測 summon 就會綠。
+@Test func hotkeyKeysRejectAnythingThatCannotBeRegistered() throws {
+    let settings = makeUseCase()
+
+    for key in ["hotkey.summon", "hotkey.teaser"] {
+        let before = try settings.get(key)
+        for bad in ["F", "", "  ", "⌥⌘", "⌥⌘FF", "⌥⌘😀", "⌥⌥F", "F⌥⌘", "⌥⌘-", "abc"] {
+            #expect(settingsError { try settings.set(key, to: bad) }
+                    == .invalidValue(key: key, value: bad,
+                                     expected: "修飾鍵（⌃⌥⇧⌘）加一個 A–Z 或 0–9，例如 ⌥⌘F"),
+                    "\(key) 的「\(bad)」應該被拒絕")
+            // 拒絕的寫入不能留下痕跡：舊的快捷鍵要照常註冊著
+            #expect(try settings.get(key) == before, "「\(bad)」被拒絕之後值卻變了")
+        }
+
+        try settings.set(key, to: "⌃⌥C")
+        #expect(try settings.get(key) == "⌃⌥C")
+    }
+}
+
+/// 存進去的是**正規化後**的字串。
+///
+/// 不正規化的話，設定視窗顯示的（`displayString`）與 `config get` 回的
+/// （使用者打的原文）會是同一個快捷鍵的兩個樣子，看起來像哪一邊壞了。
+@Test func hotkeyValuesAreStoredInTheirCanonicalForm() throws {
+    let settings = makeUseCase()
+    for (typed, canonical) in [("⌘⌥F", "⌥⌘F"), ("⌥⌘f", "⌥⌘F"), ("⇧⌃a", "⌃⇧A"),
+                               (" ⌥⌘T ", "⌥⌘T"), ("⌃⌥⇧⌘z", "⌃⌥⇧⌘Z")] {
+        try settings.set("hotkey.summon", to: typed)
+        #expect(try settings.get("hotkey.summon") == canonical, "「\(typed)」沒有被正規化")
+    }
+}
+
+/// 出廠值要與 `HotkeySpec` 宣告的同一份，而且解得開。
+///
+/// 兩邊各寫一個字面值的話，改了其中一邊就會出現「App 註冊的」與
+/// 「`config get` 回的」不一樣，而兩邊都不會報錯。
+@Test func hotkeyDefaultsComeFromTheDomainAndParse() throws {
+    let settings = makeUseCase()
+    #expect(try settings.get("hotkey.summon") == HotkeySpec.defaultSummonText)
+    #expect(try settings.get("hotkey.teaser") == HotkeySpec.defaultTeaserText)
+    #expect(HotkeySpec(try settings.get("hotkey.summon")) != nil)
+    #expect(HotkeySpec(try settings.get("hotkey.teaser")) != nil)
+
+    // 改掉再 reset 要回到同一個出廠值——熱更新最需要生效的就是這條路
+    try settings.set("hotkey.summon", to: "⌃⌥C")
+    try settings.reset("hotkey.summon")
+    #expect(try settings.get("hotkey.summon") == HotkeySpec.defaultSummonText)
 }
 
 /// `pack.id` 的字元集要與 `PackValidator.isValidID` 同一條規則。

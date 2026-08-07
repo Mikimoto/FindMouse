@@ -37,6 +37,25 @@ public struct OverlayPresenter: Sendable {
         self.feather = feather
     }
 
+    /// 「一套 pack ＋ 一份設定」就決定了整個 presenter。
+    ///
+    /// 為什麼要這個便利建構子：`cat.scale` 是**建構時吃進去**的，而
+    /// `CatSessionUseCase` 每帧重讀設定。改了 `cat.scale` 卻不重建 presenter 的話，
+    /// 貓的移動幾何立刻變、畫出來的大小沒變，兩者對不上。所以設定一改就要重建，
+    /// 而重建的地方（App 啟動、換 pack、設定變更）有三處——把「哪些欄位來自 pack、
+    /// 哪些來自設定」寫成一份，漏掉其中一個欄位才會是編譯錯誤而不是視覺 bug。
+    ///
+    /// presenter 是無狀態的純轉換，所以重建很便宜，也不會打斷正在演的動畫。
+    public init(sprites: SpriteRepository, config: BehaviorConfig) {
+        self.init(logicalHeight: sprites.logicalHeight,
+                  catScale: config.catScale,
+                  anchor: sprites.anchor,
+                  spriteFacing: sprites.spriteFacing,
+                  mirrorForOpposite: sprites.mirrorForOpposite,
+                  spriteAspect: sprites.spriteAspect,
+                  feather: config.spotlightFeather)
+    }
+
     public func viewModel(for state: CatFrameState, in windowFrame: CGRect) -> OverlayViewModel {
         let height = logicalHeight * catScale
         let cat = OverlayViewModel.Cat(

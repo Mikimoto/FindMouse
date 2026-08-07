@@ -8,8 +8,13 @@ public enum SettingKind: Sendable, Equatable {
     case boolean
     /// 合法值的完整列舉（`spotlight.trigger`、`window.level`）
     case choice([String])
-    /// 不驗內容，只要求非空（`hotkey.*`）
-    case freeText
+    /// 快捷鍵字串：`HotkeySpec` 解得開的那些（`hotkey.summon`、`hotkey.teaser`）。
+    ///
+    /// M3 時這兩個 key 是「不驗內容、只要求非空」的，因為改了要重啟才生效，
+    /// 錯的值頂多下次啟動時沒有快捷鍵。M4 Task 8 加上熱更新之後那變成地雷：
+    /// `config set hotkey.summon F` 會寫入成功、重新註冊時解不出 spec，
+    /// 使用者的快捷鍵**當場靜默消失**，而他打的那個值還存在設定裡，重啟也救不回來。
+    case hotkey
     /// pack 目錄名：`[a-z0-9-]+`（spec 第 6.4 節）。
     ///
     /// 這裡要驗，是因為 M4 的 `pack use <id>` 會拿它當**路徑組件**——
@@ -106,6 +111,15 @@ public final class SettingsUseCase {
         return Self.render(currentValue(of: spec))
     }
 
+    /// 當前值，**保留型別**。
+    ///
+    /// `get` 回字串是為了 CLI 與 wire；設定視窗要的是 `Bool` 與 `Double`，
+    /// 讓它自己從 `"true"` 解回去，等於把 `render` 的規則抄第二份到 UI 裡
+    /// ——而那份抄本在 `render` 改掉的那天不會有任何訊號。
+    public func value(_ key: String) throws -> SettingValue {
+        currentValue(of: try spec(key))
+    }
+
     public func getAll() -> [SettingEntry] {
         Self.registry
             .sorted { $0.key < $1.key }
@@ -168,7 +182,9 @@ public final class SettingsUseCase {
         }
     }
 
-    private static func render(_ value: SettingValue) -> String {
+    /// 不是 private：`SettingsForm` 印值域說明與錯誤訊息時用同一份數字格式。
+    /// 各印各的話，同一個範圍在 CLI 會是 `40–1000`、在設定視窗會是 `40.0–1000.0`。
+    static func render(_ value: SettingValue) -> String {
         switch value {
         case .number(let d):
             // 整數就印整數：CLI 讀 `160` 比 `160.0` 舒服，而且再餵回 set 也解得回來
@@ -206,11 +222,17 @@ public final class SettingsUseCase {
             }
             return .text(raw)
 
-        case .freeText:
-            guard !raw.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-                throw SettingsError.invalidValue(key: key, value: raw, expected: "非空字串")
+        case .hotkey:
+            guard let spec = HotkeySpec(raw) else {
+                throw SettingsError.invalidValue(
+                    key: key, value: raw,
+                    expected: "修飾鍵（⌃⌥⇧⌘）加一個 A–Z 或 0–9，例如 \(HotkeySpec.defaultSummonText)")
             }
-            return .text(raw)
+            // 存**正規化後**的字串而不是使用者打的那個：`⌘⌥F` 與 `⌥⌘F` 是同一個
+            // 快捷鍵，兩種寫法都存得進去的話，設定視窗顯示的與 `config get` 回的
+            // 會是同一個鍵的兩個樣子。與 `set spotlight.enabled yes` 回 `true`
+            // 同一個原則——回讀到的是「存進去的東西」。
+            return .text(spec.displayString)
 
         case .packID:
             // 與 PackValidator.isValidID 同一條規則，理由也同一個：ASCII 的
@@ -248,8 +270,8 @@ public final class SettingsUseCase {
                         }
                     },
                     clear: { c in c.spotlightTrigger = BehaviorConfig().spotlightTrigger }))),
-            external("hotkey.summon", .freeText, defaultValue: "⌥⌘F"),
-            external("hotkey.teaser", .freeText, defaultValue: "⌥⌘T"),
+            external("hotkey.summon", .hotkey, defaultValue: HotkeySpec.defaultSummonText),
+            external("hotkey.teaser", .hotkey, defaultValue: HotkeySpec.defaultTeaserText),
             cg("rehunt.threshold", 40...1000, \.rehuntThreshold),
             SettingSpec(
                 key: "wake.threshold",

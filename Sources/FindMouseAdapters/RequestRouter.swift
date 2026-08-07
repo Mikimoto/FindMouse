@@ -14,17 +14,43 @@ import FindMouseWire
 /// 得在第二層再回一次錯，而 `UNKNOWN_COMMAND` 這個碼會變得含糊。
 public final class RequestRouter {
 
-    private let control: ControlUseCase
-    private let settings: SettingsUseCase
+    private let control: () -> ControlUseCase
+    private let settings: () -> SettingsUseCase
     private let status: () -> StatusPayload
+    private let packs: () -> [PackSummary]
+    private let usePack: (String) -> Void
+    private let onSettingsChanged: () -> Void
 
+    /// - Parameter control: 當下的命令佇列。**每次呼叫都重取，不在 init 綁死**——
+    ///   換 pack 會連 `ControlUseCase` 一起換掉（它的 `catalog` 是 `private let`），
+    ///   而綁死的那一份會變成沒有人排空的孤兒佇列：`findmouse summon` 回 ok、
+    ///   命令進了佇列、貓永遠不出現。M3 的 `wakeIfWorkPending` 就是同一個形狀的 bug。
+    /// - Parameter settings: 當下的設定。同樣不綁死——`SettingsUseCase` 持有
+    ///   pack 的 catalog，`arrive.radius` 的衍生預設要用它的 `logicalHeight`。
     /// - Parameter status: 產生當下狀態的快照。注入而不是自己算：
     ///   它需要 `CatFrameState`、螢幕清單與 pack 資訊，那些都住在 App 層。
-    public init(control: ControlUseCase, settings: SettingsUseCase,
-                status: @escaping () -> StatusPayload) {
+    /// - Parameter packs: 當下掃得到的 pack。每次呼叫都重掃，不快取：
+    ///   使用者把 pack 丟進目錄之後不該還要重開 App 才看得到。
+    /// - Parameter usePack: 換 pack 的請求交給誰。**router 不自己換**——
+    ///   換一套 pack 要一起換掉 App 那七個從 pack 衍生出來的持有者，
+    ///   而 router 一個都碰不到。與 `status` 注入快照是同一個模式。
+    /// - Parameter onSettingsChanged: 設定**真的變了**之後通知一次。今天只有
+    ///   `hotkey.*` 需要它（M4 Task 8：改了不必重啟就生效），但這裡刻意不帶 key
+    ///   ——「哪些 key 改了要做什麼」是 App 的政策，router 只知道「有東西變了」。
+    ///   **失敗的 set 不會呼叫它**：值域擋下的寫入沒有改變任何東西，通知了只會讓
+    ///   App 白白重新註冊一次快捷鍵（那期間快捷鍵是不存在的）。
+    public init(control: @escaping () -> ControlUseCase,
+                settings: @escaping () -> SettingsUseCase,
+                status: @escaping () -> StatusPayload,
+                packs: @escaping () -> [PackSummary],
+                usePack: @escaping (String) -> Void,
+                onSettingsChanged: @escaping () -> Void) {
         self.control = control
         self.settings = settings
         self.status = status
+        self.packs = packs
+        self.usePack = usePack
+        self.onSettingsChanged = onSettingsChanged
     }
 
     public func handle(_ request: WireRequest) -> Data {
@@ -49,6 +75,8 @@ public final class RequestRouter {
         case "config.set":    return configSet(request.args)
         case "config.reset":  return configReset(request.args)
         case "pack.validate": return packValidate(request.args)
+        case "pack.list":     return packList()
+        case "pack.use":      return packUse(request.args)
         default:
             return encode(WireResponse<AckPayload>(error: WireError(
                 code: .unknownCommand, message: "未知命令：\(request.command)")))
@@ -59,7 +87,7 @@ public final class RequestRouter {
 
     private func enqueue(_ command: Command, named name: String) -> Data {
         do {
-            try control.enqueue(command)
+            try control().enqueue(command)
             return encode(WireResponse(data: AckPayload(queued: name)))
         } catch {
             return encode(WireResponse<AckPayload>(error: wireError(for: error)))
@@ -70,11 +98,11 @@ public final class RequestRouter {
     private func configGet(_ args: [String: String]) -> Data {
         guard let key = args["key"] else {
             return encode(WireResponse(data: ConfigPayload(
-                entries: settings.getAll().map { .init(key: $0.key, value: $0.value) })))
+                entries: settings().getAll().map { .init(key: $0.key, value: $0.value) })))
         }
         do {
             return encode(WireResponse(data: ConfigPayload(
-                entries: [.init(key: key, value: try settings.get(key))])))
+                entries: [.init(key: key, value: try settings().get(key))])))
         } catch {
             return encode(WireResponse<ConfigPayload>(error: wireError(for: error)))
         }
@@ -89,9 +117,10 @@ public final class RequestRouter {
                 code: .invalidArgument, message: "config.set 需要 key 與 value")))
         }
         do {
-            try settings.set(key, to: value)
+            try settings().set(key, to: value)
+            onSettingsChanged()
             return encode(WireResponse(data: ConfigPayload(
-                entries: [.init(key: key, value: try settings.get(key))])))
+                entries: [.init(key: key, value: try settings().get(key))])))
         } catch {
             return encode(WireResponse<ConfigPayload>(error: wireError(for: error)))
         }
@@ -99,18 +128,22 @@ public final class RequestRouter {
 
     private func configReset(_ args: [String: String]) -> Data {
         if args["all"] == "true" {
-            settings.resetAll()
+            settings().resetAll()
+            onSettingsChanged()
             return encode(WireResponse(data: ConfigPayload(
-                entries: settings.getAll().map { .init(key: $0.key, value: $0.value) })))
+                entries: settings().getAll().map { .init(key: $0.key, value: $0.value) })))
         }
         guard let key = args["key"] else {
             return encode(WireResponse<ConfigPayload>(error: WireError(
                 code: .invalidArgument, message: "config.reset 需要 key 或 all=true")))
         }
         do {
-            try settings.reset(key)
+            try settings().reset(key)
+            // `reset` 與 `set` 是兩條路，只接一條的話「改壞了想 reset 回來」
+            // 會失效——而那正是使用者最需要它當場生效的時刻。
+            onSettingsChanged()
             return encode(WireResponse(data: ConfigPayload(
-                entries: [.init(key: key, value: try settings.get(key))])))
+                entries: [.init(key: key, value: try settings().get(key))])))
         } catch {
             return encode(WireResponse<ConfigPayload>(error: wireError(for: error)))
         }
@@ -134,6 +167,44 @@ public final class RequestRouter {
             valid: report.isValid,
             errors: report.errors.map(\.wireText),
             warnings: report.warnings.map(\.wireText))))
+    }
+
+    /// 清單維持 `packs()` 給的順序（掃描的優先序，內建在前），不重排。
+    private func packList() -> Data {
+        let currentID = status().pack.id
+        return encode(WireResponse(data: PackListPayload(packs: packs().map {
+            .init(id: $0.id, builtIn: $0.isBuiltIn,
+                  logicalHeight: Double($0.logicalHeight), usable: $0.isUsable,
+                  current: $0.id == currentID, teaserAvailable: $0.teaserAvailable,
+                  errors: $0.errors, warnings: $0.warnings)
+        })))
+    }
+
+    /// 驗證在這裡做完才交給 App：App 那一側要動七個持有者，
+    /// 不該還要負責判斷「這個 id 能不能用」。
+    ///
+    /// 「沒這套」與「這套壞了」分成兩個碼，因為要修的事不同：一個是打錯 id，
+    /// 另一個是那套 pack 真的缺檔案——後者還要附上缺什麼，否則使用者只知道
+    /// 不能用、不知道為什麼。
+    private func packUse(_ args: [String: String]) -> Data {
+        guard let id = args["id"] else {
+            return encode(WireResponse<AckPayload>(error: WireError(
+                code: .invalidArgument, message: "pack.use 需要 id")))
+        }
+        guard let summary = packs().first(where: { $0.id == id }) else {
+            return encode(WireResponse<AckPayload>(error: WireError(
+                code: .packNotFound, message: "沒有這套 pack：\(id)")))
+        }
+        guard summary.isUsable else {
+            return encode(WireResponse<AckPayload>(error: WireError(
+                code: .packInvalid, message: "\(id) 不合格，不能使用",
+                details: summary.errors)))
+        }
+        usePack(id)
+        // `queued` 只放命令名，不夾帶 id：那是 `AckPayload` 對這個欄位的定義，
+        // 而 id 本來就是呼叫端自己送來的，回給它沒有新資訊。想知道換成功沒有
+        // 就打一次 `status`——換 pack 跟其他命令一樣要等到下一帧才發生。
+        return encode(WireResponse(data: AckPayload(queued: "pack.use")))
     }
 
     // MARK: - 錯誤對應
