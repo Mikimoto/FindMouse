@@ -261,6 +261,179 @@ private let specWindowKeys = [
     #expect(harness.changeNotifications == 0, "值沒變還是通知了")
 }
 
+// MARK: - 可輸入的數值欄位
+
+/// **本批的關鍵條**：數值欄位點進去看一眼再點出去，不該寫入。
+///
+/// `commitDraft` 的守衛原本寫成 `if case .text(let stored)? = values[key]`，
+/// 只認字串型；`cat.scale` 的值是 `.number`，永遠比不中，於是每次失焦都白寫一次，
+/// 每次都是一輪 `onChanged()` → 重新註冊快捷鍵，而那期間快捷鍵是不存在的。
+/// 三個數值欄各驗一次，因為它們的 render 格式不同（`1` 是整數、`1.25` 不是）。
+@Test @MainActor func leavingAnUntouchedNumberFieldWritesNothing() throws {
+    let harness = FormHarness()
+    try harness.settings.set("cat.scale", to: "1.25")
+    harness.store.reload()
+
+    // 畫面上顯示什麼就打回什麼——使用者點進欄位、什麼都沒改就點出去
+    for key in ["cat.scale", "rest.duration", "sleep.duration"] {
+        let shown = harness.store.snapshot.text(key)
+        harness.store.draft(key, shown)
+        harness.store.commitDraft(key)
+        #expect(harness.store.snapshot.drafts[key] == nil, "\(key) 的草稿沒被收掉")
+    }
+
+    #expect(harness.store.snapshot.text("cat.scale") == "1.25")
+    #expect(harness.changeNotifications == 0, "值沒變還是重新註冊了一輪快捷鍵")
+}
+
+/// 布林型也走同一個守衛。`spotlight.enabled` 在畫面上是開關沒有文字欄，
+/// 但關視窗那條後備路徑（`SettingsWindowController.windowWillClose`）對
+/// **全部 8 個 key** 各 `commitDraft` 一次，守衛必須三種型別一體適用。
+@Test @MainActor func leavingAnUntouchedFlagWritesNothing() {
+    let harness = FormHarness()
+    harness.store.reload()
+
+    harness.store.draft("spotlight.enabled", "true")
+    harness.store.commitDraft("spotlight.enabled")
+
+    #expect(harness.store.snapshot.drafts["spotlight.enabled"] == nil)
+    #expect(harness.changeNotifications == 0)
+}
+
+/// 打字中不寫入——數值欄與 hotkey 欄同一條路。
+/// 邊打邊寫的話 `1.25` 打到 `1.` 時會先被拒絕一次（`1.` 解不成數字），
+/// 而使用者只是還沒打完。
+@Test @MainActor func typingIntoANumberFieldWritesNothingUntilItIsCommitted() throws {
+    let harness = FormHarness()
+    harness.store.reload()
+
+    harness.store.draft("cat.scale", "1.9")
+    #expect(try harness.settings.get("cat.scale") == "1", "打字當下就寫進去了")
+    #expect(harness.store.snapshot.errors["cat.scale"] == nil)
+    #expect(harness.changeNotifications == 0)
+
+    #expect(harness.store.commitDraft("cat.scale"))
+    #expect(try harness.settings.get("cat.scale") == "1.9")
+    #expect(harness.changeNotifications == 1)
+}
+
+/// 打非數字：紅字說「要的是 數字」，值不變，而且**留著他打的那個字串**
+/// ——紅框旁邊顯示舊值的話看不出哪裡錯。
+@Test @MainActor func typingRubbishIntoANumberFieldIsRefusedAndTheTextIsKept() throws {
+    let harness = FormHarness()
+    harness.store.reload()
+
+    harness.store.draft("cat.scale", "abc")
+    #expect(harness.store.commitDraft("cat.scale") == false)
+
+    #expect(try harness.settings.get("cat.scale") == "1")
+    #expect(harness.store.snapshot.errors["cat.scale"] == "「abc」不合法，要的是 數字")
+    #expect(harness.store.snapshot.text("cat.scale") == "abc")
+    #expect(harness.changeNotifications == 0)
+}
+
+/// spec 第 8 節：超出範圍**一律拒絕，不 clamp**。
+/// 打 `5` 到 0.5–2.0 的欄位要紅字，不是靜靜變成 2——默默改掉使用者給的值
+/// 比明確失敗更難查。（`outOfRangeIsRejectedRatherThanClamped` 驗的是滑軌那條
+/// `submit(number:)`，這條驗的是打字那條。）
+@Test @MainActor func aNumberTypedOutOfRangeIsRefusedNotClamped() throws {
+    let harness = FormHarness()
+    harness.store.reload()
+
+    harness.store.draft("cat.scale", "5")
+    #expect(harness.store.commitDraft("cat.scale") == false)
+
+    #expect(try harness.settings.get("cat.scale") == "1", "被 clamp 成 2 或寫進 5 都是錯的")
+    #expect(harness.store.snapshot.errors["cat.scale"] == "5 超出範圍 0.5–2")
+    #expect(harness.changeNotifications == 0)
+}
+
+/// 打字沒提交就去拖滑軌：草稿被丟掉，欄位顯示滑軌拖到的那個值。
+///
+/// 沒有這條的話，`submit` 哪天不再清草稿，畫面會停在使用者半小時前打的字串上，
+/// 而 `config get` 早就是別的值了——兩者不一致而且沒有任何訊號。
+@Test @MainActor func movingTheSliderDropsAnUncommittedDraft() throws {
+    let harness = FormHarness()
+    harness.store.reload()
+    harness.store.draft("cat.scale", "1.9")
+
+    harness.store.submit("cat.scale", number: 1.5)
+
+    #expect(harness.store.snapshot.drafts["cat.scale"] == nil)
+    #expect(harness.store.snapshot.text("cat.scale") == "1.5", "欄位還顯示著被丟掉的草稿")
+    #expect(try harness.settings.get("cat.scale") == "1.5")
+}
+
+/// 欄位裡有沒提交的草稿時按加號：以**存著的值**為基準，不是草稿。
+///
+/// 兩種都說得通，這裡選存著的值：草稿可能是 `abc`（`abc + 1` 沒有意義），
+/// 而解得開的那些要先 parse，那是 `SettingsUseCase` 的事（spec 第 9 節）。
+/// 釘住是因為改成另一種不會有任何訊號。
+@Test @MainActor func steppingWithAnUncommittedDraftCountsFromTheStoredValue() throws {
+    let harness = FormHarness()
+    harness.store.reload()
+    #expect(harness.store.snapshot.number("rest.duration") == 10)
+
+    harness.store.draft("rest.duration", "99")     // 打了但沒提交
+    harness.store.step("rest.duration", by: 1)
+
+    #expect(try harness.settings.get("rest.duration") == "11", "拿草稿 99 加一了")
+    #expect(harness.store.snapshot.drafts["rest.duration"] == nil)
+    #expect(harness.store.snapshot.text("rest.duration") == "11")
+}
+
+/// 草稿是非法值時按加號一樣能動，而且紅字要跟著消失
+/// ——加號成功了卻還掛著上一輪的紅字，使用者不知道到底寫進去沒有。
+@Test @MainActor func steppingRecoversFromAFieldLeftInAnErrorState() throws {
+    let harness = FormHarness()
+    harness.store.reload()
+    harness.store.draft("rest.duration", "abc")
+    #expect(harness.store.commitDraft("rest.duration") == false)
+    #expect(harness.store.snapshot.errors["rest.duration"] != nil)
+
+    harness.store.step("rest.duration", by: 1)
+
+    #expect(try harness.settings.get("rest.duration") == "11")
+    #expect(harness.store.snapshot.errors["rest.duration"] == nil)
+    #expect(harness.store.snapshot.text("rest.duration") == "11")
+}
+
+/// hotkey 的正規化只寫一次：打 `⌘⌥F`（存的是 `⌥⌘F`）→ 草稿與 render 不相等
+/// → 寫入一次 → **草稿被清掉**，所以第二次失焦不會再寫。
+///
+/// 正規化本來就需要那一次寫入才回讀得到，關鍵是它不會變成每次失焦都重來。
+@Test @MainActor func normalisingAHotkeyCostsExactlyOneWrite() throws {
+    let harness = FormHarness()
+    harness.store.reload()
+
+    harness.store.draft("hotkey.summon", "⌘⌥F")
+    harness.store.commitDraft("hotkey.summon")
+    #expect(harness.changeNotifications == 1)
+    #expect(try harness.settings.get("hotkey.summon") == "⌥⌘F")
+
+    // 再失焦一次（`onChange(of: focused)` 與關視窗那條後備路徑各會來一次）
+    harness.store.commitDraft("hotkey.summon")
+    harness.store.commitDraft("hotkey.summon")
+    #expect(harness.changeNotifications == 1, "正規化之後每次失焦都在重寫")
+}
+
+/// **這條記錄的是取捨，不是目標。** 守衛比的是字串，所以 `1.250`／`+1.25`
+/// 這種「格式不同但等值」的輸入會白寫一次（值仍然正規化成 `1.25`）。
+/// 要消掉它得先 parse，而 parse 住在 `SettingsUseCase`（spec 第 9 節）。
+/// 哪天真的改成比對解析後的值，這裡的 `1` 會變成 `0`——那是進步，照改。
+@Test @MainActor func aDifferentlySpelledButEqualNumberStillCostsOneWrite() throws {
+    let harness = FormHarness()
+    try harness.settings.set("cat.scale", to: "1.25")
+    harness.store.reload()
+
+    harness.store.draft("cat.scale", "1.250")
+    harness.store.commitDraft("cat.scale")
+
+    #expect(try harness.settings.get("cat.scale") == "1.25", "值本身不該被這個寫法改掉")
+    #expect(harness.store.snapshot.text("cat.scale") == "1.25", "回讀成正規格式")
+    #expect(harness.changeNotifications == 1)
+}
+
 // MARK: - 設定視窗開著的時候，別人也在改
 
 /// 加減以**當下讀到的值**為基準，不是畫面上那個。

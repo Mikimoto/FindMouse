@@ -160,7 +160,7 @@ private struct SettingsRootView: View {
 
     /// 範圍取自 `SettingKind`，不在這裡寫第二份 0.5...2.0（spec 第 9 節：值域只有一份）。
     private var scaleRow: some View {
-        HStack {
+        HStack(alignment: .firstTextBaseline) {
             Text("貓的大小").frame(width: 150, alignment: .leading)
             if case .number(let range)? = model.kind(of: "cat.scale") {
                 Slider(value: Binding(
@@ -170,9 +170,7 @@ private struct SettingsRootView: View {
                     set: { model.submit("cat.scale", number: ($0 * 100).rounded() / 100) }
                 ), in: range, step: 0.05)
             }
-            Text(model.snapshot.text("cat.scale"))
-                .monospacedDigit()
-                .frame(width: 44, alignment: .trailing)
+            editableField("cat.scale", width: 64)
         }
     }
 
@@ -180,17 +178,46 @@ private struct SettingsRootView: View {
     /// 以**畫面上那個值**為基準，而畫面可能落後於 CLI 剛改過的值
     /// （見 `SettingsFormStore.step`）。
     private func stepperRow(_ key: String, title: String, unit: String) -> some View {
-        HStack {
+        HStack(alignment: .firstTextBaseline) {
             Text(title).frame(width: 150, alignment: .leading)
+            editableField(key, width: 64)
             Stepper {
-                Text("\(model.snapshot.text(key)) \(unit)").monospacedDigit()
+                Text(unit)
             } onIncrement: {
                 model.step(key, by: 1)
             } onDecrement: {
                 model.step(key, by: -1)
             }
             Spacer()
-            rangeHint(key)
+        }
+    }
+
+    /// 三種列共用的那一小塊：文字欄 ＋ 下面一行（有錯誤是紅字，沒有是值域提示）。
+    ///
+    /// **共用的是欄位不是整列**——滑軌列有滑軌、stepper 列有加減鈕、hotkey 列
+    /// 兩者都沒有，外層本來就不一樣；而紅框、錯誤字、提示這三件事三種列一模一樣，
+    /// 各寫一份的話改一邊會忘另外兩邊。
+    ///
+    /// **不在這裡 parse 也不比範圍**：值域住在 `SettingsUseCase`（spec 第 9 節），
+    /// UI 再驗一次就是第二份。特別是不用 `TextField(value:format:)`——它會自己
+    /// 解析並**夾值**，與 spec 第 8 節「超出範圍一律拒絕、不 clamp」相反，
+    /// 而默默改掉使用者給的值比明確失敗更難查。
+    private func editableField(_ key: String, width: CGFloat? = nil) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            TextField("", text: Binding(get: { model.snapshot.text(key) },
+                                        set: { model.draft(key, $0) }))
+                .monospacedDigit()
+                .frame(width: width)
+                .focused($focused, equals: key)
+                .onSubmit { model.commitDraft(key) }
+                .overlay(
+                    RoundedRectangle(cornerRadius: 5)
+                        .stroke(.red, lineWidth: model.snapshot.errors[key] == nil ? 0 : 2))
+            if let problem = model.snapshot.errors[key] {
+                Text(problem).font(.caption).foregroundStyle(.red)
+            } else {
+                rangeHint(key)
+            }
         }
     }
 
@@ -233,28 +260,15 @@ private struct SettingsRootView: View {
 
     // MARK: - 快捷鍵
 
-    /// 最小版的錄製欄位：文字欄 ＋ 失焦／Enter 時驗證。
+    /// 最小版的錄製欄位：文字欄 ＋ 失焦／Enter 時驗證，與兩個數值欄同一塊
+    /// （`editableField`）。
     ///
     /// **不在這裡呼叫 `HotkeySpec(text)` 判一次再決定要不要送**：值域住在
     /// `SettingsUseCase`（spec 第 9 節），UI 再驗一次就是第二份。
-    /// 這裡只把它丟出的錯誤攤成紅框加一行紅字。
     private func hotkeyRow(_ key: String, title: String) -> some View {
         HStack(alignment: .firstTextBaseline) {
             Text(title).frame(width: 150, alignment: .leading)
-            VStack(alignment: .leading, spacing: 2) {
-                TextField("", text: Binding(get: { model.snapshot.text(key) },
-                                            set: { model.draft(key, $0) }))
-                    .focused($focused, equals: key)
-                    .onSubmit { model.commitDraft(key) }
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 5)
-                            .stroke(.red, lineWidth: model.snapshot.errors[key] == nil ? 0 : 2))
-                if let problem = model.snapshot.errors[key] {
-                    Text(problem).font(.caption).foregroundStyle(.red)
-                } else {
-                    rangeHint(key)
-                }
-            }
+            editableField(key)
         }
     }
 

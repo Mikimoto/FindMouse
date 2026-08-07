@@ -223,10 +223,21 @@ public final class SettingsFormStore {
     /// 提交草稿。沒有草稿、或草稿與存著的值相同就什麼都不做——
     /// 每次失焦都寫一次的話，只是點進去看一眼也會觸發一輪快捷鍵重新註冊
     /// （那期間快捷鍵是不存在的）。
+    ///
+    /// **比對用 `render` 而不是拆 `.text`。** 拆 case 的寫法只認得字串型：
+    /// 數值欄的 `values[key]` 是 `.number`，永遠比不中，於是點進 `cat.scale`
+    /// 看一眼再點出去就會白寫一次。`render` 是三種型別共用的那一份格式，
+    /// 而畫面上顯示的也正是它（`Snapshot.text`），所以「畫面沒變」與
+    /// 「不寫入」是同一個條件。
+    ///
+    /// 比的是**字串**不是解析後的值，所以 `1.25` 打成 `1.250`（或 `+1.25`）
+    /// 仍會寫一次——值不變、只是多一輪 `onChanged()`。不追這個差是因為
+    /// 唯一乾淨的追法是先 parse，而 parse 住在 `SettingsUseCase`（spec 第 9 節：
+    /// 值域與格式只有一份），在這裡自己 `Double(draft)` 就是第二份。
     @discardableResult
     public func commitDraft(_ key: String) -> Bool {
         guard let draft = snapshot.drafts[key] else { return true }
-        if case .text(let stored)? = snapshot.values[key], stored == draft {
+        if let stored = snapshot.values[key], SettingsUseCase.render(stored) == draft {
             snapshot.drafts.removeValue(forKey: key)
             return true
         }
@@ -262,11 +273,18 @@ public final class SettingsFormStore {
         submit(key, SettingsUseCase.render(.number(number)))
     }
 
-    /// Stepper 的加減。基準取**當下讀到的值**而不是 `snapshot`。
+    /// Stepper 的加減。基準取**當下讀到的值**而不是 `snapshot`，
+    /// **也不是還沒提交的草稿**。
     ///
     /// 設定視窗開著的時候 CLI 也能改值（`findmouse config set rest.duration 20`）。
     /// 拿畫面上那個還沒重讀的舊值加一，送出去的是「舊值 ± 一格」，
     /// 等於把 CLI 的改動默默蓋掉——而使用者只是按了一下加號。
+    ///
+    /// 數值欄可以打字之後，「按加號時欄位裡有沒提交的草稿」變成真的會發生。
+    /// 仍然以存著的值為基準，兩個理由：草稿可能是 `abc`（`abc + 1` 沒有意義，
+    /// 以草稿為基準就得再訂一條「解不開時怎麼辦」的例外），而解得開的那些
+    /// 要先 parse，那是 `SettingsUseCase` 的事（spec 第 9 節）。
+    /// 寫入成功會清掉草稿，所以按完加號欄位顯示的是新值，不會殘留。
     public func step(_ key: String, by delta: Double) {
         guard let settings = settings(),
               case .number(let current)? = try? settings.value(key) else { return }
