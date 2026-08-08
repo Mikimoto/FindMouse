@@ -88,6 +88,134 @@ private let center = CGPoint(x: 960, y: 540)
     #expect(h.last.phase == .hidden)
 }
 
+// MARK: - 不變式
+
+/// 貓可見且不在 `.exiting` 時，alpha 必為 1。
+///
+/// `.exiting` 的衰減是**唯一**會扣 alpha 的地方，而把它加回去的責任散在四處：
+/// `summon` 的 `.hidden`／`.exiting` 兩支、`goHome`、`enter(.hidden)`、
+/// 以及 `setTeaser` 的開啟分支。少掉其中一支不會有任何直接訊號——貓只是
+/// 半透明地跑，而既有測試沒有一條在看 alpha。實際漏過一次：`setTeaser` 原本
+/// 只在 `phase == .hidden` 時復原，於是在退場的 0.4 秒窗口內按 ⌥⌘T，
+/// 整段逗貓棒都是半透明的（見
+/// `TeaserTests.startingTheTeaserWhileTheCatIsFadingOutRestoresFullOpacity`）。
+///
+/// 那條測試釘的是已知的那一格；這條用亂序命令掃，釘的是**下一個新入口又漏掉**。
+@Test func aVisibleCatIsFullyOpaqueUnlessItIsLeaving() {
+    let deck: [Command] = [.summon, .dismiss, .toggle,
+                           .setTeaser(true), .setTeaser(false), .toggleTeaser]
+    var violations: [String] = []
+    var visibleFrames = 0
+    var fadedFrames = 0
+    for seed in UInt64(1)...200 {
+        let h = Harness(seed: seed)
+        let rng = SeededRandomizer(seed: seed &* 2_246_822_519)
+        for _ in 0..<200 {
+            let cursor = CGPoint(x: rng.double(in: 0...1920), y: rng.double(in: 0...1080))
+            h.step(cursor: cursor, commands: rng.pick(deck).map { [$0] } ?? [])
+            if h.last.alpha < 1 { fadedFrames += 1 }
+            guard h.last.phase.isVisible, h.last.phase != .exiting else { continue }
+            visibleFrames += 1
+            if h.last.alpha != 1 {
+                violations.append("seed \(seed) phase=\(h.last.phase) alpha=\(h.last.alpha)")
+            }
+        }
+    }
+    #expect(violations.isEmpty, "半透明的貓：\(violations.prefix(5))")
+    #expect(visibleFrames > 1000,
+            "40000 帧裡只有 \(visibleFrames) 帧貓可見且非退場，掃描沒實際檢查到不變式")
+    // 掃描若從未讓 alpha 掉下來，上面那條就是恆真句
+    #expect(fadedFrames > 100, "40000 帧裡只有 \(fadedFrames) 帧 alpha < 1，掃描沒走過淡出")
+}
+
+/// 自然週期走完，每個階段只回報它自己在跑的那個計時器（spec 第 8.4 節）。
+///
+/// 這條釘的是「不必按任何鍵就看得到」的那一格：休息滿 10 秒躺下睡著之後，
+/// `restTimer` 停在 10 而沒有人清它，於是 `status --json` 對一隻正在睡覺的貓
+/// 回報 `rest=10`；睡滿退場時 `sleep` 同樣留在 5 一路跟到 `.exiting`。
+///
+/// 兩個 `> 0` 的前提斷言不可省：計時器若根本沒累積，後面的 `== 0` 全是恆真句。
+@Test func eachPhaseOnlyReportsTheTimerItActuallyRuns() {
+    let h = Harness()
+    h.step(cursor: center, commands: [.summon])
+    #expect(h.run(until: .resting, cursor: center))
+    h.run(seconds: 5, cursor: center)
+    #expect(h.last.restTimer > 4, "休息才累積 \(h.last.restTimer) 秒，殘值看不出來")
+
+    #expect(h.run(until: .sleeping, cursor: center, maxSeconds: 30))
+    #expect(h.last.restTimer == 0, "貓在睡覺，卻回報 rest=\(h.last.restTimer)")
+    h.run(seconds: 2, cursor: center)
+    #expect(h.last.sleepTimer > 1, "睡眠才累積 \(h.last.sleepTimer) 秒，殘值看不出來")
+
+    #expect(h.run(until: .exiting, cursor: center, maxSeconds: 30))
+    #expect(h.last.restTimer == 0, "貓在退場，卻回報 rest=\(h.last.restTimer)")
+    #expect(h.last.sleepTimer == 0, "貓在退場，卻回報 sleep=\(h.last.sleepTimer)")
+}
+
+/// 計時器非零時，貓必定在會累積它的那個階段。
+///
+/// `restTimer` 只在 `.resting` 累加、`sleepTimer` 只在 `.sleeping` 累加，但把它們
+/// 清掉的責任原本散在三處（`enter(.hidden)`、`enter(.resting)`／`enter(.sleeping)`、
+/// `restartHunt`），而那份清單漏掉其餘十一個階段——於是從休息中按 ⌥⌘T 或退場，
+/// `status --json` 整段都回報一個根本沒在跑的計時器。
+///
+/// 上面兩條釘的是已知的那幾格；這條用亂序命令掃，釘的是**下一個新階段又漏掉**。
+/// 「安靜段」長度隨機，讓混亂從週期中的每個位置開始；否則計時器永遠來不及累積，
+/// 整條掃描就是恆真句。
+@Test func aTimerIsOnlyEverNonZeroInThePhaseThatRunsIt() {
+    let deck: [Command] = [.summon, .dismiss, .toggle,
+                           .setTeaser(true), .setTeaser(false), .toggleTeaser]
+    var violations = 0
+    var samples: [String] = []
+    var visited: Set<CatPhase> = []
+    var restRan = 0, sleepRan = 0
+    var restHandoffs = 0, sleepHandoffs = 0
+
+    for seed in UInt64(1)...40 {
+        let h = Harness(seed: seed)
+        let rng = SeededRandomizer(seed: seed &* 2_246_822_519)
+        h.step(cursor: center, commands: [.summon])
+        var previousRest = h.last.restTimer
+        var previousSleep = h.last.sleepTimer
+
+        let quiet = Int(rng.double(in: 0...22) * 60)
+        for frame in 0..<(quiet + 1200) {
+            let chaos = frame >= quiet
+            let cursor = chaos && rng.double(in: 0...1) < 0.1
+                ? CGPoint(x: rng.double(in: 0...1920), y: rng.double(in: 0...1080))
+                : center
+            let command = chaos && rng.double(in: 0...1) < 0.005 ? rng.pick(deck) : nil
+            let s = h.step(cursor: cursor, commands: command.map { [$0] } ?? [])
+
+            visited.insert(s.phase)
+            if s.phase == .resting && s.restTimer > 0 { restRan += 1 }
+            if s.phase == .sleeping && s.sleepTimer > 0 { sleepRan += 1 }
+            if previousRest > 0 && s.phase != .resting { restHandoffs += 1 }
+            if previousSleep > 0 && s.phase != .sleeping { sleepHandoffs += 1 }
+            if s.restTimer != 0 && s.phase != .resting {
+                violations += 1
+                if samples.count < 5 { samples.append("seed \(seed) \(s.phase) rest=\(s.restTimer)") }
+            }
+            if s.sleepTimer != 0 && s.phase != .sleeping {
+                violations += 1
+                if samples.count < 5 { samples.append("seed \(seed) \(s.phase) sleep=\(s.sleepTimer)") }
+            }
+            previousRest = s.restTimer
+            previousSleep = s.sleepTimer
+        }
+    }
+
+    #expect(violations == 0, "\(violations) 帧回報了沒在跑的計時器：\(samples)")
+    // 掃描沒走到的階段，這條對它就是恆真句
+    let missing = Set(CatPhase.allCases).subtracting(visited).map(\.rawValue).sorted()
+    #expect(missing.isEmpty, "掃描沒走到這些階段：\(missing)")
+    #expect(restRan > 2000, "只有 \(restRan) 帧休息計時器真的在跑")
+    #expect(sleepRan > 500, "只有 \(sleepRan) 帧睡眠計時器真的在跑")
+    // 「帶著計時器離開」正是唯一會出事的那一刻；沒發生過的話上面的掃描沒驗到東西
+    #expect(restHandoffs > 30, "只有 \(restHandoffs) 次帶著休息計時器離開 resting")
+    #expect(sleepHandoffs > 10, "只有 \(sleepHandoffs) 次帶著睡眠計時器離開 sleeping")
+}
+
 // MARK: - frameIndex 的邊界
 
 @Test func frameIndexStaysInBounds() {

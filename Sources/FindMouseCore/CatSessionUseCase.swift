@@ -113,6 +113,14 @@ public final class CatSessionUseCase {
     }
 
     /// 幂等：對已在場的貓是 no-op。
+    ///
+    /// **不碰 `teaserEnabled` 與 `pendingExit` 是刻意的，不是漏的。**
+    /// 兩者為真時 phase 必是 teaser 階段（`teaserEnabled` 見
+    /// `teaserEnabledImpliesTeaserPhase`；`pendingExit` 只在 `setTeaser` 的關閉分支
+    /// 設起，那裡 guard 了 `teaserEnabled`，而唯一從 teaser 階段離開的路徑是
+    /// `goHome()`，它一進門就把兩者都清掉），而 summon 對 teaser 階段走
+    /// `default: break`——所以走得到的 `.hidden` ／ `.exiting` 兩支遇不到它們。
+    /// 逗貓棒中按 ⌥⌘F 走的是 `.toggle`（spec 第 3.2 節第 8 條），不是這裡。
     private func summon(cursor: CGPoint, cfg: BehaviorConfig) {
         switch phase {
         case .hidden:
@@ -132,11 +140,23 @@ public final class CatSessionUseCase {
         // 已在退場路上就不做事：goHome 會重設 alpha 並依當前位置重算 exitTarget，
         // 所以每帧重複 dismiss 會讓淡出永遠不完成、貓一路走出畫面。
         // Command 的文件宣稱 dismiss 幂等，這個守衛讓那句話成真。
+        //
+        // 不重設 `spotlightOpacity`：暗幕要在 `Timings.spotlightFadeOut` 內淡出，
+        // 不是當帧消失。走的是與「進入 arriving」同一條路徑（spec 第 5.2 節），
+        // 由 `updateSpotlight(fadingIn: phase == .hunting)` 驅動——這裡只需要
+        // 解除 armed，目標值就變成 0。`setTeaser` 的開啟分支之所以反而要
+        // 硬歸零，是因為 spec 要求逗貓棒**任何階段**暗幕都是 0，容不下 0.4 秒過渡。
+        //
+        // 也不重設 `body`：貓在畫面上，退場就是從牠現在的位置走出去。
         guard phase.isVisible, phase != .exiting else { return }
         teaserEnabled = false
         pendingExit = false
         spotlightArmed = false
         exitTarget = edgePoint(from: body.position, in: stage.union, cfg: config.config)
+        // **這行目前餵不到輸入，是刻意留下的防禦。** 上面的 guard 已排除 `.exiting`，
+        // 而那是唯一會扣 alpha 的地方，所以走到這裡時 alpha 必然已經是 1
+        // （不變式見 `aVisibleCatIsFullyOpaqueUnlessItIsLeaving`）。
+        // 拿掉它整批測試會全綠——不要因此以為它被測到了。
         alpha = 1
         enter(.exiting, cursor: body.position, cfg: config.config)
     }
@@ -153,11 +173,20 @@ public final class CatSessionUseCase {
             pendingExit = false
             spotlightArmed = false
             spotlightOpacity = 0
+            // 入場點只有 `.hidden` 要重設：從 `.exiting` 切進來時貓還在畫面上，
+            // 把牠瞬移回邊緣外側等於中斷一段使用者正在看的動畫。summon 同樣只在
+            // `.hidden` 那一支設 body。
             if phase == .hidden {
                 body = CatBody(position: edgePoint(from: cursor, in: stage.cursorScreen, cfg: cfg),
                                heading: 0)
-                alpha = 1
             }
+            // alpha 則無條件復原，與 summon 的 `.hidden` ／ `.exiting` 兩支對齊。
+            // 只寫 `.hidden` 是不夠的：從 `.exiting` 切進來時貓正淡到一半，而六個
+            // teaser 階段沒有任何一處會把 alpha 加回去，於是整段逗貓棒都半透明。
+            // 寫成無條件而不是再列一次「哪些 phase 要補」，是因為那份清單漏一項
+            // 正是這個 bug 的成因；`.exiting` 是唯一會扣 alpha 的地方，所以其餘
+            // phase 進來時這行本來就是 no-op。
+            alpha = 1
             enter(.teaserApproach, cursor: cursor, cfg: cfg)
         } else {
             guard teaserEnabled else { return }
@@ -292,12 +321,12 @@ public final class CatSessionUseCase {
     }
 
     private func restartHunt(cursor: CGPoint, cfg: BehaviorConfig) {
-        restTimer = 0
-        sleepTimer = 0
-        // 不需要清 activeFlourish：action(for: .hunting) 一律回 .run，
+        // 這裡什麼都不用清。兩個計時器由 `enter` 無條件歸零（它只從 `.resting` ／
+        // `.sleeping` 被呼叫，所以 `enter(.hunting)` 一定不會走 same-phase 那個
+        // early return）；activeFlourish 則是 action(for: .hunting) 一律回 .run，
         // 而回到 resting 只能經過 enter(.resting)，那裡會清。
-        // 曾經有一行 activeFlourish = nil 在這裡，它讀起來像是「立刻放棄休息動作」
-        // 這條規則的執行點，但實際執行點是 action(for:) 加上無條件的重新狩獵分支。
+        // 曾經有 `restTimer = 0` ／ `sleepTimer = 0` ／ `activeFlourish = nil` 三行在
+        // 這裡，它們讀起來像是「立刻放棄休息」這條規則的執行點，實際上都不是。
         enter(.hunting, cursor: cursor, cfg: cfg)
     }
 
@@ -316,24 +345,32 @@ public final class CatSessionUseCase {
         phaseElapsed = 0
         actionElapsed = 0
 
+        // spec 第 8.4 節：回報的計時器必須等於實際在跑的那一個。
+        //
+        // 兩個計時器只在 `.resting` ／ `.sleeping` 累加，所以離開那兩個階段時它們
+        // 就停了——但停住的值仍然被 `makeState` 送進 `status --json`。寫成無條件清除
+        // 而不是再列一次「哪些階段要清」，是因為那份清單漏項正是這個 bug 的成因：
+        // 原本只有 `.hidden` 在清，於是從休息中按 ⌥⌘T 或退場，整段都回報 `rest=10`。
+        // 進入 `.resting` ／ `.sleeping` 時計時器本來就要從 0 起算，所以無條件版
+        // 對它們自己那一格也是對的，不需要例外。
+        restTimer = 0
+        sleepTimer = 0
+
         switch newPhase {
         case .hunting:
             armSpotlight(fromHidden: previous == .hidden || previous == .exiting, cfg: cfg)
         case .resting:
-            restTimer = 0
             activeFlourish = nil
             flourishTimer = 0
             flourishInterval = randomizer.double(in: Timings.flourishInterval)
-        case .sleeping:
-            sleepTimer = 0
         case .teaserRetreating:
             retreatPoint = retreatDestination(from: cursor, cfg: cfg)
         case .hidden:
+            // 這兩行餵不到輸入：`summon` 的 `.hidden` 那一支也會設 alpha = 1，
+            // 而貓不可見時沒有任何消費端讀 alpha 或暗幕。拿掉照樣全綠。
+            // 留著是因為「離開畫面時把狀態收乾淨」與上面兩個計時器是同一件事。
             alpha = 1
             spotlightOpacity = 0
-            // 不清掉的話，status --json 會對一隻不存在的貓回報 restTimer=10
-            restTimer = 0
-            sleepTimer = 0
         default:
             break
         }
