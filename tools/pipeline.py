@@ -45,7 +45,9 @@ ACTION_DEFAULTS: dict[str, tuple[float, bool]] = {
     "run": (14, True),
     "brake": (12, False),
     "sit": (10, False),
-    "sitIdle": (6, True),
+    # sitIdle 從建議的 6 格 @6fps 降成 4 格 @4fps（＝1 秒一次呼吸）：這是近乎靜止的
+    # 循環，格數越多模型越有空間把「尾尖抬一下」畫成整條尾巴甩大弧線（實測 6 格全中）。
+    "sitIdle": (4, True),
     "stretch": (10, False),
     "yawn": (8, False),
     "scratch": (12, False),
@@ -114,6 +116,12 @@ def cmd_slice(args: argparse.Namespace) -> int:
 
     cells = list(zip(layout.slice_strip(strip, args.frames), ranges))
 
+    match_size = None
+    if args.match:
+        reference = Image.open(args.match).convert("RGB")
+        ref_box = layout.key_bbox(reference)
+        match_size = reference.crop(ref_box).size if ref_box else reference.size
+
     # 先檢查再寫：--start 給錯會覆蓋掉前一張條子切出來的格子，而覆蓋不留缺號，
     # 所以 manifest 的 FRAME_NAME_GAP 抓不到——那是一套格數對、內容錯的 pack。
     if not args.force:
@@ -128,7 +136,7 @@ def cmd_slice(args: argparse.Namespace) -> int:
 
     written = []
     for index, (cell, (x0, x1)) in enumerate(cells, start=args.start):
-        trimmed = None
+        trimmed = resized = None
         if args.trim:
             box = layout.key_bbox(cell)
             # 找不到背景就原樣留著，讓 key 的 AMBIGUOUS_BACKGROUND 去報——
@@ -136,11 +144,25 @@ def cmd_slice(args: argparse.Namespace) -> int:
             if box and box != (0, 0, cell.width, cell.height):
                 cell = cell.crop(box)
                 trimmed = list(box)
+        if match_size and cell.size != match_size:
+            # 只有「同一張構圖、輸出解析度不同」才可以縮。長寬比差太多代表構圖
+            # 真的不一樣，縮下去會把貓拉扁——那是靜默的，所以在這裡硬失敗。
+            got = cell.width / cell.height
+            want = match_size[0] / match_size[1]
+            if abs(got - want) / want > 0.02:
+                raise ChromaError(
+                    "ASPECT_MISMATCH",
+                    f"第 {index} 格裁後 {cell.size}（長寬比 {got:.4f}）與 --match 的 "
+                    f"{match_size}（{want:.4f}）差超過 2%。--match 只用來把「同一張構圖、"
+                    "不同輸出解析度」縮回去，構圖不同就不該用它。")
+            cell = cell.resize(match_size, Image.LANCZOS)
+            resized = list(match_size)
         path = out / (FRAME_NAME % index)
         cell.save(path)
         written.append({"index": index, "file": path.name,
                         "x0": x0, "x1": x1, "width": x1 - x0,
-                        "trimmed_to": trimmed, "size": list(cell.size)})
+                        "trimmed_to": trimmed, "resized_to": resized,
+                        "size": list(cell.size)})
 
     widths = [c["size"][0] for c in written]
     even = len(set(widths)) == 1
@@ -161,8 +183,13 @@ def cmd_slice(args: argparse.Namespace) -> int:
              f"  原圖 {strip.width}×{strip.height}，"
              f"格寬 {min(widths)}–{max(widths)} px，{'等寬' if even else '不等寬'}"]
     for cell_info in written:
-        if cell_info["trimmed_to"]:
-            lines.append(f"      {cell_info['file']} 裁掉外圍留白 → "
+        if cell_info["trimmed_to"] or cell_info["resized_to"]:
+            what = []
+            if cell_info["trimmed_to"]:
+                what.append("裁掉外圍留白")
+            if cell_info["resized_to"]:
+                what.append("縮放對齊 --match")
+            lines.append(f"      {cell_info['file']} {'、'.join(what)} → "
                          f"{cell_info['size'][0]}×{cell_info['size'][1]}")
     return emit(args, payload, lines)
 
@@ -475,6 +502,10 @@ def build_parser() -> argparse.ArgumentParser:
                         "第二張用 --start 接續，例如 8 格分 4+4 就是 --start 4")
     p.add_argument("--force", action="store_true",
                    help="允許覆蓋既有的格子")
+    p.add_argument("--match", metavar="REF.png",
+                   help="裁切後再縮放到 REF 裁切後的尺寸。用於「拿某一格去編輯而生出來的"
+                        "格子」——生圖服務的編輯會忠實保留構圖但常換輸出解析度，"
+                        "不縮回去的話那一格的貓在 pack 裡會大一號")
     p.add_argument("--no-trim", dest="trim", action="store_false",
                    help="不要裁掉外圍留白。預設會裁——生圖服務常在整張圖外圍加"
                         "一圈白邊、兩格之間再留白間隔，那些白去背去不掉")

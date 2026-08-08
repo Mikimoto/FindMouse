@@ -187,8 +187,20 @@ def key_bbox(cell: Image.Image, purity: float = 0.92) -> tuple[int, int, int, in
     """
     width, height = cell.size
     pixels = list(cell.convert("RGB").get_flattened_data())
-    purest = max((r if r < b else b) - g for r, g, b in pixels)
-    if purest <= 0:
+
+    # 「背景有多純」取 d>0 之中的**眾數**，不是最大值也不是高百分位。
+    # 平坦的背景會把一個 d 值堆得極高，而所有干擾都是散開的：貓身是負值、
+    # 抗鋸齒邊在中間連續分佈、重取樣（LANCZOS）在貓周圍過衝出比真背景更飽和的
+    # 一圈。實測那一圈佔比超過 1%，所以第 99 百分位也會被它帶走（量到真背景
+    # d=199 而 p99=217，0.92×217 反而把真背景判成不夠純，外框縮成貓旁邊那圈殘影，
+    # 沒有任何錯誤訊息）。眾數不受影響，因為過衝的值分散在 200…232。
+    histogram = [0] * 256                      # 只統計 d>0，索引即 d
+    for r, g, b in pixels:
+        value = (r if r < b else b) - g
+        if value > 0:
+            histogram[value] += 1
+    purest = max(range(256), key=histogram.__getitem__)
+    if histogram[purest] == 0:
         return None
     min_d = purest * purity
     left, top, right, bottom = width, height, -1, -1

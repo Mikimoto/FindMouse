@@ -194,6 +194,48 @@ def test_slice_trims_the_white_frame_the_service_adds(tmp: Path):
         assert max(edge) == 0, f"{name} 的最外圈還有 alpha={max(edge)} 的殘留"
 
 
+def test_match_scales_an_edited_frame_back_to_the_reference(tmp: Path):
+    """防：編輯生出來的那一格解析度不同，於是它的貓在整套 pack 裡大一號。"""
+    # 不帶白框的單格：這條要驗的是縮放，混進 trim 會讓兩件事的失敗互相掩蓋
+    ref, _ = composite(120, 120, cat_silhouette(8, 76, 12, 100, 100),
+                       (200, 160, 120), key=(253, 48, 247))
+    ref.save(tmp / "ref.png")
+    # 同一張構圖、放大 1.6 倍輸出——生圖服務的編輯就是這個形狀
+    ref.resize((192, 192), Image.LANCZOS).save(tmp / "edited.png")
+
+    code, payload = run_cli("slice", str(tmp / "edited.png"), "--frames", "1",
+                            "--match", str(tmp / "ref.png"), "--out", str(tmp / "out"))
+    assert code == 0, payload
+    assert payload["cells"][0]["resized_to"], payload["cells"][0]
+
+    code, base = run_cli("slice", str(tmp / "ref.png"), "--frames", "1",
+                         "--out", str(tmp / "base"))
+    assert code == 0, base
+    assert payload["cells"][0]["size"] == base["cells"][0]["size"], \
+        f"{payload['cells'][0]['size']} vs {base['cells'][0]['size']}"
+
+    # 真正要證明的是貓一樣大，不只是畫布一樣大
+    got, want = (run_cli("key", str(d), "--out", str(tmp / f"k{i}"))[1]
+                 for i, d in enumerate((tmp / "out", tmp / "base")))
+    gb, wb = got["frames"][0]["bbox"], want["frames"][0]["bbox"]
+    assert abs((gb[2] - gb[0]) - (wb[2] - wb[0])) <= 2 and \
+           abs((gb[3] - gb[1]) - (wb[3] - wb[1])) <= 2, f"{gb} vs {wb}"
+
+
+def test_match_refuses_a_different_composition(tmp: Path):
+    """防：拿 --match 去縮一張構圖不同的圖，把貓拉扁。拉扁是靜默的。"""
+    ref, _ = composite(120, 120, cat_silhouette(8, 76, 12, 100, 100),
+                       (200, 160, 120), key=(253, 48, 247))
+    ref.save(tmp / "ref.png")
+    ref.resize((300, 150), Image.LANCZOS).save(tmp / "wrong.png")   # 長寬比整個變了
+
+    code, payload = run_cli("slice", str(tmp / "wrong.png"), "--frames", "1",
+                            "--match", str(tmp / "ref.png"), "--out", str(tmp / "out"))
+    assert code != 0, payload
+    assert [e["code"] for e in payload["errors"]] == ["ASPECT_MISMATCH"], payload
+    assert not (tmp / "out" / "000.png").exists(), "失敗了卻還是寫了檔"
+
+
 def test_slice_without_a_frame_is_left_alone(tmp: Path):
     """防：裁切在沒有白框時也動手，把貓的邊緣切掉一圈。"""
     shade = (253, 48, 247)
