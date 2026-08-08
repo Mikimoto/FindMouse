@@ -649,6 +649,44 @@ private func stepWhile(_ h: Harness, phase: CatPhase, cursor: CGPoint, limit: In
     #expect(windups >= 3, "\(seconds) 秒只撲了 \(windups) 次，貓其實卡住了")
 }
 
+/// 從休息中切進逗貓棒，`status --json` 不得再回報休息計時器（spec 第 8.4 節）。
+///
+/// 上一條也斷言逗貓棒期間兩個計時器都是 0，但它從 `.hidden` 開逗貓棒——那時計時器
+/// 本來就是 0，所以把清除拿掉照樣綠。真正會帶著殘值切進來的是「貓已經坐下休息了
+/// 5 秒」這條路徑：計時器只在 `.resting` 累加，卻只在 `enter(.hidden)` 與
+/// `restartHunt` 歸零，於是整段逗貓棒都回報 `rest=5`——一個根本沒在跑的計時器。
+///
+/// **不能只驗切進去那一帧。** 「進去時清了、下一帧又被加回來」是另一種壞法，
+/// 所以後面要再跑一整段，並用撲擊次數確認貓不是卡在某個階段不動。
+@Test func startingTheTeaserFromRestStopsReportingTheRestTimer() {
+    let h = Harness()
+    h.step(cursor: center, commands: [.summon])
+    #expect(h.run(until: .resting, cursor: center))
+    h.run(seconds: 5, cursor: center)
+    // 前提：計時器真的累積了。沒有這條，下面整條是恆真句。
+    #expect(h.last.restTimer > 4, "休息才累積 \(h.last.restTimer) 秒，殘值看不出來")
+
+    h.step(cursor: center, commands: [.setTeaser(true)])
+    #expect(h.last.phase.isTeaser, "沒進逗貓棒：phase=\(h.last.phase)")
+    #expect(h.last.restTimer == 0, "切進逗貓棒的那一帧還在回報 rest=\(h.last.restTimer)")
+
+    var stale: [String] = []
+    var windups = 0
+    var previous = h.last.phase
+    for _ in 0..<900 {
+        h.step(cursor: center)
+        if h.last.restTimer != 0 || h.last.sleepTimer != 0 {
+            stale.append("\(h.last.phase) rest=\(h.last.restTimer) sleep=\(h.last.sleepTimer)")
+        }
+        if h.last.phase == .teaserWindup && previous != .teaserWindup { windups += 1 }
+        previous = h.last.phase
+    }
+    #expect(h.last.phase.isTeaser, "15 秒後離開了逗貓棒：phase=\(h.last.phase)")
+    // 貓若卡在某個階段完全不動，「計時器一路都是 0」也會通過
+    #expect(windups >= 2, "15 秒只撲了 \(windups) 次，貓其實卡住了")
+    #expect(stale.isEmpty, "逗貓棒期間回報了沒在跑的計時器：\(stale.prefix(3))")
+}
+
 /// 追蹤中途切到逗貓棒，暗幕要**當帧**熄掉（spec 第 3.2 節第 7 條前半）。
 ///
 /// `teaserNeverDims` 是從 `hidden` 開逗貓棒，那時暗幕本來就是 0，所以把

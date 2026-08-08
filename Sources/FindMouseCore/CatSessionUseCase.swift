@@ -321,12 +321,12 @@ public final class CatSessionUseCase {
     }
 
     private func restartHunt(cursor: CGPoint, cfg: BehaviorConfig) {
-        restTimer = 0
-        sleepTimer = 0
-        // 不需要清 activeFlourish：action(for: .hunting) 一律回 .run，
+        // 這裡什麼都不用清。兩個計時器由 `enter` 無條件歸零（它只從 `.resting` ／
+        // `.sleeping` 被呼叫，所以 `enter(.hunting)` 一定不會走 same-phase 那個
+        // early return）；activeFlourish 則是 action(for: .hunting) 一律回 .run，
         // 而回到 resting 只能經過 enter(.resting)，那裡會清。
-        // 曾經有一行 activeFlourish = nil 在這裡，它讀起來像是「立刻放棄休息動作」
-        // 這條規則的執行點，但實際執行點是 action(for:) 加上無條件的重新狩獵分支。
+        // 曾經有 `restTimer = 0` ／ `sleepTimer = 0` ／ `activeFlourish = nil` 三行在
+        // 這裡，它們讀起來像是「立刻放棄休息」這條規則的執行點，實際上都不是。
         enter(.hunting, cursor: cursor, cfg: cfg)
     }
 
@@ -345,27 +345,32 @@ public final class CatSessionUseCase {
         phaseElapsed = 0
         actionElapsed = 0
 
+        // spec 第 8.4 節：回報的計時器必須等於實際在跑的那一個。
+        //
+        // 兩個計時器只在 `.resting` ／ `.sleeping` 累加，所以離開那兩個階段時它們
+        // 就停了——但停住的值仍然被 `makeState` 送進 `status --json`。寫成無條件清除
+        // 而不是再列一次「哪些階段要清」，是因為那份清單漏項正是這個 bug 的成因：
+        // 原本只有 `.hidden` 在清，於是從休息中按 ⌥⌘T 或退場，整段都回報 `rest=10`。
+        // 進入 `.resting` ／ `.sleeping` 時計時器本來就要從 0 起算，所以無條件版
+        // 對它們自己那一格也是對的，不需要例外。
+        restTimer = 0
+        sleepTimer = 0
+
         switch newPhase {
         case .hunting:
             armSpotlight(fromHidden: previous == .hidden || previous == .exiting, cfg: cfg)
         case .resting:
-            restTimer = 0
             activeFlourish = nil
             flourishTimer = 0
             flourishInterval = randomizer.double(in: Timings.flourishInterval)
-        case .sleeping:
-            sleepTimer = 0
         case .teaserRetreating:
             retreatPoint = retreatDestination(from: cursor, cfg: cfg)
         case .hidden:
-            // 同樣餵不到輸入：`summon` 的 `.hidden` 那一支也會設 alpha = 1，
-            // 而貓不可見時沒有任何消費端讀它。拿掉照樣全綠。留著是因為
-            // 「離開畫面時把狀態收乾淨」與下面兩個計時器是同一件事。
+            // 這兩行餵不到輸入：`summon` 的 `.hidden` 那一支也會設 alpha = 1，
+            // 而貓不可見時沒有任何消費端讀 alpha 或暗幕。拿掉照樣全綠。
+            // 留著是因為「離開畫面時把狀態收乾淨」與上面兩個計時器是同一件事。
             alpha = 1
             spotlightOpacity = 0
-            // 不清掉的話，status --json 會對一隻不存在的貓回報 restTimer=10
-            restTimer = 0
-            sleepTimer = 0
         default:
             break
         }
