@@ -10,3 +10,5 @@
 .build/
 *.xcuserstate
 build/
+# tools/ 的 Python bytecode 快取。跑一次 test_pipeline.py 就會冒出來。
+__pycache__/
