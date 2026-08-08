@@ -157,7 +157,8 @@ def cmd_slice(args: argparse.Namespace) -> int:
 # ── key ────────────────────────────────────────────────────
 
 def cmd_key(args: argparse.Namespace) -> int:
-    key = parse_hex_colour(args.key)
+    auto = args.key.lower() == "auto"
+    key = None if auto else parse_hex_colour(args.key)
     source = Path(args.input)
     sources = [source] if source.is_file() else png_files(source)
     if not sources:
@@ -170,12 +171,21 @@ def cmd_key(args: argparse.Namespace) -> int:
 
     for path in sources:
         image = Image.open(path)
-        rgba, stats = chroma.key_frame(image, key=key,
+        # auto 是逐格判定的：同一張條子裡每格的背景色都不一樣，這正是重點。
+        # 判不出來要跟其他每格問題一樣收集成 error，不能 raise 掉整批——
+        # 一格壞掉就看不到其餘各格的診斷，等於要一格一格試才知道全貌。
+        try:
+            frame_key = chroma.detect_key(image.convert("RGB")) if auto else key
+        except ChromaError as exc:
+            errors.append({"code": exc.code, "file": path.name, "detail": exc.message})
+            frames.append({"file": path.name, "key": None})
+            continue
+        rgba, stats = chroma.key_frame(image, key=frame_key,
                                        bg_tolerance=args.bg_tolerance,
                                        fg_tolerance=args.fg_tolerance,
                                        despeckle_fraction=args.despeckle)
         keyed.append((path, rgba))
-        record = {"file": path.name, **stats.to_json()}
+        record = {"file": path.name, "key": list(frame_key), **stats.to_json()}
 
         # 三條硬失敗。共同點是「產出會是一張合法 PNG，但內容毫無意義」——
         # 不擋的話後面每一步都會照常成功，最後得到一套看起來完整的空 pack。
@@ -202,7 +212,7 @@ def cmd_key(args: argparse.Namespace) -> int:
     payload = {
         "ok": not errors,
         "command": "key",
-        "key": list(key),
+        "key": "auto" if auto else list(key),
         "bg_tolerance": args.bg_tolerance,
         "fg_tolerance": args.fg_tolerance,
         "frames": frames,
@@ -217,9 +227,15 @@ def cmd_key(args: argparse.Namespace) -> int:
             rgba.save(out / path.name)
 
     lines = [f"去背 {len(sources)} 格（key={args.key}）"]
+    if auto:
+        lines[0] += "，逐格自動判定"
     for record in frames:
+        if record.get("key") is None:
+            lines.append(f"  {record['file']}: 判不出背景色，見下方錯誤")
+            continue
         lines.append(f"  {record['file']}: 覆蓋 {record['coverage']:.2%}"
-                     f"、背景 {record['background_ratio']:.2%}、bbox {record['bbox']}")
+                     f"、背景 {record['background_ratio']:.2%}、bbox {record['bbox']}"
+                     + (f"、key #{bytes(record['key']).hex().upper()}" if auto else ""))
         for speck in record["specks_removed"]:
             lines.append(f"      抹掉碎塊 {speck['pixels']} px @ {speck['bbox']}")
     for error in errors:
@@ -445,7 +461,9 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("key", help="chroma key 去背（含去色暈與 unpremultiply）")
     p.add_argument("input", help="一張 PNG 或一個裝著 PNG 的目錄")
     p.add_argument("--out", required=True)
-    p.add_argument("--key", default="FF00FF", help="背景色 RRGGBB（預設 FF00FF）")
+    p.add_argument("--key", default="auto",
+                   help="背景色 RRGGBB，或 auto（預設）＝逐格從四角判定。"
+                        "生圖服務吐的洋紅每張都不一樣，同一張裡每格也不一樣，所以 auto 才是常態")
     # 預設值的理由：平坦洋紅經過 JPEG／色彩管理之後每個通道抖 ±n/255（n 約 8），
     # 而 alpha 看的是 min(R,B) − G，最壞情況兩邊反向各抖 n → 誤差 2n/255。
     # 取 0.08 就是「撐得住每通道 ±10」。背景更髒才調大，

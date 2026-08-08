@@ -149,6 +149,58 @@ def test_slice_loses_no_pixel_even_when_width_is_indivisible(tmp: Path):
         assert joined.tobytes() == strip.tobytes(), f"{width}/{count}：接回去和原圖不一樣"
 
 
+def test_auto_key_reads_the_actual_background_of_each_frame(tmp: Path):
+    """防：把背景當成 FF00FF。生圖服務吐的洋紅每張都不同，差一點就要把門檻開大去吸收。"""
+    shades = [(250, 56, 244), (255, 53, 242), (251, 68, 240)]
+    for i, shade in enumerate(shades):
+        image, _ = composite(80, 80, cat_silhouette(6, 40, 10, 52, 52),
+                             (200, 160, 120), key=shade)
+        image.save(tmp / f"{i:03d}.png")
+
+    code, payload = run_cli("key", str(tmp), "--out", str(tmp / "out"))
+    assert code == 0, payload
+    assert [f["key"] for f in payload["frames"]] == [list(s) for s in shades], \
+        f"逐格判定沒生效：{[f['key'] for f in payload['frames']]}"
+    # 判對了，預設門檻就足夠：背景要全透明，不留一層薄霧
+    for i in range(len(shades)):
+        alpha = Image.open(tmp / "out" / f"{i:03d}.png").convert("RGBA").getchannel("A")
+        assert alpha.getpixel((79, 0)) == 0, f"{i:03d} 的背景沒去乾淨"
+
+
+def test_auto_key_is_not_fooled_by_a_cat_in_the_corner(tmp: Path):
+    """防：貓頂到角落時把貓的顏色當成背景。那種錯完全沒有訊號——整格會被判成前景。"""
+    shade = (250, 56, 244)
+    cat = cat_silhouette(6, 40, 10, 52, 52)
+    # **兩個**角落被貓蓋住。一個的話光靠四角取中位數就擋得下來（實測：拿掉
+    # d<=0 過濾，這條照樣綠），那樣就驗不到過濾器本身。兩個才讓它成為必要條件——
+    # 沒有過濾時 G 通道的中位數會落在貓身上，key 變成 (250,160,244)。
+    corners = [soft_disc(0, 0, 12.0), soft_disc(0, 80, 12.0)]
+    image, _ = composite(80, 80,
+                         lambda x, y: max(cat(x, y), *(c(x, y) for c in corners)),
+                         (200, 160, 120), key=shade)
+    image.save(tmp / "000.png")
+
+    # --despeckle 0：這個 fixture 的兩塊角落刻意與貓分離，那是 DISCONNECTED_SUBJECT
+    # 的守備範圍。這條只驗 key 判定，讓兩個守衛的失敗不互相掩蓋。
+    code, payload = run_cli("key", str(tmp / "000.png"), "--despeckle", "0",
+                            "--out", str(tmp / "out"))
+    assert code == 0, payload
+    assert payload["frames"][0]["key"] == list(shade), \
+        f"被角落的貓帶走了：{payload['frames'][0]['key']}"
+    alpha = Image.open(tmp / "out" / "000.png").convert("RGBA").getchannel("A")
+    assert alpha.getpixel((79, 40)) == 0, "key 判歪了，背景沒去乾淨"
+
+
+def test_auto_key_refuses_rather_than_guesses(tmp: Path):
+    """防：取樣不到背景時硬猜一個。猜錯的後果是整格被判成前景，而輸出仍是合法 PNG。"""
+    image, _ = composite(80, 80, lambda x, y: 1.0, (200, 160, 120))   # 整格都是貓
+    image.save(tmp / "000.png")
+
+    code, payload = run_cli("key", str(tmp / "000.png"), "--out", str(tmp / "out"))
+    assert code != 0, payload
+    assert [e["code"] for e in payload["errors"]] == ["AMBIGUOUS_BACKGROUND"], payload
+
+
 def _cat_plus_blob(blob_radius: float):
     """一隻貓，外加一塊完全分離、大小可調的圓形雜物（模擬角落簽名／崩壞的殘影）。"""
     cat = cat_silhouette(6, 70, 10, 90, 90)
@@ -410,7 +462,8 @@ def test_cell_with_no_background_at_all_fails_loudly(tmp: Path):
     cells.mkdir()
     Image.new("RGB", (32, 32), (120, 130, 140)).save(cells / "000.png")
 
-    code, payload = run_cli("key", str(cells), "--out", str(tmp / "keyed"))
+    # 明確給錯 key 才是這條要守的路徑；auto 判不出來是另一條（見 auto 那三條）
+    code, payload = run_cli("key", str(cells), "--out", str(tmp / "keyed"), "--key", "FF00FF")
     assert code == 1
     assert "NO_BACKGROUND_FOUND" in [e["code"] for e in payload["errors"]], payload["errors"]
 
@@ -573,21 +626,26 @@ def test_every_subcommand_speaks_json(tmp: Path):
 
 def test_command_line_flags_actually_reach_the_algorithm(tmp: Path):
     """防：旗標是裝飾品。上面的測試都直接呼叫函式，argparse 接錯的話一條都不會紅。"""
-    # --key：背景偏成 F20AEE。用預設 key 會整格找不到背景（硬失敗），指定才過
+    # --key：背景偏成 F20AEE。指定成 FF00FF 會整格找不到背景（硬失敗），給對才過
     drifted, _ = composite(40, 40, soft_disc(20, 24, 12), (200, 200, 200), key=(242, 10, 238))
     cells = tmp / "drifted"
     cells.mkdir()
     drifted.save(cells / "000.png")
-    code, payload = run_cli("key", str(cells), "--out", str(tmp / "k1"))
+    code, payload = run_cli("key", str(cells), "--out", str(tmp / "k1"), "--key", "FF00FF")
     assert code == 1 and "NO_BACKGROUND_FOUND" in [e["code"] for e in payload["errors"]], payload
     code, payload = run_cli("key", str(cells), "--out", str(tmp / "k2"), "--key", "F20AEE")
     assert code == 0, payload
 
-    # --bg-tolerance：同一張髒背景，門檻歸零時 bbox 會被雜訊撐大
+    # --bg-tolerance：髒背景，門檻歸零時 bbox 會被雜訊撐大。
+    # 抖動必須**逐像素**：整片均勻位移的話 --key auto 會判得剛剛好，門檻就沒事做了
+    # （原本這裡寫成均勻位移，auto 上線後這個子案例就悄悄失去鑑別力）。
     noisy = Image.new("RGB", (40, 40))
     clean, _ = composite(40, 40, soft_disc(20, 24, 10, feather=1), (200, 200, 200))
-    noisy.putdata([(r - 8, g + 8, b) if (r, g, b) == (255, 0, 255) else (r, g, b)
-                   for (r, g, b) in clean.get_flattened_data()])
+    def jitter(i, c, sign):
+        return max(0, min(255, c + sign * ((i * 2654435761) % 9 - 4)))
+    noisy.putdata([(jitter(i, r, -1), jitter(i + 1, g, +1), b) if (r, g, b) == (255, 0, 255)
+                   else (r, g, b)
+                   for i, (r, g, b) in enumerate(clean.get_flattened_data())])
     dirty = tmp / "noisy"
     dirty.mkdir()
     noisy.save(dirty / "000.png")

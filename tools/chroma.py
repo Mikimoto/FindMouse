@@ -151,6 +151,31 @@ class KeyStats:
         }
 
 
+def detect_key(rgb: Image.Image) -> tuple[int, int, int]:
+    """從四角推出這一格實際的背景色。取樣不到就硬失敗，絕不猜。
+
+    為什麼這件事值得做，而不是叫人自己量：生圖服務吐出來的洋紅每次都不一樣
+    （實測 #FD35FA、#FA38F4…），而且**同一張條子裡每一格還不一樣**——四格四角
+    量到的 d 落在 168…211。一個全域的 `--key` 對每一格都差一點，那個誤差只好
+    由 `--bg-tolerance` 去吸收，於是門檻被迫開大，連帶把貓的軟邊也吃掉。
+    逐格取真值，門檻就只需要負責雜訊。
+
+    `sample_corner` 的註解擔心的是「貓剛好頂到角落，於是把貓的顏色當成背景」。
+    這裡靠 d 的符號擋掉：洋紅背景的 d 是 +170 以上，而貓身上任何顏色的 d 都
+    ≤ 0（白掌 0、奶油色 −20、橘 −60），中間隔著一整個色相的距離。所以丟掉
+    d ≤ 0 的角落就等於丟掉「這一角是貓」的取樣，不是憑經驗抓的門檻。
+    """
+    w, h = rgb.size
+    corners = [rgb.getpixel(p) for p in ((0, 0), (w - 1, 0), (0, h - 1), (w - 1, h - 1))]
+    usable = [c for c in corners if min(c[0], c[2]) - c[1] > 0]
+    if len(usable) < 2:
+        raise ChromaError(
+            "AMBIGUOUS_BACKGROUND",
+            f"四個角落只有 {len(usable)} 個看起來像洋紅背景（取樣到 {corners}）。"
+            "多半是貓佔滿了整格或背景根本不是洋紅系——用 --key 明確指定，不要讓它猜。")
+    return tuple(sorted(c[i] for c in usable)[len(usable) // 2] for i in range(3))  # type: ignore[return-value]
+
+
 def sample_corner(rgb: Image.Image) -> tuple[int, int, int]:
     """取四角的中位數當作「實際的背景色」。
 
