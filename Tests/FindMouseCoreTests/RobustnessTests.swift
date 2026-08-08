@@ -88,6 +88,46 @@ private let center = CGPoint(x: 960, y: 540)
     #expect(h.last.phase == .hidden)
 }
 
+// MARK: - 不變式
+
+/// 貓可見且不在 `.exiting` 時，alpha 必為 1。
+///
+/// `.exiting` 的衰減是**唯一**會扣 alpha 的地方，而把它加回去的責任散在四處：
+/// `summon` 的 `.hidden`／`.exiting` 兩支、`goHome`、`enter(.hidden)`、
+/// 以及 `setTeaser` 的開啟分支。少掉其中一支不會有任何直接訊號——貓只是
+/// 半透明地跑，而既有測試沒有一條在看 alpha。實際漏過一次：`setTeaser` 原本
+/// 只在 `phase == .hidden` 時復原，於是在退場的 0.4 秒窗口內按 ⌥⌘T，
+/// 整段逗貓棒都是半透明的（見
+/// `TeaserTests.startingTheTeaserWhileTheCatIsFadingOutRestoresFullOpacity`）。
+///
+/// 那條測試釘的是已知的那一格；這條用亂序命令掃，釘的是**下一個新入口又漏掉**。
+@Test func aVisibleCatIsFullyOpaqueUnlessItIsLeaving() {
+    let deck: [Command] = [.summon, .dismiss, .toggle,
+                           .setTeaser(true), .setTeaser(false), .toggleTeaser]
+    var violations: [String] = []
+    var visibleFrames = 0
+    var fadedFrames = 0
+    for seed in UInt64(1)...200 {
+        let h = Harness(seed: seed)
+        let rng = SeededRandomizer(seed: seed &* 2_246_822_519)
+        for _ in 0..<200 {
+            let cursor = CGPoint(x: rng.double(in: 0...1920), y: rng.double(in: 0...1080))
+            h.step(cursor: cursor, commands: rng.pick(deck).map { [$0] } ?? [])
+            if h.last.alpha < 1 { fadedFrames += 1 }
+            guard h.last.phase.isVisible, h.last.phase != .exiting else { continue }
+            visibleFrames += 1
+            if h.last.alpha != 1 {
+                violations.append("seed \(seed) phase=\(h.last.phase) alpha=\(h.last.alpha)")
+            }
+        }
+    }
+    #expect(violations.isEmpty, "半透明的貓：\(violations.prefix(5))")
+    #expect(visibleFrames > 1000,
+            "40000 帧裡只有 \(visibleFrames) 帧貓可見且非退場，掃描沒實際檢查到不變式")
+    // 掃描若從未讓 alpha 掉下來，上面那條就是恆真句
+    #expect(fadedFrames > 100, "40000 帧裡只有 \(fadedFrames) 帧 alpha < 1，掃描沒走過淡出")
+}
+
 // MARK: - frameIndex 的邊界
 
 @Test func frameIndexStaysInBounds() {

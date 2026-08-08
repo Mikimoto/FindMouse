@@ -752,6 +752,49 @@ private func stepWhile(_ h: Harness, phase: CatPhase, cursor: CGPoint, limit: In
             "鼠標只有 \(threshold * 0.9) px/s（門檻 \(threshold)）就撲了：phase=\(slow.last.phase)")
 }
 
+/// 退場淡出途中開逗貓棒，貓必須恢復不透明——而且整段逗貓棒都維持不透明。
+///
+/// `summon` 對 `.hidden` 與 `.exiting` 兩支都重設 alpha（後者由
+/// `RobustnessTests.summonDuringExitBringsCatBack` 釘住），但 `setTeaser` 的開啟分支
+/// 原本只處理 `.hidden`，而逗貓棒的六個階段沒有任何一處會把 alpha 加回去。
+/// 於是在退場的 `Timings.exitFade` 窗口內按 ⌥⌘T，整段逗貓棒都是半透明的，
+/// 而且不會自己恢復——直到下一次 `goHome`／`enter(.hidden)` 才被補回來。
+///
+/// **不能只驗進入當下那一帧。** 「進去時設了 1、下一帧又被扣掉」是另一種壞法
+/// （例如復原寫在 `enter` 之前、而 `.exiting` 的衰減在同一帧又跑了一次），
+/// 只比第一帧的版本抓不到，所以後面要再跑一整段。
+@Test func startingTheTeaserWhileTheCatIsFadingOutRestoresFullOpacity() {
+    let h = Harness()
+    h.step(cursor: center, commands: [.summon])
+    #expect(h.run(until: .resting, cursor: center))
+    h.step(cursor: center, commands: [.dismiss])
+    #expect(h.last.phase == .exiting)
+
+    // 前提：真的淡到一半。貓若根本沒開始淡出，下面整條就是恆真句。
+    h.run(seconds: Timings.exitFade / 2, cursor: center)
+    let faded = h.last.alpha
+    #expect(h.last.phase == .exiting, "還沒切進逗貓棒就退場完畢：phase=\(h.last.phase)")
+    #expect(faded > 0.1 && faded < 0.9, "退場只淡到 alpha=\(faded)，構造沒讓「半透明」看得出來")
+
+    h.step(cursor: center, commands: [.setTeaser(true)])
+    #expect(h.last.phase.isTeaser, "沒進逗貓棒：phase=\(h.last.phase)")
+    #expect(h.last.alpha == 1, "切進逗貓棒的那一帧貓還是半透明：alpha=\(h.last.alpha)")
+
+    var lowest: CGFloat = 1
+    var windups = 0
+    var previous = h.last.phase
+    for _ in 0..<900 {
+        h.step(cursor: center)
+        lowest = min(lowest, h.last.alpha)
+        if h.last.phase == .teaserWindup && previous != .teaserWindup { windups += 1 }
+        previous = h.last.phase
+    }
+    #expect(h.last.phase.isTeaser, "15 秒後離開了逗貓棒：phase=\(h.last.phase)")
+    // 貓若卡在某個階段完全不動，「alpha 一路都是 1」也會通過
+    #expect(windups >= 2, "15 秒只撲了 \(windups) 次，貓其實卡住了")
+    #expect(lowest == 1, "逗貓棒期間貓是半透明的：最低 alpha=\(lowest)")
+}
+
 /// spec 第 4.5 節寫 `teaserRetreating` 的離開條件是「播完」——退開走不到目標點時，
 /// 是 retreat clip 播完把貓叫回潛伏的。
 ///
