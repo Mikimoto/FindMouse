@@ -540,6 +540,201 @@ for _ in $(seq 1 40); do "${FM}" status >/dev/null 2>&1 && break; sleep 0.5; don
 expect "$(field 'd["pack"]["id"]')" "test-blocks" "正在用的 pack 被刪掉，重啟退回內建"
 expect "$(field 'int(d["pack"]["logicalHeight"])')" "96" "退回的是真的內建那套，不是只改了 id"
 
+# --- 13 ----------------------------------------------------------------------
+step "13. 逗貓棒真的跑起來（spec 第 3.2 / 4.5 節）"
+# 逗貓棒到目前為止只有單元測試，而 e2e 這一層唯一驗過它的是 step 11 的**反面**
+# （缺 pounce 的 pack 讓它不可用）。M3 的教訓是「每一層都綠而接線是壞的」，
+# 所以正面那條也要有人走一次。
+#
+# 為什麼用 CLI 而不是按鍵：**合成鍵盤事件打不到 Carbon 快捷鍵**（理由見 step 11）。
+# `findmouse teaser on` 與 ⌥⌘T 投遞的是同一個 `.setTeaser(true)`、過同一個
+# `ControlUseCase` 閘門，所以驗的是同一條線。
+#
+# 為什麼放在 step 12 之後：step 9 把 pack 換成 test-blocks-tall，而那套**缺 pounce**
+# （step 11 正是靠它驗 TEASER_UNAVAILABLE）。step 12 尾端的重啟把執行中的 pack
+# 帶回內建 test-blocks，這是整個腳本裡最後一段 teaser 可用的區間。
+expect "$(field 'd["pack"]["id"]')" "test-blocks" "前提：跑的是 teaser 齊全的內建 test-blocks"
+expect "$(field 'd["teaser"]["available"]')" "True" "前提：teaserAvailable"
+expect "$(field 'd["visible"]')" "False" "前提：貓不在畫面上（待會要看牠自己入場）"
+
+OUT="$("${FM}" teaser on --json 2>&1)"; CODE=$?
+expect "${CODE}" "0" "teaser on 回 exit 0"
+# 要輪詢，不能讀一次就斷言。命令是**排進佇列**的（spec 第 8.3 節），下一帧才被
+# 消費；而貓不在場時 display link 是停的，`wakeIfWorkPending` 叫醒它還要再等一個
+# frame。實測直接讀會拿到還沒生效的 false——那是命令模型本來的樣子，不是 bug。
+TEASER_ON=""
+for _ in $(seq 1 40); do
+    TEASER_ON="$(field 'd["teaser"]["enabled"]')"
+    [[ "${TEASER_ON}" == "True" ]] && break
+    sleep 0.25
+done
+expect "${TEASER_ON}" "True" "逗貓棒開起來了"
+
+# 觀測窗要蓋過「休息 → 睡著 → 退場」的整條時程，否則「不會自動退場」那條
+# 是恆真句。兩個時長讀自當前設定而不是寫死出廠值——使用者調過就會對不上。
+REST_D="$("${FM}" config get rest.duration | awk '{print $3}')"
+SLEEP_D="$("${FM}" config get sleep.duration | awk '{print $3}')"
+PROBE_SECONDS="$(/usr/bin/python3 -c "print(max(24, ${REST_D} + ${SLEEP_D} + 10))")"
+
+# 一個 python process 跑完整段輪詢。回傳一行：
+#   <屁股搖次數> <游標累計位移> <取樣數> <逗貓棒階段的取樣數> <暗幕亮著的次數>
+#   <看過最大的 rest/sleep 計時> <進入逗貓棒後又跑到非逗貓棒階段的次數> <走過的 phase>
+#
+# **判斷「循環有沒有跑完」用的是屁股搖的次數，不是看齊六個階段。**
+# 游標是使用者的，隨時會被碰到，而逗貓棒的每一步都吃游標：潛伏的朝向、
+# 屁股搖結束時鎖定的位置、命中判定的距離。所以「有沒有命中」「潛伏停了多久」
+# 都不是系統承諾的性質，斷言它們必然 flaky。屁股搖不一樣——它是**固定 0.5 秒**、
+# 與游標無關，所以次數不吃游標。壓縮掉連續重複之後看到兩次屁股搖，代表狀態機
+# **離開屁股搖之後又回到了屁股搖**，中間那幾個階段不必被取樣到。
+# 取樣間隔 0.05 秒（實測單次 status 花 4.4 毫秒），屁股搖本身就有約 9 次取樣。
+#
+# **這條證明到哪裡為止。** 它證明「回得到屁股搖」，不證明「撲擊真的發生過」——
+# 狀態機若退化成 `windup → stalking → windup`，這個判準照樣成立。那條缺口由單元
+# 測試守（`TeaserTests` 對每個轉移各一條，且每條都有 mutation 證明會紅）；e2e 在
+# 這裡的職責是「整套在真的 App 裡跑得起來」，不是把轉移再測一遍。同理**命中路徑
+# （`teaserTumbling`）不保證被走到**——連撲兩次空一樣湊得滿兩次屁股搖。
+#
+# 不把 `teaserPouncing` 加進斷言是刻意的：飛行只約 0.11 秒而取樣間隔 0.05 秒，
+# 加了會 flaky，而 flaky 的 gate 比涵蓋窄一點的 gate 更糟。
+teaser_probe() {
+    /usr/bin/python3 - "${FM}" "$1" <<'PY'
+import json, math, subprocess, sys, time
+
+fm, budget = sys.argv[1], float(sys.argv[2])
+INTERVAL = 0.05
+
+seq, travel, prev = [], 0.0, None
+samples = teaser_samples = lit = left = 0
+worst_timer = 0.0
+deadline = time.monotonic() + budget
+while time.monotonic() < deadline:
+    try:
+        out = subprocess.run([fm, "status", "--json"], capture_output=True, timeout=5).stdout
+        d = json.loads(out)["data"]
+    except Exception:
+        time.sleep(INTERVAL)
+        continue
+    samples += 1
+    cur = (d["cursor"]["x"], d["cursor"]["y"])
+    if prev is not None:
+        travel += math.hypot(cur[0] - prev[0], cur[1] - prev[1])
+    prev = cur
+
+    phase = d["phase"]
+    if not seq or seq[-1] != phase:
+        seq.append(phase)
+    if phase.startswith("teaser"):
+        teaser_samples += 1
+        if d["spotlight"]["active"]:
+            lit += 1
+        worst_timer = max(worst_timer, d["timers"]["rest"], d["timers"]["sleep"])
+    elif teaser_samples:
+        # 命令還沒被消費的開頭幾帧仍是 hidden，那不算「離開」；
+        # 進過逗貓棒之後才跑出去的才算。
+        left += 1
+    time.sleep(INTERVAL)
+
+print(seq.count("teaserWindup"), repr(travel), samples, teaser_samples,
+      lit, repr(worst_timer), left, ",".join(sorted(set(seq))))
+PY
+}
+read -r WINDUPS T_TRAVEL T_SAMPLES T_TEASER T_LIT T_TIMER T_LEFT T_PHASES \
+    <<< "$(teaser_probe "${PROBE_SECONDS}")"
+
+# 這一段 e2e 一次都沒碰游標，所以任何位移都來自外力。門檻沿用 step 3 的
+# CURSOR_STILL_TOLERANCE：這條斷言沒有「位移小於 N 就一定判得準」的界線可以反推
+# ——會跑的游標可以讓貓永遠追不進 stalkRange，不管總位移是大是小。所以判準只能是
+# 「有沒有被碰過」，而那個量在閒置機器上恆為 0（實測連跑 3 遍都是 0.0）。
+T_DISTURBED=0
+if /usr/bin/python3 -c "import sys; sys.exit(0 if ${T_TRAVEL} > ${CURSOR_STILL_TOLERANCE} else 1)"; then
+    T_DISTURBED=1
+fi
+
+if [[ "${WINDUPS}" -ge 2 ]]; then
+    ok "逗貓棒循環至少完整跑了一圈（${WINDUPS} 次屁股搖／${T_SAMPLES} 次取樣；走過 ${T_PHASES}）"
+elif [[ "${T_DISTURBED}" -eq 1 ]]; then
+    skip "只看到 ${WINDUPS} 次屁股搖（走過 ${T_PHASES}），但期間游標被外力移動了 ${T_TRAVEL} 點——貓在追一個會跑的目標 → 無法判定"
+else
+    bad "只看到 ${WINDUPS} 次屁股搖（走過 ${T_PHASES}），而期間游標累計只動了 ${T_TRAVEL} 點"
+fi
+
+# 以下兩條與游標無關（外力移動游標既關不掉逗貓棒、也開不出暗幕），所以不走
+# 「無法判定」——除非連一帧逗貓棒階段都沒取樣到，那時它們根本沒有被評估。
+if [[ "${T_TEASER}" -eq 0 ]]; then
+    if [[ "${T_DISTURBED}" -eq 1 ]]; then
+        skip "${PROBE_SECONDS} 秒內一帧都沒進到逗貓棒階段（走過 ${T_PHASES}），期間游標被外力移動了 ${T_TRAVEL} 點 → 暗幕與自動退場兩條都沒被評估"
+    else
+        bad "${PROBE_SECONDS} 秒內一帧都沒進到逗貓棒階段（走過 ${T_PHASES}），游標累計只動了 ${T_TRAVEL} 點"
+    fi
+else
+    expect "${T_LIT}" "0" "逗貓棒的任何階段都沒有暗幕（${T_TEASER} 帧取樣）"
+    # spec 第 3.2 節第 7 條後半：逗貓棒模式下貓不會自動退場。
+    # 兩個訊號都要——只看 phase 的話，「計時器在跑、只是還沒到門檻」躲得過去。
+    if [[ "${T_LEFT}" -eq 0 ]] \
+       && /usr/bin/python3 -c "import sys; sys.exit(0 if ${T_TIMER} == 0 else 1)"; then
+        ok "逗貓棒 ${PROBE_SECONDS} 秒都不自動退場（rest ${REST_D} ＋ sleep ${SLEEP_D} 都過完了，退場計時器全程 0）"
+    else
+        bad "逗貓棒模式下貓自己退場了：離開逗貓棒 ${T_LEFT} 次、退場計時器最大跑到 ${T_TIMER}（走過 ${T_PHASES}）"
+    fi
+fi
+
+# --- 13b ---------------------------------------------------------------------
+step "13b. 再關一次逗貓棒 → 走完當前動作後回家（spec 第 3.2 節第 8 條）"
+OUT="$("${FM}" teaser off --json 2>&1)"; CODE=$?
+expect "${CODE}" "0" "teaser off 回 exit 0"
+# 同樣要輪詢（理由見 step 13 的 teaser on）
+TEASER_OFF=""
+for _ in $(seq 1 40); do
+    TEASER_OFF="$(field 'd["teaser"]["enabled"]')"
+    [[ "${TEASER_OFF}" == "False" ]] && break
+    sleep 0.25
+done
+expect "${TEASER_OFF}" "False" "逗貓棒關掉了"
+# 「走完當前動作」＝ `pendingExit` 要等到**下一次逗貓棒階段轉換**才被消費
+# （`CatSessionUseCase.enter`），而潛伏最久要等 teaser.stalkTimeout（值域上限 20 秒），
+# 所以窗口取 30 秒。
+#
+# **這一條會被游標影響。** 原本這裡寫「退場由階段轉換觸發，游標怎麼動都還是會轉換」
+# ——那句話是錯的，實測推翻過：把游標在左右兩片螢幕之間持續甩動（相距 6500 點，
+# 而貓只有 900 點/秒），貓就永遠追不進 stalkRange、卡在 `teaserApproach`，
+# 一次階段轉換都沒有，於是 30 秒到了還在場。那不是產品壞了，是這條斷言測不準：
+# 「走完當前動作」的前提本來就是那個動作走得完。所以它跟 step 3 一樣要有干擾判準。
+exit_probe() {
+    /usr/bin/python3 - "${FM}" "$1" <<'PY'
+import json, math, subprocess, sys, time
+
+fm, budget = sys.argv[1], float(sys.argv[2])
+INTERVAL = 0.1
+visible, travel, prev, samples = "（沒取到任何狀態）", 0.0, None, 0
+deadline = time.monotonic() + budget
+while time.monotonic() < deadline:
+    try:
+        out = subprocess.run([fm, "status", "--json"], capture_output=True, timeout=5).stdout
+        d = json.loads(out)["data"]
+    except Exception:
+        time.sleep(INTERVAL)
+        continue
+    samples += 1
+    cur = (d["cursor"]["x"], d["cursor"]["y"])
+    if prev is not None:
+        travel += math.hypot(cur[0] - prev[0], cur[1] - prev[1])
+    prev = cur
+    visible = d["visible"]
+    if not visible:
+        break
+    time.sleep(INTERVAL)
+print(visible, repr(travel), samples)
+PY
+}
+read -r EXIT_VIS EXIT_TRAVEL EXIT_SAMPLES <<< "$(exit_probe 30)"
+if [[ "${EXIT_VIS}" == "False" ]]; then
+    ok "30 秒內走完當前動作並退場（${EXIT_SAMPLES} 次取樣）"
+elif /usr/bin/python3 -c "import sys; sys.exit(0 if ${EXIT_TRAVEL} > ${CURSOR_STILL_TOLERANCE} else 1)"; then
+    skip "30 秒後貓還在場，但期間游標被外力移動了 ${EXIT_TRAVEL} 點——貓可能還沒追進潛伏範圍，一次階段轉換都還沒發生 → 無法判定"
+else
+    bad "30 秒內沒有退場，而期間游標累計只動了 ${EXIT_TRAVEL} 點"
+fi
+
 step "結果"
 printf '  通過 %d、失敗 %d、無法判定 %d\n' "${PASS}" "${FAIL}" "${SKIP}"
 if [[ "${SKIP}" -gt 0 ]]; then
