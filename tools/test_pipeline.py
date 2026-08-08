@@ -481,6 +481,59 @@ def test_every_subcommand_speaks_json(tmp: Path):
     assert 0 <= payload["geometry"]["anchor"]["x"] <= 1
 
 
+def test_command_line_flags_actually_reach_the_algorithm(tmp: Path):
+    """防：旗標是裝飾品。上面的測試都直接呼叫函式，argparse 接錯的話一條都不會紅。"""
+    # --key：背景偏成 F20AEE。用預設 key 會整格找不到背景（硬失敗），指定才過
+    drifted, _ = composite(40, 40, soft_disc(20, 24, 12), (200, 200, 200), key=(242, 10, 238))
+    cells = tmp / "drifted"
+    cells.mkdir()
+    drifted.save(cells / "000.png")
+    code, payload = run_cli("key", str(cells), "--out", str(tmp / "k1"))
+    assert code == 1 and "NO_BACKGROUND_FOUND" in [e["code"] for e in payload["errors"]], payload
+    code, payload = run_cli("key", str(cells), "--out", str(tmp / "k2"), "--key", "F20AEE")
+    assert code == 0, payload
+
+    # --bg-tolerance：同一張髒背景，門檻歸零時 bbox 會被雜訊撐大
+    noisy = Image.new("RGB", (40, 40))
+    clean, _ = composite(40, 40, soft_disc(20, 24, 10, feather=1), (200, 200, 200))
+    noisy.putdata([(r - 8, g + 8, b) if (r, g, b) == (255, 0, 255) else (r, g, b)
+                   for (r, g, b) in clean.get_flattened_data()])
+    dirty = tmp / "noisy"
+    dirty.mkdir()
+    noisy.save(dirty / "000.png")
+    _, loose = run_cli("key", str(dirty), "--out", str(tmp / "k3"))
+    _, strict = run_cli("key", str(dirty), "--out", str(tmp / "k4"), "--bg-tolerance", "0")
+    assert loose["frames"][0]["bbox"] != strict["frames"][0]["bbox"], \
+        f"--bg-tolerance 改了也沒差：兩次都是 {loose['frames'][0]['bbox']}"
+
+    # --align：per-action 時整組共用同一個垂直位移，per-frame 則各格不同
+    keyed = tmp / "keyed" / "pounce"
+    keyed.mkdir(parents=True)
+    for i, bottom in enumerate((60, 44)):
+        rgba_shape(60, 80, cat_silhouette(10, 30, bottom - 30, bottom, 40)).save(
+            keyed / f"{i:03d}.png")
+    dys = {}
+    for mode in layout.ALIGN_MODES:
+        code, payload = run_cli("align", str(tmp / "keyed"), "--out", str(tmp / f"p-{mode}"),
+                                "--align", mode)
+        assert code == 0 and payload["geometry"]["align"] == mode, payload
+        dys[mode] = {f["dy"] for f in payload["actions"][0]["frames"]}
+    assert len(dys["per-frame"]) == 2, f"per-frame 各格的位移應該不同：{dys['per-frame']}"
+    assert len(dys["per-action"]) == 1, f"per-action 應該整組共用一個位移：{dys['per-action']}"
+
+    # manifest 的 --fps / --loop 覆寫
+    pack = tmp / "flag-pack"
+    for action in ("run", "sit", "sitIdle", "sleep"):
+        (pack / action).mkdir(parents=True)
+        Image.new("RGBA", (20, 20)).save(pack / action / "000.png")
+    code, payload = run_cli("manifest", str(pack), "--anchor", "0.5,0.94",
+                            "--fps", "run=30", "--loop", "run=false")
+    assert code == 0, payload
+    run_spec = payload["manifest"]["actions"]["run"]
+    assert run_spec["fps"] == 30 and run_spec["loop"] is False, run_spec
+    assert payload["manifest"]["actions"]["sleep"]["fps"] == 3, "沒被覆寫的動作不該跟著變"
+
+
 def test_end_to_end_produces_a_pack_that_satisfies_the_validator_rules(tmp: Path):
     """防：每一段各自正確、串起來卻產不出一套合法 pack。這條是四段真的接得起來的證據。"""
     pack_dir = build_synthetic_pack(tmp, "e2e-pack")
