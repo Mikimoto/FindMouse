@@ -28,7 +28,7 @@ K 是背景色，F 是貓的真實顏色，a 是這個像素被貓覆蓋的比�
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from PIL import Image
 
@@ -116,6 +116,10 @@ class KeyStats:
     bbox_solid: tuple[int, int, int, int] | None
     #: 四角取樣到的背景色。與 --key 差很遠就是門檻抓錯的前兆。
     sampled_corner: tuple[int, int, int]
+    #: 被 despeckle 抹掉的小區塊（生圖服務的角落簽名之類）。刪東西不能靜悄悄。
+    specks_removed: list[dict] = field(default_factory=list)
+    #: 抹完之後還剩幾塊互不相連的東西。貓是一塊；>1 代表這格生壞了。
+    blobs_remaining: int = -1
 
     @property
     def pixels(self) -> int:
@@ -142,6 +146,8 @@ class KeyStats:
             "bbox": list(self.bbox) if self.bbox else None,
             "bbox_solid": list(self.bbox_solid) if self.bbox_solid else None,
             "sampled_corner": list(self.sampled_corner),
+            "specks_removed": self.specks_removed,
+            "blobs_remaining": self.blobs_remaining,
         }
 
 
@@ -159,7 +165,8 @@ def sample_corner(rgb: Image.Image) -> tuple[int, int, int]:
 def key_frame(image: Image.Image,
               key: tuple[int, int, int] = KEY_MAGENTA,
               bg_tolerance: float = 0.08,
-              fg_tolerance: float = 0.06) -> tuple[Image.Image, KeyStats]:
+              fg_tolerance: float = 0.06,
+              despeckle_fraction: float = 0.01) -> tuple[Image.Image, KeyStats]:
     """一張圖 → 去背後的 RGBA ＋ 統計。
 
     輸出是**非預乘**的 straight alpha，PNG 的定義就是這個；CoreGraphics 讀進去
@@ -202,8 +209,16 @@ def key_frame(image: Image.Image,
 
     result = Image.new("RGBA", (width, height))
     result.putdata(out)
+    removed, remaining = despeckle(result, min_fraction=despeckle_fraction)
 
     alpha_band = result.getchannel("A")
+    if removed:
+        # 三個計數器是抹之前算的。不重算的話 coverage 會把已經被刪掉的簽名
+        # 算進去——一個「報表說有、圖上沒有」的差距，正是這支工具要消滅的東西。
+        histogram = alpha_band.histogram()
+        transparent = histogram[0]
+        opaque = histogram[255]
+        partial = width * height - transparent - opaque
     stats = KeyStats(
         width=width,
         height=height,
@@ -212,8 +227,50 @@ def key_frame(image: Image.Image,
         partial=partial,
         bbox=alpha_band.getbbox(),
         bbox_solid=alpha_band.point(lambda v: 255 if v >= 128 else 0).getbbox(),
-        sampled_corner=sample_corner(rgb))
+        sampled_corner=sample_corner(rgb),
+        specks_removed=removed,
+        blobs_remaining=remaining)
     return result, stats
+
+
+def despeckle(rgba: Image.Image, min_fraction: float) -> tuple[list[dict], int]:
+    """就地抹掉小於「最大區塊 × min_fraction」的連通分量，回 (被抹掉的, 剩下幾塊)。
+
+    這不是為了 JPEG 雜訊（那是 bg_tolerance 的工作，而且雜訊碎點通常只有幾個
+    像素）。這是為了**生圖服務蓋在角落的簽名**——Gemini 每張圖右下角都有一個
+    ✦，它是後製貼上去的，prompt 禁不掉（實測連兩次都在）。那是真的不透明像素，
+    任何色度門檻都碰不到它，而它會把 bbox 撐到整格，於是腳底線與 anchor 全錯。
+
+    門檻取「相對於最大區塊」而不是絕對像素數，因為畫布尺寸會隨生圖服務改變。
+    刻意**不**做成「只留最大的一塊」：那樣會把 001 那種「多長出一條浮空尾巴」
+    的壞格悄悄修成好格。大塊的東西留著，然後由 blobs_remaining 讓它現形。
+    """
+    if min_fraction <= 0:
+        return [], -1
+
+    import numpy as np
+    from scipy import ndimage
+
+    alpha = np.array(rgba.getchannel("A"))
+    labels, count = ndimage.label(alpha > 0)
+    if count <= 1:
+        return [], count
+
+    sizes = np.bincount(labels.ravel())
+    sizes[0] = 0                      # 0 是背景標籤，不是分量
+    threshold = sizes.max() * min_fraction
+
+    removed = []
+    for index in np.flatnonzero((sizes > 0) & (sizes < threshold)):
+        ys, xs = np.nonzero(labels == index)
+        removed.append({"pixels": int(sizes[index]),
+                        "bbox": [int(xs.min()), int(ys.min()),
+                                 int(xs.max()) + 1, int(ys.max()) + 1]})
+        alpha[labels == index] = 0
+
+    if removed:
+        rgba.putalpha(Image.fromarray(alpha))
+    return removed, int(count - len(removed))
 
 
 def _byte(value: float) -> int:

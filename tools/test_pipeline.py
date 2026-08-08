@@ -149,6 +149,59 @@ def test_slice_loses_no_pixel_even_when_width_is_indivisible(tmp: Path):
         assert joined.tobytes() == strip.tobytes(), f"{width}/{count}：接回去和原圖不一樣"
 
 
+def _cat_plus_blob(blob_radius: float):
+    """一隻貓，外加一塊完全分離、大小可調的圓形雜物（模擬角落簽名／崩壞的殘影）。"""
+    cat = cat_silhouette(6, 70, 10, 90, 90)
+    blob = soft_disc(102, 102, blob_radius)
+    return lambda x, y: max(cat(x, y), blob(x, y))
+
+
+def test_corner_signature_is_removed_and_reported(tmp: Path):
+    """防：生圖服務蓋在角落的簽名把 bbox 撐到整格。它是真的不透明像素，色度門檻碰不到。"""
+    image, _ = composite(120, 120, _cat_plus_blob(3.0), (200, 160, 120))
+    image.save(tmp / "000.png")
+    code, payload = run_cli("key", str(tmp / "000.png"), "--out", str(tmp / "out"))
+    assert code == 0, payload
+    frame = payload["frames"][0]
+
+    assert len(frame["specks_removed"]) == 1, frame["specks_removed"]
+    assert frame["blobs_remaining"] == 1, frame
+    # bbox 必須收回貓身上——簽名在 (102,102)，貓最右到 x=90
+    assert frame["bbox"][2] <= 92 and frame["bbox"][3] <= 92, \
+        f"簽名還在 bbox 裡：{frame['bbox']}"
+    kept = Image.open(tmp / "out" / "000.png").convert("RGBA")
+    assert kept.getchannel("A").getpixel((102, 102)) == 0, "報告說抹掉了，檔案裡還在"
+
+
+def test_coverage_excludes_what_despeckle_removed(tmp: Path):
+    """防：報表把已經刪掉的像素算進 coverage。一個「報表說有、圖上沒有」的差距。"""
+    image, _ = composite(120, 120, _cat_plus_blob(3.0), (200, 160, 120))
+    image.save(tmp / "000.png")
+    on, _ = run_cli("key", str(tmp / "000.png"), "--out", str(tmp / "a"))
+    off, _ = run_cli("key", str(tmp / "000.png"), "--despeckle", "0", "--out", str(tmp / "b"))
+    assert on == off == 0
+    _, with_speck = run_cli("key", str(tmp / "000.png"), "--despeckle", "0",
+                            "--out", str(tmp / "c"))
+    _, without = run_cli("key", str(tmp / "000.png"), "--out", str(tmp / "d"))
+    assert without["frames"][0]["coverage"] < with_speck["frames"][0]["coverage"], \
+        "抹掉了東西，coverage 卻沒變小"
+    opaque = Image.open(tmp / "d" / "000.png").convert("RGBA").getchannel("A")
+    actual = sum(1 for v in opaque.getdata() if v > 0) / (120 * 120)
+    assert abs(actual - without["frames"][0]["coverage"]) < 1e-6, \
+        f"報表 {without['frames'][0]['coverage']} vs 實際 {actual}"
+
+
+def test_a_large_detached_blob_is_kept_and_fails_loudly(tmp: Path):
+    """防：把「生圖崩壞長出第二條尾巴」的壞格悄悄修成好格。大塊的東西要留著並報錯。"""
+    image, _ = composite(120, 120, _cat_plus_blob(30.0), (200, 160, 120))
+    image.save(tmp / "000.png")
+    code, payload = run_cli("key", str(tmp / "000.png"), "--out", str(tmp / "out"))
+    assert code != 0, payload
+    assert [e["code"] for e in payload["errors"]] == ["DISCONNECTED_SUBJECT"], payload
+    assert payload["frames"][0]["specks_removed"] == [], "大塊不該被抹掉"
+    assert not (tmp / "out" / "000.png").exists(), "失敗了卻還是寫了檔"
+
+
 def test_two_strips_merge_into_one_action_and_refuse_to_overwrite(tmp: Path):
     """防：8 格分兩張生時第二張蓋掉第一張。覆蓋不留缺號，manifest 的跳號檢查看不到。"""
     def strip(tag: int) -> Path:

@@ -172,7 +172,8 @@ def cmd_key(args: argparse.Namespace) -> int:
         image = Image.open(path)
         rgba, stats = chroma.key_frame(image, key=key,
                                        bg_tolerance=args.bg_tolerance,
-                                       fg_tolerance=args.fg_tolerance)
+                                       fg_tolerance=args.fg_tolerance,
+                                       despeckle_fraction=args.despeckle)
         keyed.append((path, rgba))
         record = {"file": path.name, **stats.to_json()}
 
@@ -185,6 +186,12 @@ def cmd_key(args: argparse.Namespace) -> int:
             errors.append({"code": "NEARLY_EMPTY_FRAME", "file": path.name,
                            "detail": f"只有 {stats.coverage:.4%} 的像素留下來，"
                                      f"低於 --min-coverage {args.min_coverage:.4%}。"})
+        if stats.blobs_remaining > 1:
+            errors.append({"code": "DISCONNECTED_SUBJECT", "file": path.name,
+                           "detail": f"去背後還有 {stats.blobs_remaining} 塊互不相連的東西。"
+                                     "貓應該是一塊——多出來的通常是生圖崩壞長出的第二條"
+                                     "尾巴或殘影，重生這一格。真的是刻意分離的造型就調"
+                                     "--despeckle。"})
         if stats.background_ratio <= 0:
             errors.append({"code": "NO_BACKGROUND_FOUND", "file": path.name,
                            "detail": f"沒有任何像素被判為背景，四角取樣到 "
@@ -213,6 +220,8 @@ def cmd_key(args: argparse.Namespace) -> int:
     for record in frames:
         lines.append(f"  {record['file']}: 覆蓋 {record['coverage']:.2%}"
                      f"、背景 {record['background_ratio']:.2%}、bbox {record['bbox']}")
+        for speck in record["specks_removed"]:
+            lines.append(f"      抹掉碎塊 {speck['pixels']} px @ {speck['bbox']}")
     for error in errors:
         lines.append(f"  ✗ [{error['code']}] {error['file']}：{error['detail']}")
     lines.append(f"→ {out}" if not errors else "→ 有失敗的格，一張都沒寫出")
@@ -446,6 +455,9 @@ def build_parser() -> argparse.ArgumentParser:
     # 反過來的那一端：貓身上偏洋紅的部位（粉紅鼻子、耳廓、舌頭）會被算出
     # alpha < 1。6% 蓋得住淡粉紅；真的有一大塊桃紅色的貓要調到 0.10 以上，
     # 代價是最外圈那層 alpha 會被吸到 1，邊緣硬一點。
+    p.add_argument("--despeckle", type=float, default=0.01,
+                   help="抹掉小於「最大區塊 × 這個比例」的連通分量（預設 0.01）。"
+                        "生圖服務蓋在角落的簽名就是靠這個清掉；0 為停用")
     p.add_argument("--fg-tolerance", type=float, default=0.06,
                    help="alpha 高於 1−這個值就當成全不透明（預設 0.06）")
     p.add_argument("--min-coverage", type=float, default=0.005,
