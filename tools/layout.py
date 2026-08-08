@@ -160,6 +160,52 @@ class Geometry:
                               f"geometry 檔缺欄位或型別不對：{exc}") from exc
 
 
+def key_bbox(cell: Image.Image, purity: float = 0.92) -> tuple[int, int, int, int] | None:
+    """一格裡「像背景色」的像素的外框。找不到就回 None。
+
+    用途是切掉生圖服務加在外圍的白框與格間留白：實測 Gemini 會在整張圖外圍加
+    一圈白邊（10–20 px）、兩格之間再留一條白間隔，切一半之後每格四邊都帶一圈白。
+    白不是洋紅，去背去不掉，於是每格的 bbox 都會被撐到整格；而四角取樣拿到的
+    是白色，`detect_key` 會直接判不出背景。
+
+    判別用 d = min(R,B) − G 而不是比對某個 key，因為這一步跑在 key 判定**之前**。
+    三者離得很開：白 d=0、貓身 d<0、洋紅 d≈190。
+
+    門檻取「這一格最純的背景 × purity」而不是固定值：白與洋紅的交界有抗鋸齒
+    混色，固定的低門檻會把混色一起算進外框，於是最外圈留下一兩欄半透明的白，
+    而那正好是四角取樣會踩到的地方。取相對值也讓它不必假設背景有多飽和。
+
+    purity 的預設值不是挑的，是對齊 `key` 的判準：那邊「算全背景」的條件是
+    `raw <= bg_tolerance`，也就是純度 >= 1 − 0.08。裁到這條線，留在邊上的像素
+    去背後 alpha 必為 0；設鬆一點（試過 0.75）留下的就是 25% 不透明的一圈白，
+    它會沿著整個邊長連成一大塊，大到 despeckle 都吃不掉。改 bg_tolerance 時
+    這個值要一起想。
+
+    回的是背景的外框而不是白框的內緣：兩者在「白框是完整一圈」時等價，
+    但貓若頂到格子邊，背景外框仍然涵蓋得到貓（貓被洋紅包著），而白框內緣
+    要靠「每一邊都是純白」才算得出來，貓一碰邊就整條失效。
+    """
+    width, height = cell.size
+    pixels = list(cell.convert("RGB").get_flattened_data())
+    purest = max((r if r < b else b) - g for r, g, b in pixels)
+    if purest <= 0:
+        return None
+    min_d = purest * purity
+    left, top, right, bottom = width, height, -1, -1
+    for y in range(height):
+        row = y * width
+        for x in range(width):
+            r, g, b = pixels[row + x]
+            if (r if r < b else b) - g > min_d:
+                if x < left: left = x
+                if x > right: right = x
+                if y < top: top = y
+                if y > bottom: bottom = y
+    if right < 0:
+        return None
+    return (left, top, right + 1, bottom + 1)
+
+
 ALIGN_MODES = ("per-frame", "per-action")
 
 

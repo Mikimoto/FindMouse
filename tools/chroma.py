@@ -166,7 +166,7 @@ def detect_key(rgb: Image.Image) -> tuple[int, int, int]:
     d ≤ 0 的角落就等於丟掉「這一角是貓」的取樣，不是憑經驗抓的門檻。
     """
     w, h = rgb.size
-    corners = [rgb.getpixel(p) for p in ((0, 0), (w - 1, 0), (0, h - 1), (w - 1, h - 1))]
+    corners = [corner_colour(rgb, cx, cy) for cx in (0, 1) for cy in (0, 1)]
     usable = [c for c in corners if min(c[0], c[2]) - c[1] > 0]
     if len(usable) < 2:
         raise ChromaError(
@@ -174,6 +174,26 @@ def detect_key(rgb: Image.Image) -> tuple[int, int, int]:
             f"四個角落只有 {len(usable)} 個看起來像洋紅背景（取樣到 {corners}）。"
             "多半是貓佔滿了整格或背景根本不是洋紅系——用 --key 明確指定，不要讓它猜。")
     return tuple(sorted(c[i] for c in usable)[len(usable) // 2] for i in range(3))  # type: ignore[return-value]
+
+
+def corner_colour(rgb: Image.Image, right: int, bottom: int) -> tuple[int, int, int]:
+    """一個角落的代表色：取一小塊 patch 裡 d 落在中位數的那個像素。
+
+    **不能只讀角落那一個像素**。生圖服務會在整張圖外圍加白邊，裁掉之後最外圈
+    仍留著一兩個抗鋸齒混色；實測角落像素的 d 是 32 與 83，而同一角 16×16 的
+    中位數是 196 與 203——差了一個數量級，而那個 d 就是 alpha 公式的分母。
+    分母取小了，整片背景會留一層薄霧，卻沒有任何錯誤訊息。
+
+    取「d 的中位數所在的那個像素」而不是各通道各自取中位數：後者會拼出一個
+    不存在於圖上的顏色。中位數而非最大值，是因為最大值會抓到 JPEG 的離群點。
+    """
+    w, h = rgb.size
+    size = max(1, min(16, w // 4, h // 4))
+    x0 = w - size if right else 0
+    y0 = h - size if bottom else 0
+    patch = [rgb.getpixel((x0 + x, y0 + y)) for y in range(size) for x in range(size)]
+    patch.sort(key=lambda c: min(c[0], c[2]) - c[1])
+    return patch[len(patch) // 2]
 
 
 def sample_corner(rgb: Image.Image) -> tuple[int, int, int]:

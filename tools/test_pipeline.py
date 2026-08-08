@@ -149,6 +149,62 @@ def test_slice_loses_no_pixel_even_when_width_is_indivisible(tmp: Path):
         assert joined.tobytes() == strip.tobytes(), f"{width}/{count}：接回去和原圖不一樣"
 
 
+def _framed_strip(shade: tuple[int, int, int], frame: int, gutter: int) -> Image.Image:
+    """兩格的條子，外圍一圈白框、中間一條白間隔——生圖服務實際會吐的形狀。"""
+    cell_w, cell_h = 100, 100
+    width = frame * 2 + cell_w * 2 + gutter
+    height = frame * 2 + cell_h
+    strip = Image.new("RGB", (width, height), (255, 255, 255))
+    cat = cat_silhouette(6, 60, 10, 80, 80)
+    for i in range(2):
+        cell, _ = composite(cell_w, cell_h, cat, (200, 160, 120), key=shade)
+        strip.paste(cell, (frame + i * (cell_w + gutter), frame))
+    return strip
+
+
+def test_slice_trims_the_white_frame_the_service_adds(tmp: Path):
+    """防：外圍白框留在格子裡。白不是洋紅、去背去不掉，每格 bbox 都會變成整格。"""
+    shade = (253, 48, 247)
+    _framed_strip(shade, frame=12, gutter=20).save(tmp / "strip.png")
+
+    code, payload = run_cli("slice", str(tmp / "strip.png"), "--frames", "2",
+                            "--out", str(tmp / "cells"))
+    assert code == 0, payload
+    assert all(c["trimmed_to"] for c in payload["cells"]), payload["cells"]
+
+    for name in ("000.png", "001.png"):
+        cell = Image.open(tmp / "cells" / name).convert("RGB")
+        w, h = cell.size
+        for corner in ((0, 0), (w - 1, 0), (0, h - 1), (w - 1, h - 1)):
+            r, g, b = cell.getpixel(corner)
+            assert min(r, b) - g > 0, f"{name} 的 {corner} 還是白的：{(r, g, b)}"
+
+    # 真正要證明的是下一步過得去：白框留著的話這裡會是 AMBIGUOUS_BACKGROUND
+    code, payload = run_cli("key", str(tmp / "cells"), "--out", str(tmp / "keyed"))
+    assert code == 0, payload
+    assert [f["key"] for f in payload["frames"]] == [list(shade)] * 2, payload["frames"]
+    # 邊緣不得留下半透明的白：裁切門檻對齊 bg_tolerance 就該一片都不剩
+    for name in ("000.png", "001.png"):
+        alpha = Image.open(tmp / "keyed" / name).convert("RGBA").getchannel("A")
+        w, h = alpha.size
+        edge = [alpha.getpixel((x, 0)) for x in range(w)] + \
+               [alpha.getpixel((x, h - 1)) for x in range(w)] + \
+               [alpha.getpixel((0, y)) for y in range(h)] + \
+               [alpha.getpixel((w - 1, y)) for y in range(h)]
+        assert max(edge) == 0, f"{name} 的最外圈還有 alpha={max(edge)} 的殘留"
+
+
+def test_slice_without_a_frame_is_left_alone(tmp: Path):
+    """防：裁切在沒有白框時也動手，把貓的邊緣切掉一圈。"""
+    shade = (253, 48, 247)
+    _framed_strip(shade, frame=0, gutter=0).save(tmp / "strip.png")
+    code, payload = run_cli("slice", str(tmp / "strip.png"), "--frames", "2",
+                            "--out", str(tmp / "cells"))
+    assert code == 0, payload
+    assert [c["trimmed_to"] for c in payload["cells"]] == [None, None], payload["cells"]
+    assert [c["size"] for c in payload["cells"]] == [[100, 100], [100, 100]], payload["cells"]
+
+
 def test_auto_key_reads_the_actual_background_of_each_frame(tmp: Path):
     """防：把背景當成 FF00FF。生圖服務吐的洋紅每張都不同，差一點就要把門檻開大去吸收。"""
     shades = [(250, 56, 244), (255, 53, 242), (251, 68, 240)]

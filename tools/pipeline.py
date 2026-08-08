@@ -128,12 +128,21 @@ def cmd_slice(args: argparse.Namespace) -> int:
 
     written = []
     for index, (cell, (x0, x1)) in enumerate(cells, start=args.start):
+        trimmed = None
+        if args.trim:
+            box = layout.key_bbox(cell)
+            # 找不到背景就原樣留著，讓 key 的 AMBIGUOUS_BACKGROUND 去報——
+            # 在這裡裁成空的只會把診斷換成一個更難懂的錯。
+            if box and box != (0, 0, cell.width, cell.height):
+                cell = cell.crop(box)
+                trimmed = list(box)
         path = out / (FRAME_NAME % index)
         cell.save(path)
         written.append({"index": index, "file": path.name,
-                        "x0": x0, "x1": x1, "width": x1 - x0})
+                        "x0": x0, "x1": x1, "width": x1 - x0,
+                        "trimmed_to": trimmed, "size": list(cell.size)})
 
-    widths = [c["width"] for c in written]
+    widths = [c["size"][0] for c in written]
     even = len(set(widths)) == 1
     payload = {
         "ok": True,
@@ -150,7 +159,11 @@ def cmd_slice(args: argparse.Namespace) -> int:
     lines = [f"切出 {args.frames} 格 → {out}／"
              f"{written[0]['file']}–{written[-1]['file']}",
              f"  原圖 {strip.width}×{strip.height}，"
-             f"格寬 {min(widths)}–{max(widths)} px，{'等寬' if even else '不整除（差 1 px）'}"]
+             f"格寬 {min(widths)}–{max(widths)} px，{'等寬' if even else '不等寬'}"]
+    for cell_info in written:
+        if cell_info["trimmed_to"]:
+            lines.append(f"      {cell_info['file']} 裁掉外圍留白 → "
+                         f"{cell_info['size'][0]}×{cell_info['size'][1]}")
     return emit(args, payload, lines)
 
 
@@ -236,8 +249,15 @@ def cmd_key(args: argparse.Namespace) -> int:
         lines.append(f"  {record['file']}: 覆蓋 {record['coverage']:.2%}"
                      f"、背景 {record['background_ratio']:.2%}、bbox {record['bbox']}"
                      + (f"、key #{bytes(record['key']).hex().upper()}" if auto else ""))
-        for speck in record["specks_removed"]:
-            lines.append(f"      抹掉碎塊 {speck['pixels']} px @ {speck['bbox']}")
+        specks = record["specks_removed"]
+        if specks:
+            # 逐塊列出會有幾百行（矩形裁切切不齊鋸齒狀的白框，邊緣會留一串碎屑），
+            # 那樣真正該看的東西——例如一塊 3400 px 的簽名——就被淹掉了。
+            # 完整清單留在 --json 裡。
+            biggest = max(specks, key=lambda s: s["pixels"])
+            lines.append(f"      抹掉 {len(specks)} 個碎塊、共 "
+                         f"{sum(s['pixels'] for s in specks):,} px，"
+                         f"最大 {biggest['pixels']:,} px @ {biggest['bbox']}")
     for error in errors:
         lines.append(f"  ✗ [{error['code']}] {error['file']}：{error['detail']}")
     lines.append(f"→ {out}" if not errors else "→ 有失敗的格，一張都沒寫出")
@@ -455,6 +475,9 @@ def build_parser() -> argparse.ArgumentParser:
                         "第二張用 --start 接續，例如 8 格分 4+4 就是 --start 4")
     p.add_argument("--force", action="store_true",
                    help="允許覆蓋既有的格子")
+    p.add_argument("--no-trim", dest="trim", action="store_false",
+                   help="不要裁掉外圍留白。預設會裁——生圖服務常在整張圖外圍加"
+                        "一圈白邊、兩格之間再留白間隔，那些白去背去不掉")
     p.add_argument("--json", action="store_true")
     p.set_defaults(func=cmd_slice)
 
