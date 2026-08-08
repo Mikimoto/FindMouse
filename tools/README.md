@@ -9,10 +9,14 @@ spec 第 11 節第 5 條的實作：**AI 生圖的橫排多格圖 → 一套 spr
 
 ## 依賴
 
-**Pillow**（`python3 -c "import PIL"` 驗一下）。這是本 repo 第一個需要第三方套件的
-東西——`Scripts/mutate.py` 是零依賴的。**不建 venv、不寫 requirements.txt**：
-repo 沒有那個慣例，而這條管線一輩子只會在開發機上跑幾十次。
-裝法 `python3 -m pip install --user Pillow`。除此之外只用標準函式庫。
+**Pillow** 與 **SciPy**（`python3 -c "import PIL, scipy"` 驗一下）。這是本 repo
+第一個需要第三方套件的東西——`Scripts/mutate.py` 是零依賴的。**不建 venv、
+不寫 requirements.txt**：repo 沒有那個慣例，而這條管線一輩子只會在開發機上
+跑幾十次。裝法 `python3 -m pip install --user Pillow scipy`。
+
+SciPy 只用到一個東西：`ndimage.label` 做連通分量（見下面的 despeckle）。
+純 Python 的 flood fill 在 1000×1000 的格子上要跑好幾秒，一套 pack 八十幾格
+就是好幾分鐘。
 
 ## 四個子命令
 
@@ -38,7 +42,11 @@ manifest  排好的 pack 目錄   → pack.json
 # 1. 每組動作一張橫排圖，先切格
 python3 tools/pipeline.py slice raw/run-strip.png --frames 8 --out work/cells/run
 
-# 2. 去背。背景不是精確的 FF00FF 就自己指定 --key
+#    一組動作分兩張條子生的話（解析度撐不住 8 格），第二張用 --start 接續：
+#    python3 tools/pipeline.py slice raw/run-b.png --frames 4 \
+#        --out work/cells/run --start 4
+
+# 2. 去背。背景色預設逐格自動判定，不用自己量
 python3 tools/pipeline.py key work/cells/run --out work/keyed/run
 
 #    …對 14 組動作各跑一次，全部落在 work/keyed/<動作>/ 底下
@@ -90,9 +98,10 @@ manifest 只有一組 `anchor: {x, y}`，14 組動作共用。所以：
 
 ### `--align per-frame`（預設）vs `per-action`
 
-`per-frame` 是每一格自己最低的那排像素都壓到腳底線上——這是 spec「對齊腳底線」
-與生圖指引「every cell the cat's feet rest on the SAME line」的字面意思，
-修掉的是生圖服務的框位漂移。代價是**騰空的動作會被黏回地面**。
+`per-frame` 是每一格自己最低的那排像素都壓到腳底線上——修掉的是生圖服務的
+框位漂移。（spec 第 11 節第 5 條只寫「對齊腳底線」，沒有指定逐格還是逐動作；
+逐格是生圖指引那句 ground line 的自然讀法，不是 spec 明文。）
+代價是**騰空的動作會被黏回地面**。
 
 所以 `pounce`（整隻在空中）與 `tumble`（翻滾）要單獨用 `per-action` 跑一次：
 整組一起平移，讓該組最低的那一格落在線上，組內的上下位移保留。
@@ -103,8 +112,9 @@ manifest 只有一組 `anchor: {x, y}`，14 組動作共用。所以：
 
 | 旗標 | 預設 | 理由 |
 |---|---|---|
-| `--key` | `FF00FF` | spec 第 11 節第 4 條。生圖服務吐出來的背景常常偏一點，看 `--json` 的 `sampled_corner`，差很遠就改這個 |
-| `--bg-tolerance` | `0.08` | 平坦洋紅經 JPEG 每通道抖 ±n（n 約 8），而 alpha 看的是 `min(R,B) − G`，最壞情況兩邊反向各抖 n → 誤差 **2n**/255。0.08 撐得住每通道 ±10 |
+| `--key` | `auto` | **逐格**從四角判定實際的背景色。生圖服務吐的洋紅從來不是精確的 `FF00FF`（實測 `#FD35FA`、`#FE3CF4`…），而且同一張條子裡每格還不一樣。判不出來就硬失敗，不猜。要寫死就給 `RRGGBB` |
+| `--despeckle` | `0.01` | 抹掉小於「最大區塊 × 這個比例」的連通分量。給 `0` 停用 |
+| `--bg-tolerance` | `0.08` | 平坦洋紅經 JPEG 每通道抖 ±n（n 約 8），而 alpha 看的是 `min(R,B) − G`，最壞情況兩邊反向各抖 n → 誤差 **2n**/255。0.08 撐得住每通道 ±10。**這個值只負責雜訊**——key 判準了就不必開大（實測真實素材在 0.08 與 0.20 算出的 bbox 幾乎相同；而用一個全域 `--key` 時 0.08 會整個失效） |
 | `--fg-tolerance` | `0.06` | 反過來那一端：貓身上偏洋紅的部位（粉紅鼻子、耳廓）會被算出 alpha < 1。0.06 蓋得住淡粉紅；真的有大塊桃紅色要調到 0.10 以上 |
 | `--min-coverage` | `0.005` | 低於這個比例就判定生圖失敗。貓佔格子八成高，不可能只留 0.5% |
 | `--pad` / `--bottom-pad` | `0.05` / `0.07` | 算出來 anchor.y = 0.9375，和 spec 第 6.2 節範例的 0.94 對得上。留白是為了讓之後補的一格高個兩三 px 時不必換整套畫布 |
@@ -118,12 +128,33 @@ manifest 只有一組 `anchor: {x, y}`，14 組動作共用。所以：
 |---|---|
 | `EMPTY_FRAME` | 整格都是背景（生圖失敗的空格）。**同一批只要有一格壞掉就一張都不寫**，避免下一步拿上一輪的舊檔繼續跑 |
 | `NEARLY_EMPTY_FRAME` | 留下來的像素低於 `--min-coverage` |
-| `NO_BACKGROUND_FOUND` | 沒有任何像素被判為背景 → `--key` 大概不對 |
+| `NO_BACKGROUND_FOUND` | 沒有任何像素被判為背景 → 明確指定的 `--key` 大概不對 |
+| `AMBIGUOUS_BACKGROUND` | `--key auto` 在四角取樣不到兩個像洋紅的角落。多半是貓佔滿整格，或背景根本不是洋紅系 |
+| `DISCONNECTED_SUBJECT` | despeckle 之後還有超過一塊互不相連的東西。貓應該是一塊 |
+| `FRAME_EXISTS` | `slice` 要寫的檔名已經存在（`--start` 給錯了）。覆蓋不留缺號，`FRAME_NAME_GAP` 抓不到，所以只能在寫之前擋。確定要蓋就 `--force` |
 | `INVALID_KEY_COLOUR` | key 的 `min(R,B) ≤ G`（例如綠幕）。這個模型只處理洋紅系 |
 | `FRAME_EXCEEDS_CANVAS` | 用 `--geometry` pin 住版面時新的一格擺不下 |
 | `FRAME_NAME_GAP` | 檔名不是 `000…N-1` 連號。`SpriteRepository` 依排序後的**位置**取格，跳號會整段錯格播而不報錯——這是 `PackValidator` 看不到的洞（它只數張數） |
 | `MISSING_CORE_ACTIONS` | 缺 `run`/`sit`/`sitIdle`/`sleep` 任一（spec 第 6.3 節） |
 | `STRIP_TOO_NARROW` | 圖寬小於格數 |
+
+### despeckle：抹掉生圖服務蓋在角落的簽名
+
+Gemini 在每張產出的右下角蓋一個 `✦`。它是**後製貼上去的，prompt 禁不掉**
+（實測連兩張都在），而且是真的不透明像素，任何色度門檻都碰不到它。
+它會把 bbox 從 `[3,247,947,943]` 撐成 `[3,247,1032,1024]`，於是腳底線與
+anchor 全錯——而輸出仍然是一套看起來完全正常的 pack。
+
+門檻取「相對於最大區塊」而不是絕對像素數，因為畫布尺寸會隨生圖服務改變
+（實測那個簽名佔最大區塊的 0.27%，預設門檻 1%）。每一塊被抹掉的都會列進
+`--json` 的 `specks_removed` 與人類輸出——**刪東西不能靜悄悄**。
+
+刻意**不**做成「只留最大的一塊」：那樣會把「生圖崩壞長出第二條尾巴」的壞格
+悄悄修成好格。大塊的東西留著，改由 `blobs_remaining > 1` 觸發
+`DISCONNECTED_SUBJECT` 硬失敗。
+
+這是一張**部分的網**，不是完整的網：實測它抓到了跨格的殘影，但同一批裡另有
+一格的殘影**與貓身相連**，連通分量只算一塊，它抓不到。眼睛還是要看。
 
 ## 去背的模型
 
@@ -154,7 +185,7 @@ python3 tools/test_pipeline.py
 ```
 
 沒有真實素材，但整條管線都測得起來——**合成的 fixture 我知道正確答案**。
-19 條，每一條的名字說的是它在防什麼。runner 開跑前會先自檢一次
+26 條，每一條的名字說的是它在防什麼。runner 開跑前會先自檢一次
 （確認它分得出通過、失敗、crash 三種），總數是 0 一律當失敗。
 
 端對端那條另外提供：
