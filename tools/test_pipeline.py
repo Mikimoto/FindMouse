@@ -149,6 +149,43 @@ def test_slice_loses_no_pixel_even_when_width_is_indivisible(tmp: Path):
         assert joined.tobytes() == strip.tobytes(), f"{width}/{count}：接回去和原圖不一樣"
 
 
+def test_two_strips_merge_into_one_action_and_refuse_to_overwrite(tmp: Path):
+    """防：8 格分兩張生時第二張蓋掉第一張。覆蓋不留缺號，manifest 的跳號檢查看不到。"""
+    def strip(tag: int) -> Path:
+        # 每張條子四格，格內顏色帶著 tag，混到一起時分得出誰是誰
+        img = Image.new("RGB", (40, 10), KEY)
+        img.putdata([(tag, x, y) for y in range(10) for x in range(40)])
+        path = tmp / f"strip{tag}.png"
+        img.save(path)
+        return path
+
+    out = tmp / "cells"
+    code, _ = run_cli("slice", str(strip(1)), "--frames", "4", "--out", str(out))
+    assert code == 0
+    code, payload = run_cli("slice", str(strip(2)), "--frames", "4",
+                            "--out", str(out), "--start", "4")
+    assert code == 0, payload
+    assert [c["file"] for c in payload["cells"]] == \
+        ["004.png", "005.png", "006.png", "007.png"], payload["cells"]
+
+    names = sorted(p.name for p in out.glob("*.png"))
+    assert names == [f"{i:03d}.png" for i in range(8)], f"合起來不是連號的 8 格：{names}"
+    # 前四格必須還是第一張的內容，不能被第二張蓋掉
+    assert Image.open(out / "000.png").convert("RGB").getpixel((0, 0))[0] == 1
+    assert Image.open(out / "004.png").convert("RGB").getpixel((0, 0))[0] == 2
+
+    # --start 給錯（忘了加、或接錯位）必須當場失敗，而不是默默覆蓋
+    code, payload = run_cli("slice", str(strip(3)), "--frames", "4", "--out", str(out))
+    assert code != 0 and [e["code"] for e in payload["errors"]] == ["FRAME_EXISTS"], payload
+    assert Image.open(out / "000.png").convert("RGB").getpixel((0, 0))[0] == 1, \
+        "失敗了卻還是寫了檔"
+    code, payload = run_cli("slice", str(strip(3)), "--frames", "4",
+                            "--out", str(out), "--force")
+    assert code == 0, payload
+    assert Image.open(out / "000.png").convert("RGB").getpixel((0, 0))[0] == 3, \
+        "--force 沒生效"
+
+
 def test_slice_cells_are_contiguous_and_within_one_pixel(tmp: Path):
     """防：某一格暴寬（1000 切 7 格時最後一格會多 6 px），或格與格之間有縫。"""
     for width, count in ((400, 4), (401, 4), (1000, 7), (2049, 8)):

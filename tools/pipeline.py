@@ -112,9 +112,22 @@ def cmd_slice(args: argparse.Namespace) -> int:
     ranges = layout.cell_ranges(strip.width, args.frames)
     out = ensure_out(Path(args.out))
 
+    cells = list(zip(layout.slice_strip(strip, args.frames), ranges))
+
+    # 先檢查再寫：--start 給錯會覆蓋掉前一張條子切出來的格子，而覆蓋不留缺號，
+    # 所以 manifest 的 FRAME_NAME_GAP 抓不到——那是一套格數對、內容錯的 pack。
+    if not args.force:
+        clashes = [FRAME_NAME % (args.start + i) for i in range(len(cells))
+                   if (out / (FRAME_NAME % (args.start + i))).exists()]
+        if clashes:
+            raise ChromaError(
+                "FRAME_EXISTS",
+                f"{out} 底下已經有 {', '.join(clashes[:4])}"
+                f"{' 等' if len(clashes) > 4 else ''}。"
+                "--start 是不是給錯了？確定要蓋就加 --force")
+
     written = []
-    for index, (cell, (x0, x1)) in enumerate(zip(layout.slice_strip(strip, args.frames),
-                                                 ranges)):
+    for index, (cell, (x0, x1)) in enumerate(cells, start=args.start):
         path = out / (FRAME_NAME % index)
         cell.save(path)
         written.append({"index": index, "file": path.name,
@@ -134,7 +147,8 @@ def cmd_slice(args: argparse.Namespace) -> int:
         "cells": written,
         "out": str(out),
     }
-    lines = [f"切出 {args.frames} 格 → {out}",
+    lines = [f"切出 {args.frames} 格 → {out}／"
+             f"{written[0]['file']}–{written[-1]['file']}",
              f"  原圖 {strip.width}×{strip.height}，"
              f"格寬 {min(widths)}–{max(widths)} px，{'等寬' if even else '不整除（差 1 px）'}"]
     return emit(args, payload, lines)
@@ -411,6 +425,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("strip")
     p.add_argument("--frames", type=int, required=True)
     p.add_argument("--out", required=True)
+    p.add_argument("--start", type=int, default=0,
+                   help="第一格的編號（預設 0）。一組動作分成兩張條子生的時候，"
+                        "第二張用 --start 接續，例如 8 格分 4+4 就是 --start 4")
+    p.add_argument("--force", action="store_true",
+                   help="允許覆蓋既有的格子")
     p.add_argument("--json", action="store_true")
     p.set_defaults(func=cmd_slice)
 
