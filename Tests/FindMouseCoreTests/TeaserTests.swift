@@ -186,15 +186,22 @@ private func stepWhile(_ h: Harness, phase: CatPhase, cursor: CGPoint, limit: In
     #expect(travelled > 100, "貓實際只飛了 \(travelled) px")
 }
 
-/// 鎖定後鼠標小幅漂移（< teaserHitRadius）仍算命中——把 hitRadius 的數值釘住。
+/// 鎖定後鼠標小幅漂移（< teaserHitRadius）仍算命中——命中半徑的**下界**。
+///
+/// 這條與 `pounceMissesWhenTheDriftIsJustOutsideHitRadius` 是一對：0.9 倍半徑命中、
+/// 1.1 倍半徑撲空，兩條合起來把判定邊界夾在 `teaserHitRadius` 的 ±10% 內。
+///
+/// drift 原本取 30——半徑（60）的正好一半，而判定是嚴格 `>`。於是把判定式改成
+/// `> teaserHitRadius * 0.5` 時 `30 > 30` 為 false，這一次仍判命中，整批全綠：
+/// 有效命中半徑被砍半（貓變得很難抓到）而零訊號。改成 0.9 倍就落在任何縮小的
+/// 門檻之外。它原本要防的「把 `> hitRadius` 寫成 `> 0`」在 0.9 倍下同樣會紅。
+///
+/// 半徑本身的數值（60）由 `defaultsMatchSpec` 釘住，所以這裡的 drift 從設定推導，
+/// 只驗「命中判定真的拿那個半徑在比」。
 @Test func pounceStillHitsWhenCursorDriftsWithinHitRadius() {
     let h = Harness()
     let (lock, _) = lockOnFromAfar(h)
-    // 30 px 刻意落在 0 與 hitRadius(60) 之間：把判定式從 `> hitRadius` 改成 `> 0`
-    // 就會把這一次判成撲空。
-    let drift: CGFloat = 30
-    #expect(drift > 0)
-    #expect(drift < h.config.value.teaserHitRadius)
+    let drift = h.config.value.teaserHitRadius * 0.9   // 預設 54 px
     let moved = CGPoint(x: lock.x + drift, y: lock.y)
 
     #expect(stepWhile(h, phase: .teaserPouncing, cursor: moved) > 1)
@@ -202,6 +209,26 @@ private func stepWhile(_ h: Harness, phase: CatPhase, cursor: CGPoint, limit: In
     #expect(abs(h.last.distanceToCursor - drift) < 0.001)
     #expect(h.last.phase == .teaserTumbling,
             "落點離鼠標只有 \(h.last.distanceToCursor) px（hitRadius \(h.config.value.teaserHitRadius)）卻被判成撲空")
+}
+
+/// 鎖定後鼠標漂到 teaserHitRadius 之外就是撲空——命中半徑的**上界**。
+///
+/// 既有的 `pounceMissesWhenCursorMovesAwayAfterLockOn` 把鼠標挪 400 px、
+/// `retreatMovesStraightAwayFromCursorAfterAMiss` 撲過頭 70 px，兩者離邊界都太遠：
+/// 半徑放大到 1.1 倍（66）以內照樣全綠。這條只挪出 10%，讓「半徑悄悄變大」
+/// ——撲擊變成百發百中，spec 第 4.5 節說那等於毀掉逗貓棒——也有訊號。
+@Test func pounceMissesWhenTheDriftIsJustOutsideHitRadius() {
+    let h = Harness()
+    let (lock, _) = lockOnFromAfar(h)
+    let drift = h.config.value.teaserHitRadius * 1.1   // 預設 66 px
+    let moved = CGPoint(x: lock.x + drift, y: lock.y)
+
+    #expect(stepWhile(h, phase: .teaserPouncing, cursor: moved) > 1)
+    #expect(h.last.body.position == lock)
+    #expect(abs(h.last.distanceToCursor - drift) < 0.001)
+    #expect(h.last.phase == .teaserRetreating,
+            "落點離鼠標 \(h.last.distanceToCursor) px 已超過 hitRadius \(h.config.value.teaserHitRadius)，卻被判成命中")
+    #expect(h.phases.contains(.teaserTumbling) == false, "出現翻滾：\(h.phases)")
 }
 
 /// 關掉再開啟逗貓棒，必須取消掉那次還沒被消費的「下次轉換就回家」。
@@ -673,4 +700,93 @@ private func stepWhile(_ h: Harness, phase: CatPhase, cursor: CGPoint, limit: In
             "潛伏計時被重設成 \(h.last.phaseElapsed)（原本 \(elapsed)），撲擊被延後了")
     #expect(h.last.body.position == before,
             "重複開啟讓貓用接近速度多走了一步：\(before) → \(h.last.body.position)")
+}
+
+/// 撲擊觸發速度**就是** `teaser.pounceTriggerSpeed`：比它快 10% 會撲、慢 10% 不會。
+///
+/// 既有測試只覆蓋「有這條離開條件」，沒覆蓋「門檻是多少」。`lockOnFromAfar` 一帧
+/// 把鼠標跳 150 px（9000 px/s，門檻的 22 倍），所以把門檻乘 10 改成 4000 px/s
+/// 之後整批照樣全綠——使用者甩鼠標再也叫不出撲擊，只剩 3 秒逾時那條路，
+/// 逗貓棒退化成「等三秒才撲一次」而零訊號。反方向原本也只守到 275 px/s
+/// （`stalkingKeepsFacingTheCursorWhileStandingStill` 繞圈的切線速度）。
+///
+/// **兩半都要。** 只有上界的話「門檻降到 0」矇混得過去，只有下界的話「門檻升到天上」
+/// 矇混得過去；兩條合起來才把邊界夾在門檻的 ±10% 內。位移量從設定推導，
+/// 門檻的數值（400）由 `defaultsMatchSpec` 釘住——這裡驗的是判定式拿它在比。
+///
+/// 下界那半刻意只跑 2 秒：潛伏另有 `teaserStalkTimeout`（3 秒）那條路，取樣超過它
+/// 之後「進了屁股搖」會是逾時造成的，看起來像門檻沒守住其實不是。
+@Test func aFlickJustAboveTheTriggerSpeedPouncesAndOneJustBelowDoesNot() {
+    let fast = Harness()
+    let threshold = fast.config.value.teaserPounceTriggerSpeed
+
+    // 上界：一帧的位移相當於門檻的 1.1 倍（預設 440 px/s）→ 當帧就進屁股搖
+    fast.step(cursor: center, commands: [.setTeaser(true)])
+    #expect(fast.run(until: .teaserStalking, cursor: center))
+    let elapsed = fast.last.phaseElapsed
+    #expect(elapsed + 1.0 / 60 < fast.config.value.teaserStalkTimeout,
+            "潛伏已經跑了 \(elapsed) 秒，接下來進屁股搖可能是逾時而不是速度")
+    fast.step(cursor: CGPoint(x: center.x, y: center.y + threshold * 1.1 / 60))
+    #expect(fast.session.currentCursorSpeed > threshold)
+    #expect(fast.last.phase == .teaserWindup,
+            "鼠標 \(fast.session.currentCursorSpeed) px/s 已超過門檻 \(threshold) 卻沒撲：phase=\(fast.last.phase)")
+
+    // 下界：0.9 倍（預設 360 px/s）連續 120 帧都不許觸發。鼠標在相距 hop 的兩點
+    // 之間來回跳，每帧位移固定，而且距離不會愈拉愈遠——拉遠了貓會開始爬行，
+    // 那是另一條規則（`stalkingCreepsAtFifteenPercentWhenTheCursorSlipsOutOfRange`）。
+    let slow = Harness()
+    slow.step(cursor: center, commands: [.setTeaser(true)])
+    #expect(slow.run(until: .teaserStalking, cursor: center))
+    let hop = threshold * 0.9 / 60
+    var speeds: [CGFloat] = []
+    for i in 0..<120 {
+        slow.step(cursor: CGPoint(x: center.x, y: center.y + (i.isMultiple(of: 2) ? hop : 0)))
+        speeds.append(slow.session.currentCursorSpeed)
+    }
+    // 沒有這條，「鼠標其實沒在動」也會讓下面那條通過
+    #expect(speeds.allSatisfy { $0 > threshold * 0.85 && $0 < threshold },
+            "鼠標速度沒有穩定落在門檻下緣：\(speeds.prefix(3))")
+    #expect(slow.last.phaseElapsed < slow.config.value.teaserStalkTimeout,
+            "潛伏跑了 \(slow.last.phaseElapsed) 秒，已經碰到逾時那條路")
+    #expect(slow.last.phase == .teaserStalking,
+            "鼠標只有 \(threshold * 0.9) px/s（門檻 \(threshold)）就撲了：phase=\(slow.last.phase)")
+}
+
+/// spec 第 4.5 節寫 `teaserRetreating` 的離開條件是「播完」——退開走不到目標點時，
+/// 是 retreat clip 播完把貓叫回潛伏的。
+///
+/// 既有的 `retreatEndsOnArrivalWhenRetreatClipIsLong` 只釘住 `arrivedAtRetreat`
+/// 那一支（它刻意把 clip 拉長到 fps 5 讓抵達先發生）。把 `clipFinished(.retreat) ||`
+/// 整段拿掉、只留 repo 自己加的抵達判定，整批照樣全綠——而退開目標因轉向上限
+/// 繞不進那個 4 px 窗口時，貓會永遠留在 `teaserRetreating`。
+///
+/// 構造：預設 pack（fps 10）的 retreat clip 只有 0.2 s，13 帧 × 9 px = 117 px，
+/// 走不完 `teaserRetreatDistance`（150），所以抵達那一支結構上不可能成立。
+/// 走撲空路徑（撲過頭 70 px）讓退開方向與貓的 heading 一致、全程直線，
+/// 退開目標因此算得出來：落點加上飛行方向 × retreatDistance。
+@Test func retreatEndsOnClipFinishWhenItCannotReachTheRetreatPoint() {
+    let h = Harness()
+    let (lock, launch) = lockOnFromAfar(h)
+    let flightLength = hypot(lock.x - launch.x, lock.y - launch.y)
+    let ux = (lock.x - launch.x) / flightLength
+    let uy = (lock.y - launch.y) / flightLength
+    let behind = CGPoint(x: lock.x - ux * 70, y: lock.y - uy * 70)
+
+    #expect(stepWhile(h, phase: .teaserPouncing, cursor: behind) > 1)
+    #expect(h.last.phase == .teaserRetreating, "撲過頭 70 px 應判撲空：phase=\(h.last.phase)")
+    #expect(h.last.body.position == lock, "落點不是鎖定點，下面的退開目標就算不準")
+    let retreatPoint = CGPoint(x: lock.x + ux * h.config.value.teaserRetreatDistance,
+                               y: lock.y + uy * h.config.value.teaserRetreatDistance)
+
+    let clipFrames = Int(((h.catalog.clip(for: .retreat)?.duration ?? 0) * 60).rounded())
+    #expect(clipFrames > 5, "retreat clip 只有 \(clipFrames) 帧，測不出「播完」與「抵達」的差別")
+    let frames = stepWhile(h, phase: .teaserRetreating, cursor: behind)
+    #expect(h.last.phase == .teaserStalking)
+    // 差一帧的餘裕：actionElapsed 累加 13 次才會浮點上碰到 0.2 s
+    #expect(abs(frames - clipFrames) <= 1,
+            "退開跑了 \(frames) 帧，retreat clip 只有 \(clipFrames) 帧——結束的原因不是播完")
+    let remaining = hypot(retreatPoint.x - h.last.body.position.x,
+                          retreatPoint.y - h.last.body.position.y)
+    #expect(remaining > 20,
+            "退開結束時離退開目標只剩 \(remaining) px，落在 4 px 的抵達窗口附近——這一輪是抵達結束的，沒測到「播完」")
 }
