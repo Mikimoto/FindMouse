@@ -211,7 +211,7 @@ def key_frame(image: Image.Image,
               key: tuple[int, int, int] = KEY_MAGENTA,
               bg_tolerance: float = 0.08,
               fg_tolerance: float = 0.06,
-              despeckle_fraction: float = 0.01) -> tuple[Image.Image, KeyStats]:
+              despeckle_fraction: float = 0.02) -> tuple[Image.Image, KeyStats]:
     """一張圖 → 去背後的 RGBA ＋ 統計。
 
     輸出是**非預乘**的 straight alpha，PNG 的定義就是這個；CoreGraphics 讀進去
@@ -287,6 +287,10 @@ def despeckle(rgba: Image.Image, min_fraction: float) -> tuple[list[dict], int]:
     任何色度門檻都碰不到它，而它會把 bbox 撐到整格，於是腳底線與 anchor 全錯。
 
     門檻取「相對於最大區塊」而不是絕對像素數，因為畫布尺寸會隨生圖服務改變。
+    預設 2% 是量出來的：18 格真實素材裡那個簽名佔最大區塊的 0.70%–1.03%
+    （多數 ~0.75%，最大那次 5,681 px / 550,801 px），而真正該擋下來的東西——
+    生圖崩壞長出的第二條尾巴——實測是 9%。2% 落在兩者中間，兩邊各有餘裕。
+    原本設 1%，那 1.03% 的一格就穿過去了。
     刻意**不**做成「只留最大的一塊」：那樣會把 001 那種「多長出一條浮空尾巴」
     的壞格悄悄修成好格。大塊的東西留著，然後由 blobs_remaining 讓它現形。
     """

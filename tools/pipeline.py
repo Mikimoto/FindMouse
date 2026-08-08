@@ -496,9 +496,10 @@ def build_parser() -> argparse.ArgumentParser:
     # 反過來的那一端：貓身上偏洋紅的部位（粉紅鼻子、耳廓、舌頭）會被算出
     # alpha < 1。6% 蓋得住淡粉紅；真的有一大塊桃紅色的貓要調到 0.10 以上，
     # 代價是最外圈那層 alpha 會被吸到 1，邊緣硬一點。
-    p.add_argument("--despeckle", type=float, default=0.01,
-                   help="抹掉小於「最大區塊 × 這個比例」的連通分量（預設 0.01）。"
-                        "生圖服務蓋在角落的簽名就是靠這個清掉；0 為停用")
+    p.add_argument("--despeckle", type=float, default=0.02,
+                   help="抹掉小於「最大區塊 × 這個比例」的連通分量（預設 0.02）。"
+                        "生圖服務蓋在角落的簽名就是靠這個清掉（實測佔 0.7%%–1.03%%）；"
+                        "0 為停用")
     p.add_argument("--fg-tolerance", type=float, default=0.06,
                    help="alpha 高於 1−這個值就當成全不透明（預設 0.06）")
     p.add_argument("--min-coverage", type=float, default=0.005,
