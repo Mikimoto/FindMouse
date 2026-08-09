@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """從 raw/ 重建 packs/mycat。`python3 tools/build-mycat.py`
 
+切格 → 去背 → 排版 → 產 manifest，一路到可以直接 `findmouse pack validate` 的目錄。
+
 這支不是通用工具，是**這一套 pack 的來源清單**——哪一張條子的哪一格對應哪一幀。
 手動組過幾次之後就會組錯（尤其對照格在第一格還是最後一格，兩種都存在），
 寫下來才有單一真實來源。
@@ -39,8 +41,13 @@ import layout  # noqa: E402
 #: 使用，但是**每一次生成都要附的參考表**，而且無法從別的檔案復原，不要刪。
 RAW = ROOT / "raw"
 WORK = ROOT / "work"
+PACK = ROOT / "packs" / "mycat"
 PIPELINE = ROOT / "tools" / "pipeline.py"
 ANCHOR = RAW / "sit-final.png"
+
+PACK_NAME = "橘白蓬鬆貓"
+PACK_AUTHOR = "Gemini 2.5 Flash Image (Nano Banana)"
+PACK_LICENSE = "TBD"
 
 #: 動作 → [(條子, 格數, 對照格索引 或 None, [要用的格索引])]
 #: 順序就是幀的順序。`match` 的那幾組是單張編輯出來的，靠 --match 對齊解析度。
@@ -167,12 +174,21 @@ def main() -> int:
     shutil.rmtree(scratch, ignore_errors=True)
 
     if broken:
-        print(f"\n{len(broken)} 組沒過（其餘已寫出，可以照常 align）：")
+        print(f"\n{len(broken)} 組沒過，停在這裡不排版（排出來會缺動作而看不出是缺的）：")
         for action, output in broken:
             for line in output.splitlines():
                 if line.lstrip().startswith("✗"):
                     print(f"  {action}: {line.strip()}")
         return 1
+
+    print()
+    shutil.rmtree(PACK, ignore_errors=True)
+    run("align", str(WORK / "keyed"), "--per-action", ",".join(AIRBORNE),
+        "--out", str(PACK), "--report", str(WORK / "geom.json"))
+    run("manifest", str(PACK), "--geometry", str(WORK / "geom.json"),
+        "--name", PACK_NAME, "--author", PACK_AUTHOR, "--license", PACK_LICENSE)
+    print(f"  align + manifest → {PACK}")
+    print(f"\n驗收：findmouse pack validate {PACK}")
     return 0
 
 
