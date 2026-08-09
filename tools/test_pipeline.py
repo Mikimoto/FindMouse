@@ -222,6 +222,31 @@ def test_match_scales_an_edited_frame_back_to_the_reference(tmp: Path):
            abs((gb[3] - gb[1]) - (wb[3] - wb[1])) <= 2, f"{gb} vs {wb}"
 
 
+def test_scale_corrects_a_strip_the_service_drew_too_big(tmp: Path):
+    """防：整張條子的貓都畫大了一號，而 --match 只管畫布尺寸、看不到內容大小。"""
+    # 對照格與新格畫在同一張圖裡，所以兩格一起偏——這正是可以用倒數校正的前提
+    big = Image.new("RGB", (240, 120), (253, 48, 247))
+    for i, x0 in enumerate((10, 130)):
+        cat, _ = composite(100, 100, cat_silhouette(8, 60, 10, 84, 84),
+                           (200, 160, 120), key=(253, 48, 247))
+        big.paste(cat.resize((100, 100)), (x0, 10))
+    big.save(tmp / "strip.png")
+
+    plain, _ = run_cli("slice", str(tmp / "strip.png"), "--frames", "2",
+                       "--out", str(tmp / "a"))
+    scaled, payload = run_cli("slice", str(tmp / "strip.png"), "--frames", "2",
+                              "--scale", "0.5", "--out", str(tmp / "b"))
+    assert plain == scaled == 0, payload
+    assert all(c["scaled_by"] == 0.5 for c in payload["cells"]), payload["cells"]
+
+    _, before = run_cli("key", str(tmp / "a"), "--out", str(tmp / "ka"))
+    _, after = run_cli("key", str(tmp / "b"), "--out", str(tmp / "kb"))
+    for i in range(2):
+        b, a = before["frames"][i]["bbox"], after["frames"][i]["bbox"]
+        assert abs((a[2] - a[0]) * 2 - (b[2] - b[0])) <= 2, f"格{i}：{a} 不是 {b} 的一半"
+        assert abs((a[3] - a[1]) * 2 - (b[3] - b[1])) <= 2, f"格{i}：{a} 不是 {b} 的一半"
+
+
 def test_match_refuses_a_different_composition(tmp: Path):
     """防：拿 --match 去縮一張構圖不同的圖，把貓拉扁。拉扁是靜默的。"""
     ref, _ = composite(120, 120, cat_silhouette(8, 76, 12, 100, 100),

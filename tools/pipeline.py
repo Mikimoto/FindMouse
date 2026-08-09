@@ -136,7 +136,7 @@ def cmd_slice(args: argparse.Namespace) -> int:
 
     written = []
     for index, (cell, (x0, x1)) in enumerate(cells, start=args.start):
-        trimmed = resized = None
+        trimmed = resized = scaled = None
         if args.trim:
             box = layout.key_bbox(cell)
             # 找不到背景就原樣留著，讓 key 的 AMBIGUOUS_BACKGROUND 去報——
@@ -144,6 +144,10 @@ def cmd_slice(args: argparse.Namespace) -> int:
             if box and box != (0, 0, cell.width, cell.height):
                 cell = cell.crop(box)
                 trimmed = list(box)
+        if args.scale != 1.0:
+            cell = cell.resize((max(1, round(cell.width * args.scale)),
+                                max(1, round(cell.height * args.scale))), Image.LANCZOS)
+            scaled = args.scale
         if match_size and cell.size != match_size:
             # 只有「同一張構圖、輸出解析度不同」才可以縮。長寬比差太多代表構圖
             # 真的不一樣，縮下去會把貓拉扁——那是靜默的，所以在這裡硬失敗。
@@ -162,7 +166,7 @@ def cmd_slice(args: argparse.Namespace) -> int:
         written.append({"index": index, "file": path.name,
                         "x0": x0, "x1": x1, "width": x1 - x0,
                         "trimmed_to": trimmed, "resized_to": resized,
-                        "size": list(cell.size)})
+                        "scaled_by": scaled, "size": list(cell.size)})
 
     widths = [c["size"][0] for c in written]
     even = len(set(widths)) == 1
@@ -183,10 +187,12 @@ def cmd_slice(args: argparse.Namespace) -> int:
              f"  原圖 {strip.width}×{strip.height}，"
              f"格寬 {min(widths)}–{max(widths)} px，{'等寬' if even else '不等寬'}"]
     for cell_info in written:
-        if cell_info["trimmed_to"] or cell_info["resized_to"]:
+        if cell_info["trimmed_to"] or cell_info["resized_to"] or cell_info["scaled_by"]:
             what = []
             if cell_info["trimmed_to"]:
                 what.append("裁掉外圍留白")
+            if cell_info["scaled_by"]:
+                what.append(f"內容縮放 ×{cell_info['scaled_by']:.4f}")
             if cell_info["resized_to"]:
                 what.append("縮放對齊 --match")
             lines.append(f"      {cell_info['file']} {'、'.join(what)} → "
@@ -502,6 +508,10 @@ def build_parser() -> argparse.ArgumentParser:
                         "第二張用 --start 接續，例如 8 格分 4+4 就是 --start 4")
     p.add_argument("--force", action="store_true",
                    help="允許覆蓋既有的格子")
+    p.add_argument("--scale", type=float, default=1.0,
+                   help="裁切後把內容等比縮放。用途是校正生成尺度：條子裡放一個"
+                        "「重畫已知姿勢」的對照格，量它與定錨圖差幾倍，把倒數傳進來——"
+                        "同一張圖內各格的尺度是一致的，所以對照格偏多少，新格就偏多少")
     p.add_argument("--match", metavar="REF.png",
                    help="裁切後再縮放到 REF 裁切後的尺寸。用於「拿某一格去編輯而生出來的"
                         "格子」——生圖服務的編輯會忠實保留構圖但常換輸出解析度，"
