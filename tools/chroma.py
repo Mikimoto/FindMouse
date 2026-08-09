@@ -317,8 +317,29 @@ def despeckle(rgba: Image.Image, min_fraction: float) -> tuple[list[dict], int]:
     sizes[0] = 0                      # 0 是背景標籤，不是分量
     threshold = sizes.max() * min_fraction
 
+    # 除了「太小」，還要抹掉**碰到邊又不是最大塊**的東西。裁切後格子的四邊
+    # 按定義就是背景（外框取的就是背景的外框），所以貼著邊的東西必然是殘留——
+    # 實測有一條 17 px 寬、佔貓 3.36% 的白色分隔線殘留，大到穿過 min_fraction，
+    # 而它只從 y=132 開始，上方的洋紅從它頭上連過去，所以連「取最大連通背景」
+    # 也排除不掉。最大塊永遠保留，所以貓本身不可能被這條規則誤刪。
+    largest = int(sizes.argmax())
+    height, width = alpha.shape
+    edge_sliver = np.zeros(len(sizes), bool)
+    on_edge = set()
+    for edge in (labels[0, :], labels[-1, :], labels[:, 0], labels[:, -1]):
+        on_edge.update(np.unique(edge).tolist())
+    for index in on_edge:
+        if index == 0 or index == largest:
+            continue
+        ys, xs = np.nonzero(labels == index)
+        # 貼邊還不夠——真正的生成缺陷（鬼影、第二條尾巴）也可能貼邊，那種要
+        # 硬失敗而不是被悄悄抹掉。殘留的分隔線是**細長的直條**，鬼影不是。
+        thin = min((xs.max() - xs.min() + 1) / width,
+                   (ys.max() - ys.min() + 1) / height) <= 0.05
+        edge_sliver[index] = thin
+
     removed = []
-    for index in np.flatnonzero((sizes > 0) & (sizes < threshold)):
+    for index in np.flatnonzero((sizes > 0) & ((sizes < threshold) | edge_sliver)):
         ys, xs = np.nonzero(labels == index)
         removed.append({"pixels": int(sizes[index]),
                         "bbox": [int(xs.min()), int(ys.min()),

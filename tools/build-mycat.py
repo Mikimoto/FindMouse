@@ -41,7 +41,14 @@ SOURCES: dict[str, list[tuple[str, int, int | None, list[int]]]] = {
     "scratch": [("scratch-1.png", 3, 0, [1, 2]), ("scratch-2.png", 3, 2, [0, 1])],
     "lieDown": [("lieDown-1.png", 3, 0, [1, 2]), ("lieDown-2.png", 3, 2, [0, 1])],
     "brake":   [("brake-1.png", 3, 2, [0, 1]), ("brake-2.png", 3, 0, [1, 2])],
+    "stalk":   [("stalk-1.png", 3, 2, [0, 1]), ("stalk-2.png", 3, 2, [0, 1])],
+    "pounce":  [("pounce-1.png", 3, 2, [0, 1]), ("pounce-2.png", 3, 2, [0, 1])],
+    "tumble":  [("tumble-1.png", 3, 2, [0, 1]), ("tumble-2.png", 3, 2, [0, 1])],
+    "retreat": [("retreat-1.png", 3, 2, [0, 1]), ("retreat-2.png", 3, 2, [0, 1])],
 }
+
+#: 整隻騰空的動作。逐格對齊會把它壓回地面，所以 align 要用 --per-action。
+AIRBORNE = ("pounce",)
 
 #: 用單張編輯做出來的循環。第一格直接用定錨圖本身，接縫因此天生完美。
 #: 對稱呼吸：靜止 → 半 → 全 → 半，所以第四格複用第二格。
@@ -51,14 +58,27 @@ EDITED: dict[str, tuple[str, list[str]]] = {
                 ["sit-final.png", "idle-test.png", "idle-full.png", "idle-test.png"]),
     "sleep":   ("sleep-final.png",
                 ["sleep-final.png", "sleep-full.png", "sleep-half.png", "sleep-full.png"]),
+    # windup 原本用生成法，四格裡有兩格站了起來或把尾巴翹上去。它其實是近乎
+    # 靜止的循環（蹲著等撲），所以改用編輯法。定錨是生成版第一格那個好的蹲姿。
+    # 實測抬高只有 7 px／594（1.2%），在 96pt 下是次像素——形同一張靜止的蹲姿。
+    "windup":  ("windup-final.png",
+                ["windup-final.png", "windup-half.png",
+                 "windup-full.png", "windup-half.png"]),
 }
+
+
+class StepFailed(Exception):
+    def __init__(self, argv: tuple[str, ...], output: str):
+        super().__init__(output)
+        self.argv = argv
+        self.output = output
 
 
 def run(*argv: str) -> None:
     proc = subprocess.run([sys.executable, str(PIPELINE), *argv],
                           capture_output=True, text=True)
     if proc.returncode != 0:
-        sys.exit(f"失敗：{' '.join(argv)}\n{proc.stdout}{proc.stderr}")
+        raise StepFailed(argv, proc.stdout + proc.stderr)
 
 
 def subject_size(path: Path) -> tuple[int, int]:
@@ -121,11 +141,27 @@ def main() -> int:
             shutil.copy(single / "000.png", out / f"{index:03d}.png")
         print(f"  {action:8s} {len(frames)} 格（單張編輯，--match {match}）")
 
+    # 一組壞掉不該擋住其餘的診斷——那會讓「還有哪幾組也有問題」要一輪一輪試才知道。
     print()
+    broken: list[tuple[str, str]] = []
     for action in sorted({*SOURCES, *EDITED}):
-        run("key", str(WORK / "cells" / action), "--out", str(WORK / "keyed" / action))
+        try:
+            run("key", str(WORK / "cells" / action), "--out", str(WORK / "keyed" / action))
+        except StepFailed as exc:
+            broken.append((action, exc.output))
+            shutil.rmtree(WORK / "keyed" / action, ignore_errors=True)
+            print(f"  key {action} ✗")
+            continue
         print(f"  key {action} ✓")
     shutil.rmtree(scratch, ignore_errors=True)
+
+    if broken:
+        print(f"\n{len(broken)} 組沒過（其餘已寫出，可以照常 align）：")
+        for action, output in broken:
+            for line in output.splitlines():
+                if line.lstrip().startswith("✗"):
+                    print(f"  {action}: {line.strip()}")
+        return 1
     return 0
 
 

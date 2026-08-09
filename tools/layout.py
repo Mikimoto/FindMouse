@@ -214,19 +214,28 @@ def key_bbox(cell: Image.Image, purity: float = 0.92) -> tuple[int, int, int, in
     if histogram[purest] == 0:
         return None
     min_d = purest * purity
-    left, top, right, bottom = width, height, -1, -1
-    for y in range(height):
-        row = y * width
-        for x in range(width):
-            r, g, b = pixels[row + x]
-            if (r if r < b else b) - g > min_d:
-                if x < left: left = x
-                if x > right: right = x
-                if y < top: top = y
-                if y > bottom: bottom = y
-    if right < 0:
+
+    # 取**最大那一塊連通的背景**的外框，不是所有背景像素的外框。
+    # 實測的形狀是 [薄洋紅][白條][這一格的洋紅與貓][白條][薄洋紅]——切點落在
+    # 隔壁格裡時就長這樣。用所有背景的外框會把外側那兩片薄洋紅一起框進來，
+    # 白條於是夾在中間留下，去背後成為兩條貫穿全高的不透明直條（實測 17 px 寬、
+    # 佔貓的 3.97%，剛好穿過 despeckle 的門檻）。外側的薄洋紅被白條隔開，
+    # 是獨立的小區域，取最大連通塊自然就排除了。
+    import numpy as np
+    from scipy import ndimage
+
+    array = np.asarray(cell.convert("RGB"), dtype=np.int16)
+    channel_min = np.minimum(array[:, :, 0], array[:, :, 2])
+    mask = (channel_min - array[:, :, 1]) > min_d
+    labels, count = ndimage.label(mask)
+    if count == 0:
         return None
-    return (left, top, right + 1, bottom + 1)
+    if count > 1:
+        sizes = np.bincount(labels.ravel())
+        sizes[0] = 0
+        mask = labels == sizes.argmax()
+    ys, xs = np.nonzero(mask)
+    return (int(xs.min()), int(ys.min()), int(xs.max()) + 1, int(ys.max()) + 1)
 
 
 ALIGN_MODES = ("per-frame", "per-action")

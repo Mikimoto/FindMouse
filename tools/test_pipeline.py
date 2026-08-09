@@ -378,6 +378,30 @@ def test_a_large_detached_blob_is_kept_and_fails_loudly(tmp: Path):
     assert not (tmp / "out" / "000.png").exists(), "失敗了卻還是寫了檔"
 
 
+def test_an_edge_hugging_sliver_is_removed_but_a_fat_one_is_not(tmp: Path):
+    """防：分隔線殘留觸發 DISCONNECTED_SUBJECT，或反過來把貼邊的鬼影悄悄抹掉。"""
+    cat = cat_silhouette(10, 70, 12, 100, 80)      # 尾巴止於 x=80，與直條之間留空隙
+
+    def with_bar(width: int) -> Image.Image:
+        # 貼著右緣、貫穿全高的一條——實測的分隔線殘留就是這個形狀
+        def shape(x: int, y: int) -> float:
+            return 1.0 if (cat(x, y) or (120 - width <= x < 120 and 8 <= y < 118)) else 0.0
+        return composite(120, 120, shape, (200, 160, 120))[0]
+
+    with_bar(4).save(tmp / "sliver.png")       # 4/120 = 3.3%，細 → 抹掉
+    with_bar(20).save(tmp / "fat.png")         # 20/120 = 17%，不細 → 留著並報錯
+
+    code, payload = run_cli("key", str(tmp / "sliver.png"), "--out", str(tmp / "a"))
+    assert code == 0, payload
+    assert payload["frames"][0]["blobs_remaining"] == 1, payload["frames"][0]
+    bbox = payload["frames"][0]["bbox"]
+    assert bbox[2] <= 82, f"細條沒被抹掉，bbox 還是 {bbox}"
+
+    code, payload = run_cli("key", str(tmp / "fat.png"), "--out", str(tmp / "b"))
+    assert code != 0, payload
+    assert [e["code"] for e in payload["errors"]] == ["DISCONNECTED_SUBJECT"], payload
+
+
 def test_two_strips_merge_into_one_action_and_refuse_to_overwrite(tmp: Path):
     """防：8 格分兩張生時第二張蓋掉第一張。覆蓋不留缺號，manifest 的跳號檢查看不到。"""
     def strip(tag: int) -> Path:
