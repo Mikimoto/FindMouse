@@ -165,15 +165,23 @@ def detect_key(rgb: Image.Image) -> tuple[int, int, int]:
     ≤ 0（白掌 0、奶油色 −20、橘 −60），中間隔著一整個色相的距離。所以丟掉
     d ≤ 0 的角落就等於丟掉「這一角是貓」的取樣，不是憑經驗抓的門檻。
     """
-    w, h = rgb.size
-    corners = [corner_colour(rgb, cx, cy) for cx in (0, 1) for cy in (0, 1)]
-    usable = [c for c in corners if min(c[0], c[2]) - c[1] > 0]
-    if len(usable) < 2:
+    pixels = list(rgb.convert("RGB").get_flattened_data())
+    histogram = [0] * 256                      # 只統計 d>0，索引即 d
+    for r, g, b in pixels:
+        value = (r if r < b else b) - g
+        if value > 0:
+            histogram[value] += 1
+    modal = max(range(256), key=histogram.__getitem__)
+    if histogram[modal] == 0:
         raise ChromaError(
             "AMBIGUOUS_BACKGROUND",
-            f"四個角落只有 {len(usable)} 個看起來像洋紅背景（取樣到 {corners}）。"
+            f"整格找不到任何洋紅系的像素（四角取樣到 "
+            f"{[corner_colour(rgb, cx, cy) for cx in (0, 1) for cy in (0, 1)]}）。"
             "多半是貓佔滿了整格或背景根本不是洋紅系——用 --key 明確指定，不要讓它猜。")
-    return tuple(sorted(c[i] for c in usable)[len(usable) // 2] for i in range(3))  # type: ignore[return-value]
+
+    sample = [p for p in pixels
+              if (p[0] if p[0] < p[2] else p[2]) - p[1] == modal][:4096]
+    return tuple(sorted(c[i] for c in sample)[len(sample) // 2] for i in range(3))  # type: ignore[return-value]
 
 
 def corner_colour(rgb: Image.Image, right: int, bottom: int) -> tuple[int, int, int]:

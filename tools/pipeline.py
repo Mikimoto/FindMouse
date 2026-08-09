@@ -111,6 +111,24 @@ def emit(args: argparse.Namespace, payload: dict, lines: list[str]) -> int:
 
 def cmd_slice(args: argparse.Namespace) -> int:
     strip = Image.open(args.strip)
+
+    # 切格**之前**先裁掉整張的外框。生圖服務加的白邊不屬於任何一格，留著就會把
+    # 三等分的切點整體推移：實測外框讓內容從 x=18 開始，於是每一格的開頭都帶著
+    # 前一格的一小片洋紅、後面接著白色分隔線；逐格裁切只看得到那片洋紅碎片，
+    # 就從那裡開始留，整格於是以白色為主，連 detect_key 都判成近乎白的背景。
+    outer = None
+    if args.trim:
+        box = layout.key_bbox(strip.convert("RGB"))
+        if box and box != (0, 0, strip.width, strip.height):
+            # 前提是「外框很薄」。裁掉超過任一邊的四分之一就不是在裁外框了——
+            # 多半是這張圖根本不是洋紅背景的條子（`key_bbox` 會在那種圖上抓到
+            # 某個小區塊）。整張裁錯會毀掉下游每一步，所以寧可不裁。
+            kept_w = (box[2] - box[0]) / strip.width
+            kept_h = (box[3] - box[1]) / strip.height
+            if kept_w >= 0.75 and kept_h >= 0.75:
+                strip = strip.crop(box)
+                outer = list(box)
+
     ranges = layout.cell_ranges(strip.width, args.frames)
     out = ensure_out(Path(args.out))
 
@@ -175,6 +193,7 @@ def cmd_slice(args: argparse.Namespace) -> int:
         "command": "slice",
         "source": str(args.strip),
         "source_size": [strip.width, strip.height],
+        "outer_trim": outer,
         "frames": args.frames,
         # 寬度不整除時各格會差 1 px。這不是錯，但值得看得見——差很多就代表
         # --frames 給錯了，而那種圖切出來每一格都是半隻貓，人反而看得出來。
