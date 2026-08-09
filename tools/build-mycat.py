@@ -26,6 +26,17 @@ sys.path.insert(0, str(ROOT / "tools"))
 import chroma  # noqa: E402
 import layout  # noqa: E402
 
+#: raw/ 底下有三個**衍生**的定錨圖，不是生圖服務的原始輸出。它們被刪掉時
+#: 這支腳本會直接失敗，所以把來源記在這裡：
+#:
+#:   sit-final.png    ← sit-2.png 的第 2 格（去掉外框後裁出）
+#:   sleep-final.png  ← sleep-pose.png 的第 2 格
+#:                      （slice --frames 2 的 001.png）
+#:   windup-final.png ← windup-1.png 的第 1 格
+#:                      （slice --frames 3 --scale 0.9340 的 000.png）
+#:
+#: 其餘的 .png 都是生圖服務的原始輸出。ref.png / ref-clean.png 不被這支腳本
+#: 使用，但是**每一次生成都要附的參考表**，而且無法從別的檔案復原，不要刪。
 RAW = ROOT / "raw"
 WORK = ROOT / "work"
 PIPELINE = ROOT / "tools" / "pipeline.py"
