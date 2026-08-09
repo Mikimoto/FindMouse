@@ -10,3 +10,10 @@
 .build/
 *.xcuserstate
 build/
+# tools/ 的 Python bytecode 快取。跑一次 test_pipeline.py 就會冒出來。
+__pycache__/
+
+# M6 素材工作區：原圖與中間產物不進版控
+raw/
+work/
+packs/
