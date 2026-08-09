@@ -338,12 +338,13 @@ def cmd_align(args: argparse.Namespace) -> int:
         geometry = layout.Geometry.from_json(json.loads(Path(args.geometry).read_text()))
     else:
         geometry = layout.plan(geoms, align=args.align,
+                               per_action=tuple(a for a in args.per_action.split(",") if a),
                                pad_frac=args.pad, bottom_pad_frac=args.bottom_pad)
 
     out = ensure_out(Path(args.out))
     actions_report = []
     for name in dirs:
-        dx, dy = layout.offsets(geoms[name], geometry)
+        dx, dy = layout.offsets(geoms[name], geometry, name)
         action_out = ensure_out(out / name)
         frames_report = []
         for index, ((path, image), geom) in enumerate(zip(loaded[name], geoms[name])):
@@ -380,7 +381,9 @@ def cmd_align(args: argparse.Namespace) -> int:
 
     lines = [f"排版 {len(dirs)} 組動作 → {out}",
              f"  畫布 {geometry.canvas_width}×{geometry.canvas_height}"
-             f"、腳底線 y={geometry.foot_y}（{args.align if not args.geometry else geometry.align}）",
+             f"、腳底線 y={geometry.foot_y}（{geometry.align}"
+             + (f"，per-action：{'、'.join(geometry.per_action)}" if geometry.per_action else "")
+             + "）",
              f"  anchor = ({geometry.anchor_x:.4f}, {geometry.anchor_y:.4f})"]
     for report in actions_report:
         lines.append(f"  {report['action']}: {len(report['frames'])} 格"
@@ -573,6 +576,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--align", default="per-frame", choices=layout.ALIGN_MODES,
                    help="per-frame：每格各自壓到腳底線（預設）。"
                         "per-action：整組一起平移，保留組內騰空（pounce/tumble）")
+    p.add_argument("--per-action", default="",
+                   help="改用 per-action 對齊的動作名，逗號分隔（例如 pounce）。"
+                        "對齊模式是動作的屬性：整隻騰空的動作逐格對齊會被壓回地面，"
+                        "而其他每一組又需要逐格對齊來修生圖服務的框位漂移")
     p.add_argument("--pad", type=float, default=0.05, help="上緣與左右留白（佔內容高的比例）")
     p.add_argument("--bottom-pad", type=float, default=0.07, help="下緣留白（佔內容高的比例）")
     p.add_argument("--foot-band", type=float, default=0.03,

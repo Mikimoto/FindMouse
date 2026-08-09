@@ -26,6 +26,7 @@ from pathlib import Path
 TOOLS = Path(__file__).resolve().parent
 sys.path.insert(0, str(TOOLS))
 
+import numpy as np  # noqa: E402
 from PIL import Image  # noqa: E402
 
 import chroma  # noqa: E402
@@ -487,7 +488,7 @@ def test_every_frame_lands_on_one_footline_and_anchor_y_points_down(tmp: Path):
     geoms = [layout.frame_geometry(img, f"run/{i:03d}.png") for i, img in enumerate(frames)]
 
     geometry = layout.plan({"run": geoms})
-    dx, dy = layout.offsets(geoms, geometry)
+    dx, dy = layout.offsets(geoms, geometry, "run")
     placed = [layout.place(img, g, dx, dy[g.name], geometry) for img, g in zip(frames, geoms)]
 
     bottoms = {p.getchannel("A").getbbox()[3] for p in placed}
@@ -507,7 +508,7 @@ def test_anchor_x_is_the_foot_centre_not_the_bounding_box_centre(tmp: Path):
     image = rgba_shape(80, 100, cat_silhouette(20, 44, 20, 60, 70))
     geom = layout.frame_geometry(image, "run/000.png")
     geometry = layout.plan({"run": [geom]})
-    dx, _ = layout.offsets([geom], geometry)
+    dx, _ = layout.offsets([geom], geometry, "run")
 
     bbox_centre = (geom.bbox[0] + geom.bbox[2]) / 2 + dx
     foot_centre = geom.foot_x + dx
@@ -532,7 +533,7 @@ def test_all_actions_share_one_canvas_and_one_anchor(tmp: Path):
 
     sizes = set()
     for name, imgs in actions.items():
-        dx, dy = layout.offsets(geoms[name], geometry)
+        dx, dy = layout.offsets(geoms[name], geometry, name)
         for img, g in zip(imgs, geoms[name]):
             placed = layout.place(img, g, dx, dy[g.name], geometry)
             sizes.add(placed.size)
@@ -553,7 +554,7 @@ def test_content_touching_the_cell_edge_is_not_cropped(tmp: Path):
     assert geom.bbox == (0, 0, 40, 50), f"fixture 沒有真的貼邊：{geom.bbox}"
 
     geometry = layout.plan({"run": [geom]})
-    dx, dy = layout.offsets([geom], geometry)
+    dx, dy = layout.offsets([geom], geometry, "run")
     placed = layout.place(full, geom, dx, dy[geom.name], geometry)
 
     assert opaque_count(placed) == opaque_count(full), \
@@ -660,13 +661,56 @@ def test_per_action_align_keeps_a_frame_in_the_air(tmp: Path):
 
     for mode, want_same in (("per-frame", True), ("per-action", False)):
         geometry = layout.plan({"pounce": geoms}, align=mode)
-        dx, dy = layout.offsets(geoms, geometry)
+        dx, dy = layout.offsets(geoms, geometry, "pounce")
         bottoms = [layout.place(img, g, dx, dy[g.name], geometry)
                    .getchannel("A").getbbox()[3] for img, g in zip(images, geoms)]
         assert (len(set(bottoms)) == 1) is want_same, \
             f"{mode}：各格底緣 {bottoms}，{'應該' if want_same else '不應該'}全部相同"
         if mode == "per-action":
             assert max(bottoms) == geometry.foot_y + 1, "最低的那一格沒落在腳底線上"
+
+
+def test_align_mode_is_per_action_not_per_pack(tmp: Path):
+    """防：整包只能挑一種對齊。貼地的動作要逐格修漂移，騰空的逐格會被壓回地面。"""
+    def blob(top: int, bottom: int) -> Image.Image:
+        return rgba_shape(80, 120, lambda x, y: 1.0 if 20 <= x < 60 and top <= y < bottom else 0.0)
+
+    # sit：兩格的底部差 12 px（生圖服務的框位漂移），逐格對齊要把它們拉齊
+    # pounce：第二格整個離地 30 px，逐動作對齊要原樣保留那個高度差
+    for action, frames in (("sit", [(30, 100), (30, 88)]),
+                           ("pounce", [(30, 100), (10, 70)])):
+        (tmp / "keyed" / action).mkdir(parents=True)
+        for i, (top, bottom) in enumerate(frames):
+            blob(top, bottom).save(tmp / "keyed" / action / f"{i:03d}.png")
+
+    code, payload = run_cli("align", str(tmp / "keyed"), "--per-action", "pounce",
+                            "--out", str(tmp / "pack"))
+    assert code == 0, payload
+    assert payload["geometry"]["per_action"] == ["pounce"], payload["geometry"]
+
+    def bottoms(action: str) -> list[int]:
+        out = []
+        for path in sorted((tmp / "pack" / action).glob("*.png")):
+            alpha = np.array(Image.open(path).convert("RGBA").getchannel("A"))
+            out.append(int(np.nonzero(alpha > 0)[0].max()))
+        return out
+
+    assert len(set(bottoms("sit"))) == 1, f"sit 沒有被逐格拉齊：{bottoms('sit')}"
+    air = bottoms("pounce")
+    assert air[0] - air[1] == 30, f"pounce 的騰空高度沒保住：{air}（應差 30）"
+    assert air[0] == bottoms("sit")[0], "兩組動作的著地格沒有落在同一條腳底線上"
+
+
+def test_per_action_rejects_an_action_that_does_not_exist(tmp: Path):
+    """防：--per-action 打錯字時默默當成沒指定，於是騰空的那組被壓回地面。"""
+    (tmp / "keyed" / "pounce").mkdir(parents=True)
+    rgba_shape(80, 120, lambda x, y: 1.0 if 20 <= x < 60 and 30 <= y < 100 else 0.0) \
+        .save(tmp / "keyed" / "pounce" / "000.png")
+
+    code, payload = run_cli("align", str(tmp / "keyed"), "--per-action", "pounse",
+                            "--out", str(tmp / "pack"))
+    assert code != 0, payload
+    assert [e["code"] for e in payload["errors"]] == ["UNKNOWN_ACTION"], payload
 
 
 def test_manifest_counts_real_files_and_rejects_gaps(tmp: Path):

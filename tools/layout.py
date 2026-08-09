@@ -122,7 +122,16 @@ class Geometry:
     foot_y: int
     #: anchor 的水平位置，畫布像素（連續座標）
     anchor_col: float
+    #: 預設的對齊模式
     align: str
+    #: 改用 per-action 的動作名。對齊模式是**動作的屬性**而不是 pack 的：
+    #: 一套 pack 同時有貼地與騰空的動作（sit 貼地、pounce 整隻在空中），
+    #: 全域一個模式只能二選一——逐格對齊會把 pounce 壓回地面，逐動作對齊則會
+    #: 讓其他每一組都失去框位漂移的修正。
+    per_action: tuple[str, ...] = ()
+
+    def mode_for(self, action: str) -> str:
+        return "per-action" if action in self.per_action else self.align
 
     @property
     def anchor_x(self) -> float:
@@ -144,6 +153,7 @@ class Geometry:
             "foot_y": self.foot_y,
             "anchor_col": self.anchor_col,
             "align": self.align,
+            "per_action": list(self.per_action),
             "anchor": {"x": round(self.anchor_x, 6), "y": round(self.anchor_y, 6)},
         }
 
@@ -154,7 +164,8 @@ class Geometry:
                             canvas_height=int(data["canvas"]["height"]),
                             foot_y=int(data["foot_y"]),
                             anchor_col=float(data["anchor_col"]),
-                            align=str(data["align"]))
+                            align=str(data["align"]),
+                            per_action=tuple(data.get("per_action", ())))
         except (KeyError, TypeError, ValueError) as exc:
             raise ChromaError("BAD_GEOMETRY_FILE",
                               f"geometry 檔缺欄位或型別不對：{exc}") from exc
@@ -236,6 +247,7 @@ def _reference_bottoms(frames: list[FrameGeom], align: str) -> dict[str, int]:
 
 def plan(actions: dict[str, list[FrameGeom]],
          align: str = "per-frame",
+         per_action: tuple[str, ...] = (),
          pad_frac: float = 0.05,
          bottom_pad_frac: float = 0.07) -> Geometry:
     """對全部動作的全部格算出一組共同版面。
@@ -248,7 +260,14 @@ def plan(actions: dict[str, list[FrameGeom]],
     if not actions:
         raise ChromaError("NO_ACTIONS", "沒有任何動作可以排版")
 
-    refs = {name: _reference_bottoms(frames, align) for name, frames in actions.items()}
+    modes = {name: ("per-action" if name in per_action else align) for name in actions}
+    unknown = [name for name in per_action if name not in actions]
+    if unknown:
+        raise ChromaError("UNKNOWN_ACTION",
+                          f"--per-action 指定了不存在的動作：{unknown}。"
+                          f"這個目錄底下有 {sorted(actions)}")
+    refs = {name: _reference_bottoms(frames, modes[name])
+            for name, frames in actions.items()}
 
     # 垂直：腳底線之上要容得下最高的那一格
     above = max(refs[name][f.name] - f.top
@@ -268,7 +287,7 @@ def plan(actions: dict[str, list[FrameGeom]],
     anchor_col = float(side - lo)
 
     return Geometry(canvas_width=canvas_w, canvas_height=canvas_h, foot_y=foot_y,
-                    anchor_col=anchor_col, align=align)
+                    anchor_col=anchor_col, align=align, per_action=tuple(per_action))
 
 
 def action_foot_x(frames: list[FrameGeom]) -> float:
@@ -279,14 +298,15 @@ def action_foot_x(frames: list[FrameGeom]) -> float:
     return sum(f.foot_x for f in frames) / len(frames)
 
 
-def offsets(action_frames: list[FrameGeom], geometry: Geometry) -> tuple[int, dict[str, int]]:
+def offsets(action_frames: list[FrameGeom], geometry: Geometry,
+            action: str) -> tuple[int, dict[str, int]]:
     """一組動作在既定版面下的貼上位移：(水平位移, {格名: 垂直位移})。
 
     水平位移整組共用，所以組內的前後位移（前腳往前伸、身體前後晃）原樣保留；
     組與組之間則被拉到同一個 anchor 欄，否則從 run 切到 sit 的瞬間貓會橫移。
     """
     dx = round(geometry.anchor_col - action_foot_x(action_frames))
-    refs = _reference_bottoms(action_frames, geometry.align)
+    refs = _reference_bottoms(action_frames, geometry.mode_for(action))
     dy = {f.name: geometry.foot_y - refs[f.name] for f in action_frames}
     return dx, dy
 
