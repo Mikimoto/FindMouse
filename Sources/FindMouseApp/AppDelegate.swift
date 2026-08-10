@@ -170,7 +170,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             },
             onSettingsChanged: { [weak self] in
                 MainActor.assumeIsolated { self?.settingsDidChange() }
-            })
+            },
+            // 與上面那些不同，這個不包 closure：`SystemLoginItem` 不會隨換 pack
+            // 而被換掉，而且它每次被問都重新讀 `SMAppService`，本身就沒有陳舊問題。
+            loginItem: loginItem)
 
         let server = UnixSocketServer(path: UnixSocketServer.defaultPath) { [weak self] request in
             // handler 跑在 accept 執行緒上。**所有**對 session／sprites 的存取都要
