@@ -167,4 +167,62 @@ if [[ "${MODE}" == dry ]]; then
     exit 0
 fi
 
-die "簽章以後的步驟還沒實作（Task 4）"
+say "5／9 簽章"
+# 由內而外簽。SwiftPM 給資源 bundle 蓋的是 ad-hoc 章（實測
+# `codesign -dv` 回 Signature=adhoc、Identifier=findmouse.FindMouseAdapters.resources），
+# 留著它會讓外層的 Developer ID 簽章包著一個非 Developer ID 的巢狀 bundle。
+#
+# --timestamp 是 notarize 的硬性要求，不是可選的保險；
+# --options runtime 是 hardened runtime，同樣是 notarize 的門檻。
+while IFS= read -r nested; do
+    [[ -n "${nested}" ]] || continue
+    codesign --force --options runtime --timestamp --sign "${IDENTITY}" "${nested}"
+done < <(/usr/bin/find "${APP}/Contents/Resources" -maxdepth 1 -name '*.bundle' 2>/dev/null)
+codesign --force --options runtime --timestamp --sign "${IDENTITY}" "${APP}"
+ok "已簽 ${IDENTITY}"
+
+say "6／9 打包 dmg"
+# 為什麼是 dmg 不是 zip：**票釘不釘得上**。zip 不能 staple，流程會變成
+# 「簽 → 壓 → notarize → staple 裡面的 .app → 重壓」，多一次拆裝、多一個漏掉
+# 最後那步的機會。而漏 staple 的症狀很賤——本機測都過，使用者離線時被擋。
+DMG="${ROOT}/build/FindMouse-${VERSION}-${SHA}.dmg"
+rm -f "${DMG}"
+ln -sfn /Applications "${STAGE}/Applications"
+hdiutil create -volname "FindMouse ${VERSION}" -srcfolder "${STAGE}" \
+    -ov -format UDZO "${DMG}" >/dev/null
+codesign --force --timestamp --sign "${IDENTITY}" "${DMG}"
+ok "$(basename "${DMG}")"
+
+say "7／9 notarize（要等 Apple，通常數分鐘）"
+SUBMIT_LOG="$(mktemp)"
+xcrun notarytool submit "${DMG}" --keychain-profile "${PROFILE}" --wait 2>&1 \
+    | tee "${SUBMIT_LOG}" || true
+REQ="$(grep -Eo '[0-9a-f]{8}-([0-9a-f]{4}-){3}[0-9a-f]{12}' "${SUBMIT_LOG}" | head -1)"
+# exit code 不能當判準：notarytool --wait 回的是「這次查詢成功」不是「審查通過」，
+# 狀態 Invalid 時它也可能回 0。看它印出來的 status。
+if ! grep -qE 'status: *Accepted' "${SUBMIT_LOG}"; then
+    printf '\033[31mnotarize 沒過。以下是 Apple 給的原因：\033[0m\n'
+    # 失敗最常見的回覆只有一個 request id，要再下一個指令才看得到原因。
+    # 「還要再問一次才知道為什麼」不留給未來的自己。
+    if [[ -n "${REQ}" ]]; then
+        xcrun notarytool log "${REQ}" --keychain-profile "${PROFILE}" 2>&1 | sed 's/^/  /'
+    fi
+    rm -f "${SUBMIT_LOG}"
+    die "notarize 失敗（submission ${REQ:-未知}）"
+fi
+rm -f "${SUBMIT_LOG}"
+ok "Accepted（submission ${REQ}）"
+
+say "8／9 staple"
+xcrun stapler staple "${DMG}"
+
+say "9／9 驗收"
+RC=0
+verify_dmg "${DMG}" || RC=1
+say "再驗一次（已加隔離屬性，模擬從網路下載）"
+verify_quarantined "${DMG}" || RC=1
+[[ "${RC}" -eq 0 ]] || die "驗收沒過。這份產物不能發出去。"
+
+printf '\n\033[32m✓\033[0m %s\n' "${DMG}"
+printf '  版本 %s（build %s）@ %s\n' "${VERSION}" "${BUILD_NUMBER}" "${SHA}"
+printf '  最後一關本機測不到：傳給一台沒有這些憑證的機器（或另一個使用者帳號）雙擊一次。\n'
