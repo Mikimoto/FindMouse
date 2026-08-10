@@ -198,8 +198,11 @@ SUBMIT_LOG="$(mktemp)"
 xcrun notarytool submit "${DMG}" --keychain-profile "${PROFILE}" --wait 2>&1 \
     | tee "${SUBMIT_LOG}" || true
 REQ="$(grep -Eo '[0-9a-f]{8}-([0-9a-f]{4}-){3}[0-9a-f]{12}' "${SUBMIT_LOG}" | head -1)"
-# exit code 不能當判準：notarytool --wait 回的是「這次查詢成功」不是「審查通過」，
-# 狀態 Invalid 時它也可能回 0。看它印出來的 status。
+# 不拿 exit code 當判準。notarytool 對「命令自己失敗」是有紀律的（實測：profile
+# 不存在回 69、檔案不存在回 64、合約過期回 403 且非零），但「送出成功、而 Apple
+# 判 Invalid」會不會也回非零，本專案**還沒有樣本**。看它印出來的 status 在兩種
+# 情況下都對，不必賭一個沒驗過的前提。第一次真的發布時順手記下 Invalid 的 exit
+# code，那時這段註解才有資格講得更肯定。
 if ! grep -qE 'status: *Accepted' "${SUBMIT_LOG}"; then
     printf '\033[31mnotarize 沒過。以下是 Apple 給的原因：\033[0m\n'
     # 失敗最常見的回覆只有一個 request id，要再下一個指令才看得到原因。
