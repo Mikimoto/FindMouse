@@ -46,7 +46,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// 與 `SettingsUseCase.registry` 裡 `pack.id` 的 defaultValue 是同一個字串，
     /// 但不能從那裡讀：`SettingsUseCase` 要一個 catalog，而 catalog 正是這一步
     /// 要載出來的東西。改其中一邊時記得對一下另一邊。
-    private static let builtInPackID = "test-blocks"
+    // 退回時用的內建 pack，也是出廠預設。mycat 是**產品本身**——test-blocks 是
+    // 開發用的色塊，讓陌生人裝完看到方塊等於沒有交付這個 App。
+    private static let builtInPackID = "mycat"
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)

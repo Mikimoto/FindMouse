@@ -254,7 +254,7 @@ public final class SettingsUseCase {
 
     static var registry: [SettingSpec] {
         [
-            external("pack.id", .packID, defaultValue: "test-blocks"),
+            external("pack.id", .packID, defaultValue: "mycat"),
             cg("cat.scale", 0.5...2.0, \.catScale),
             seconds("rest.duration", 1...120, \.restDuration),
             seconds("sleep.duration", 1...60, \.sleepDuration),

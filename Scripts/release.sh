@@ -192,6 +192,29 @@ LEAKED="$(/usr/bin/find "${APP}" -name '*Tests*' 2>/dev/null || true)"
 [[ -z "${LEAKED}" ]] || die "app 裡有測試素材：${LEAKED}"
 ok "沒有測試素材混進去"
 
+# 出廠預設的那套 pack 必須真的在 .app 裡。
+#
+# **這道守衛存在的理由是它已經發生過一次。** 0.2.0 簽好、notarize 過、十條
+# 驗收全綠地發出去了，而裡面只有開發用的色塊——真正的貓住在我的家目錄，
+# 不在 dmg 裡。陌生人裝完按下快捷鍵，跑過來的是彩色方塊。整條發布管線
+# 沒有任何一個環節會發現，因為它們驗的都是「簽章對不對」。
+#
+# 預設 pack 的 id 從**它的來源**讀，不寫死在這裡：寫死的話，改了預設而忘了
+# 改這裡，守衛會繼續為舊的那套背書。
+DEFAULT_PACK="$(sed -nE 's/.*external\("pack\.id".*defaultValue: "([a-z0-9-]+)".*/\1/p' \
+    "${ROOT}/Sources/FindMouseCore/SettingsUseCase.swift")"
+# 抓到的必須恰好一筆。零筆代表那行的寫法變了而這個 sed 沒跟上——那時它會
+# 安靜地拿空字串去比對，而空字串找得到東西。
+[[ "$(printf '%s\n' "${DEFAULT_PACK}" | grep -c .)" -eq 1 ]] \
+    || die "從 SettingsUseCase.swift 讀不到唯一的出廠預設 pack id（讀到「${DEFAULT_PACK}」）。那行的寫法可能改了，去更新 release.sh 這段 sed。"
+
+SHIPPED="$(/usr/bin/find "${APP}" -type d -path '*/Packs/*' -name "${DEFAULT_PACK}" 2>/dev/null || true)"
+[[ -n "${SHIPPED}" ]] \
+    || die "出廠預設的 pack「${DEFAULT_PACK}」不在 .app 裡。使用者裝了會看到開發用的色塊而不是貓。內建 pack 要放在 Sources/FindMouseAdapters/Resources/Packs/ 底下才會被 SwiftPM 打包。"
+[[ -f "${SHIPPED}/pack.json" ]] \
+    || die "「${DEFAULT_PACK}」的目錄在 .app 裡，但沒有 pack.json——那不是一套能載入的 pack。"
+ok "出廠預設的 pack「${DEFAULT_PACK}」有跟著出貨"
+
 if [[ "${MODE}" == dry ]]; then
     say "--dry-run：本機那半段沒問題，停在簽章之前"
     echo "  ${APP}"

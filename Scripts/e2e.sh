@@ -545,8 +545,12 @@ rm -rf "${USER_PACKS:?}/e2e-dropin"
 kill_started
 launch_app
 for _ in $(seq 1 40); do "${FM}" status >/dev/null 2>&1 && break; sleep 0.5; done
-expect "$(field 'd["pack"]["id"]')" "test-blocks" "正在用的 pack 被刪掉，重啟退回內建"
-expect "$(field 'int(d["pack"]["logicalHeight"])')" "96" "退回的是真的內建那套，不是只改了 id"
+expect "$(field 'd["pack"]["id"]')" "mycat" "正在用的 pack 被刪掉，重啟退回內建"
+# 原本這裡比 logicalHeight，但出廠預設從 test-blocks 換成 mycat 之後那條失效了
+# ——兩套都是 96，比它分不出載入的是哪一套，斷言變成沒有內容。
+# 改用 sitIdle 的格數：mycat 4 格、test-blocks 2 格，而貓隱藏時的動作正是 sitIdle。
+expect "$(field 'int(d["cat"]["frameCount"])')" "4" \
+       "退回的是真的 mycat（sitIdle 4 格），不是只改了 id"
 
 # --- 13 ----------------------------------------------------------------------
 step "13. 逗貓棒真的跑起來（spec 第 3.2 / 4.5 節）"
