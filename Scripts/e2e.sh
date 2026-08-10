@@ -750,6 +750,27 @@ else
     bad "30 秒內沒有退場，而期間游標累計只動了 ${EXIT_TRAVEL} 點"
 fi
 
+# --- 14 ----------------------------------------------------------------------
+step "14. 開機啟動：不合格的位置會被擋（spec：login-item）"
+# e2e 跑的是 build/FindMouse.app，依設計它永遠不在「應用程式」資料夾裡，
+# 所以這裡驗得到的是**不合格**那條路——而那條路是真的端到端。
+#
+# **刻意不測 `login-item off`。** 它與 on 撞同一道閘門、同一個錯誤碼，
+# 多驗一次只是多一份維護。要驗 off 的破壞性後果得在合格位置上做，
+# 那屬於手動驗收（登入項目以 bundle id 為鍵，實測從不合格的拷貝
+# unregister 會把裝在 /Applications 那份一起關掉）。
+expect "$(field 'd["loginItem"]["state"]')" "ineligible" \
+       "status 裡的 loginItem.state 是 ineligible"
+
+OUT="$("${FM}" login-item --json 2>&1)"; CODE=$?
+expect "${CODE}" "0" "查詢本身不是錯誤，回 exit 0"
+expect "$(echo "${OUT}" | /usr/bin/python3 -c 'import json,sys; print(json.load(sys.stdin)["data"]["state"])')" \
+       "ineligible" "login-item 回的狀態與 status 一致"
+
+OUT="$("${FM}" login-item on --json 2>&1)"; CODE=$?
+expect "${CODE}" "1" "login-item on 在不合格的位置回 exit 1"
+expect "$(errcode "${OUT}")" "LOGIN_ITEM_INELIGIBLE" "錯誤碼是 LOGIN_ITEM_INELIGIBLE"
+
 step "結果"
 printf '  通過 %d、失敗 %d、無法判定 %d\n' "${PASS}" "${FAIL}" "${SKIP}"
 if [[ "${SKIP}" -gt 0 ]]; then
