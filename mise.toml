@@ -39,3 +39,11 @@ run = "Scripts/make-app.sh"
 [tasks.pack]
 description = "從 raw/ 一鍵重建 packs/mycat"
 run = "python3 tools/build-mycat.py"
+
+[tasks.release]
+description = "簽章 → notarize → staple → 驗。用法：mise run release -- <版本> --profile <profile>"
+run = "Scripts/release.sh"
+
+[tasks.test-release]
+description = "證明 release.sh 的守衛與驗收會紅。可帶一個已發布的 dmg 當正向對照組"
+run = "Scripts/test-release.sh"

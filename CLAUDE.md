@@ -44,6 +44,10 @@ SciPy 裝在它上面，讓 mise 換一個 python 進來會讓素材管線立刻
 - **`toggle` 不是幂等的。** 腳本裡一律用 `summon` / `dismiss`。
 - SwiftUI **只給設定視窗**。Overlay 維持純 AppKit ＋ CALayer——那裡有 spec 第 7.4 節
   的每帧預算，設定視窗一秒鐘畫不到一次。
+- **`notarytool submit --wait` 的 exit code 不是審查結果。** 它回的是「這次查詢
+  成功」，狀態 `Invalid` 時也可能回 0。判準是它印出來的 `status: Accepted`。
+- **驗收命令不接管線。** `codesign ... | tail` 的 exit code 來自 `tail`，接了就
+  每一條都通過。`release.sh` 的 `check()` 把輸出寫檔再讀，就是為了這個。
 
 ## 素材與 pack
 

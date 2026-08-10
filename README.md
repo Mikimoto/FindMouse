@@ -53,6 +53,23 @@ mise run mutate -- <批次.json>    # 突變測試
 「無法判定」——某些斷言需要獨占游標，你在同一台機器上動滑鼠時它會如實說「沒證明」
 而不是誤報通過。
 
+## 安裝已簽章的版本
+
+`build/FindMouse-<版本>-<sha>.dmg` 是簽好章、notarize 過、釘上票的產物：
+掛載、拖進「應用程式」、雙擊，Gatekeeper 不會擋，也不必右鍵開啟。
+
+自己做一份（需要 Developer ID 憑證與一組存好的 notarytool profile）：
+
+```sh
+xcrun notarytool store-credentials findmouse-release   # 一次性
+mise run release -- 0.2.0 --profile findmouse-release
+```
+
+它跑完會自己驗自己的產出——包含加上隔離屬性再驗一次，那是唯一測得到
+「使用者從網路下載會不會被擋」的方式。任一條紅，整個發布視為失敗。
+
+只驗一個既有的 dmg：`Scripts/release.sh --verify-only <某個.dmg>`
+
 ## Sprite pack
 
 貓的外觀是一套 **sprite pack**：一個目錄加一份 `pack.json`，宣告 14 組動作
