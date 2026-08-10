@@ -20,7 +20,9 @@ swift build -c "${CONFIG}" --product findmouse
 BIN_DIR="$(swift build -c "${CONFIG}" --show-bin-path)"
 
 
-APP="${ROOT}/build/FindMouse.app"
+# 輸出路徑可被覆寫。release.sh 用它把發布版組到 build/release/，
+# 免得蓋掉開發用的那個——e2e 跑的是 build/FindMouse.app。
+APP="${APP_DIR:-${ROOT}/build/FindMouse.app}"
 rm -rf "${APP}"
 mkdir -p "${APP}/Contents/MacOS" "${APP}/Contents/Resources"
 
@@ -33,8 +35,16 @@ cp "${ROOT}/Scripts/Info.plist" "${APP}/Contents/Info.plist"
 
 # SwiftPM 把 target 的 resources 放在執行檔旁的 *.bundle 裡，Bundle.module 靠它找資源。
 # 不複製進去的話，載入內建 pack 會在執行期失敗（而不是編譯期）。
+#
+# **跳過測試 target 的 bundle。** 這個迴圈原本抓 bin 目錄裡每一個 bundle，
+# 而跑過 swift test 之後那裡就有一個 FindMouse_FindMouseAdaptersTests.bundle
+# （裡面是壞 pack 的 fixture）。實測 debug 的 .app 裡真的裝著它——測試素材
+# 跟著出貨，而且沒有任何訊號。
 shopt -s nullglob
 for bundle in "${BIN_DIR}"/*.bundle; do
+    case "$(basename "${bundle}")" in
+        *Tests*) continue ;;
+    esac
     cp -R "${bundle}" "${APP}/Contents/Resources/"
 done
 shopt -u nullglob
