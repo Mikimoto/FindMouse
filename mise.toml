@@ -1,0 +1,41 @@
+# FindMouse 的任務入口。`mise tasks` 列出全部。
+#
+# **刻意沒有 [tools] 區段。** 兩個工具都不該由 mise 管：
+#
+# - Swift 來自 Xcode（本機是 27.0 Beta 4——macOS 27 上跑不動 26.6，這是環境
+#   約束不是選擇）。mise 管不到 Xcode，那是 `xcodes` 的事。
+# - Python 必須維持系統那一份：`tools/` 的 Pillow 與 SciPy 裝在它上面，
+#   讓 mise 換一個 python 進來會讓 `tools/test_pipeline.py` 立刻找不到套件。
+#   `tools/README.md` 明文寫過「不建 venv、不寫 requirements.txt」是刻意決定，
+#   這個檔不推翻它。
+#
+# 所以這裡純粹是任務執行器：把散在 README／CLAUDE.md 表格裡的指令變成
+# 可被 `mise tasks` 發現、可被 tab 補完的東西，並且只有一個真實來源。
+
+[tasks.test]
+description = "單元測試（五個 target）"
+run = "swift test"
+
+[tasks.pipeline]
+description = "素材管線的測試（34 條，零真實素材依賴）"
+run = "python3 tools/test_pipeline.py"
+
+[tasks.check]
+description = "跑得快的那兩層：unit + 素材管線"
+depends = ["test", "pipeline"]
+
+[tasks.e2e]
+description = "端對端：真的啟動 .app、真的跑 CLI。第三種結果是「無法判定」"
+run = "Scripts/e2e.sh"
+
+[tasks.mutate]
+description = "突變測試。需要一份批次 JSON：mise run mutate -- <批次.json>"
+run = "python3 Scripts/mutate.py"
+
+[tasks.app]
+description = "把 SwiftPM 的裸執行檔組成 build/FindMouse.app"
+run = "Scripts/make-app.sh"
+
+[tasks.pack]
+description = "從 raw/ 一鍵重建 packs/mycat"
+run = "python3 tools/build-mycat.py"

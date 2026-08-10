@@ -40,11 +40,14 @@ pack list | use <id> | validate <path>
 ## 測試
 
 ```sh
-swift test                       # 單元測試（五個 target）
-Scripts/e2e.sh                   # 端對端：真的啟動 .app、真的跑 CLI
-python3 Scripts/mutate.py <批次.json>   # 突變測試
-python3 tools/test_pipeline.py   # 素材管線的測試
+mise tasks                       # 列出全部
+mise run check                   # 單元測試 ＋ 素材管線（快的那兩層）
+mise run e2e                     # 端對端：真的啟動 .app、真的跑 CLI
+mise run mutate -- <批次.json>    # 突變測試
 ```
+
+沒有 [mise](https://mise.jdx.dev) 也不影響——`mise.toml` 裡就是原始指令，直接抄來跑即可。
+指令只寫在那一個檔案裡，這份 README 不重複列，免得兩邊漂掉。
 
 `e2e.sh` 用自己的 `FINDMOUSE_SOCKET`，不會干擾你正在跑的那一份。它有第三種結果
 「無法判定」——某些斷言需要獨占游標，你在同一台機器上動滑鼠時它會如實說「沒證明」
