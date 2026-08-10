@@ -58,6 +58,14 @@ check() {
 # 掛起來驗 dmg 裡面那個 .app——驗的是使用者真的會拿到的東西，不是手邊那份
 # staging 副本。四條都跑完才回報，不在第一條就 die：只紅一條與四條全紅
 # 是完全不同的診斷，而前者常常代表後面幾條根本沒執行。
+# spctl 在「assessments disabled」下對任何東西都回 accepted（man spctl：assessment
+# APIs "always report success"）。開發機為了測未簽版本關掉 Gatekeeper 是常見的事，
+# 而症狀是四條驗收裡的兩條**靜默變成恆真句**——正好是這份驗收最該防的東西。
+require_gatekeeper_on() {
+    spctl --status 2>&1 | grep -q 'assessments enabled' || die \
+        "這台機器的 Gatekeeper 評估是關的（spctl --status），兩條 spctl 驗收會一律回 accepted、等於沒驗。先跑 sudo spctl --master-enable 再重來。"
+}
+
 verify_dmg() {
     local dmg="$1" mnt app rc=0
     mnt="$(mktemp -d)"
@@ -70,13 +78,21 @@ verify_dmg() {
     else
         check "codesign --verify（巢狀二進位漏簽）" \
               codesign --verify --deep --strict --verbose=2 "${app}" || rc=1
+        # 上面那條驗的是**封緘一致性**，不是信任鏈——一個好好地 ad-hoc 簽過的
+        # bundle 照樣回 0。所以要另外斷言「是誰簽的」，否則整份驗收對身分的判定
+        # 100% 押在 spctl 上，而 spctl 有被全域關掉的可能（見 require_gatekeeper_on）。
+        check "簽章者是我們（Apple 根 ＋ team JA387Z4D7Q）" \
+              codesign --verify -R '=anchor apple generic and certificate leaf[subject.OU] = "JA387Z4D7Q"' "${app}" || rc=1
         check "spctl app（Gatekeeper 對 app 的判定）" \
-              spctl -a -vvv -t exec "${app}" || rc=1
+              spctl -a --no-cache -vvv -t exec "${app}" || rc=1
     fi
     # -t open 是給 dmg 的；-t install 是給 .pkg 的，型別用錯會得到看似通過的
     # 無意義結果。這一條是使用者實際遇到的那一關。
+    #
+    # --no-cache：第二輪驗的是 bit-identical 的副本，cdhash 相同，不加的話很可能
+    # 直接命中第一輪留下的 assessment cache，隔離屬性那一輪等於沒評估。
     check "spctl dmg（使用者實際遇到的那一關）" \
-          spctl -a -vvv -t open --context context:primary-signature "${dmg}" || rc=1
+          spctl -a --no-cache -vvv -t open --context context:primary-signature "${dmg}" || rc=1
     check "stapler validate（票沒釘上，使用者離線就被擋）" \
           stapler validate "${dmg}" || rc=1
 
@@ -112,6 +128,7 @@ verify_quarantined() {
 
 if [[ "${MODE}" == verify ]]; then
     [[ -f "${VERIFY_TARGET}" ]] || die "找不到 ${VERIFY_TARGET}"
+    require_gatekeeper_on
     say "驗 $(basename "${VERIFY_TARGET}")"
     RC=0
     verify_dmg "${VERIFY_TARGET}" || RC=1
@@ -127,6 +144,11 @@ fi
     || die "要給 --profile <名稱>。先跑一次：xcrun notarytool store-credentials <名稱>"
 
 say "1／9 工作樹與版本"
+# 版本號會進檔名（`rm -f "${DMG}"` 打得到它）、dmg 卷標、與 Info.plist。
+# 沒有 shell injection 的風險（全程雙引號、無 eval），但 `0.2.0/../../x` 這種值
+# 會讓那個 rm 打到 build/ 之外，而且產物標籤與 plist 會對不起來。
+[[ "${VERSION}" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]] \
+    || die "版本號格式不對：「${VERSION}」。要 x.y.z 或 x.y.z-suffix（例：0.2.0、0.2.0-beta.1）。"
 [[ -z "$(git status --porcelain)" ]] \
     || die "工作樹不乾淨。發出去的東西必須對得上一個 commit——先 commit 或 stash。"
 SHA="$(git rev-parse --short HEAD)"
@@ -207,8 +229,11 @@ if ! grep -qE 'status: *Accepted' "${SUBMIT_LOG}"; then
     printf '\033[31mnotarize 沒過。以下是 Apple 給的原因：\033[0m\n'
     # 失敗最常見的回覆只有一個 request id，要再下一個指令才看得到原因。
     # 「還要再問一次才知道為什麼」不留給未來的自己。
+    # `|| true`：在 set -e ＋ pipefail 底下，這條管線失敗（憑證過期、斷網）會讓
+    # 整支當場終止，下面的 die 與 submission id 那句話就永遠印不出來——失敗診斷
+    # 反而被失敗吃掉。這正是檔頭記過的同一個坑。
     if [[ -n "${REQ}" ]]; then
-        xcrun notarytool log "${REQ}" --keychain-profile "${PROFILE}" 2>&1 | sed 's/^/  /'
+        xcrun notarytool log "${REQ}" --keychain-profile "${PROFILE}" 2>&1 | sed 's/^/  /' || true
     fi
     rm -f "${SUBMIT_LOG}"
     die "notarize 失敗（submission ${REQ:-未知}）"
@@ -220,6 +245,7 @@ say "8／9 staple"
 xcrun stapler staple "${DMG}"
 
 say "9／9 驗收"
+require_gatekeeper_on
 RC=0
 verify_dmg "${DMG}" || RC=1
 say "再驗一次（已加隔離屬性，模擬從網路下載）"
