@@ -81,8 +81,17 @@ verify_dmg() {
         # 上面那條驗的是**封緘一致性**，不是信任鏈——一個好好地 ad-hoc 簽過的
         # bundle 照樣回 0。所以要另外斷言「是誰簽的」，否則整份驗收對身分的判定
         # 100% 押在 spctl 上，而 spctl 有被全域關掉的可能（見 require_gatekeeper_on）。
+        # `-R` 沒有 --deep，只驗**外層** bundle 的身分。巢狀的資源 bundle
+        # （SwiftPM 蓋的是 ad-hoc 章）若漏簽，這條照樣過——而那正是第 5 步
+        # 由內而外簽存在的理由。所以連巢狀的一起驗。
+        REQ='=anchor apple generic and certificate leaf[subject.OU] = "JA387Z4D7Q"'
         check "簽章者是我們（Apple 根 ＋ team JA387Z4D7Q）" \
-              codesign --verify -R '=anchor apple generic and certificate leaf[subject.OU] = "JA387Z4D7Q"' "${app}" || rc=1
+              codesign --verify -R "${REQ}" "${app}" || rc=1
+        while IFS= read -r nested; do
+            [[ -n "${nested}" ]] || continue
+            check "巢狀 bundle 的簽章者也是我們（$(basename "${nested}")）" \
+                  codesign --verify -R "${REQ}" "${nested}" || rc=1
+        done < <(/usr/bin/find "${app}/Contents/Resources" -maxdepth 1 -name '*.bundle' 2>/dev/null)
         check "spctl app（Gatekeeper 對 app 的判定）" \
               spctl -a --no-cache -vvv -t exec "${app}" || rc=1
     fi

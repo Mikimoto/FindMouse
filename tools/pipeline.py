@@ -323,6 +323,10 @@ def cmd_align(args: argparse.Namespace) -> int:
     dirs = action_dirs(root)
     if not dirs:
         raise ChromaError("NO_ACTIONS", f"{root} 底下沒有動作子目錄")
+    if args.max_height < 0:
+        raise ChromaError("INVALID_MAX_HEIGHT",
+                          f"--max-height 不能是負的（收到 {args.max_height}）。"
+                          "0 表示不限制，正整數是像素上限。")
 
     loaded: dict[str, list[tuple[Path, Image.Image]]] = {}
     geoms: dict[str, list[layout.FrameGeom]] = {}

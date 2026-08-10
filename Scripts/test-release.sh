@@ -84,9 +84,9 @@ step "4. 驗收會對壞產物說 no（負向對照組）"
 # 下面逐條點名的標籤是寫死的。verify_dmg() 日後多一條 check 而沒有跟著加進來，
 # 那條就會永遠不被檢查——所以先確認兩邊的數量對得上。
 N_CHECKS="$(grep -c '^ *check "' "${ROOT}/Scripts/release.sh")"
-[[ "${N_CHECKS}" -eq 5 ]] \
-    && ok "release.sh 裡剛好五條 check，與下面列舉的標籤數相符" \
-    || bad "release.sh 裡有 ${N_CHECKS} 條 check，但這裡只列舉了 5 個標籤——補上去，否則多的那條永遠不會被驗"
+[[ "${N_CHECKS}" -eq 6 ]] \
+    && ok "release.sh 裡剛好六條 check，與下面列舉的標籤數相符" \
+    || bad "release.sh 裡有 ${N_CHECKS} 條 check，但這裡只列舉了 6 個標籤——補上去，否則多的那條永遠不會被驗"
 
 # 拿一個沒簽過的 .app 包成 dmg。四條驗收會跑兩輪（原檔一輪、加了隔離屬性的
 # 副本一輪），八條應該全部踩紅——實測 ad-hoc 產物：codesign 回 1、spctl 回 1、
@@ -111,12 +111,12 @@ if hdiutil create -volname "FindMouse bad" -srcfolder "${ROOT}/build/release" \
     # grep 的 pattern 用 `✗.*<標籤>` 而不是 `✗ <標籤>`：✗ 與標籤之間夾著
     # 一段 ANSI 重設碼（`\033[0m`），寫成一個空格永遠對不上。
     MISSING=""
-    for label in "codesign --verify" "簽章者是我們" "spctl app" "spctl dmg" "stapler validate"; do
+    for label in "codesign --verify" "簽章者是我們" "巢狀 bundle 的簽章者也是我們" "spctl app" "spctl dmg" "stapler validate"; do
         n="$(echo "${OUT}" | grep -c "✗.*${label}")"
         [[ "${n}" -eq 2 ]] || MISSING="${MISSING} ${label}(${n}次)"
     done
     [[ -z "${MISSING}" ]] \
-        && ok "五條驗收各自報紅兩次（原檔一輪＋加隔離屬性一輪）" \
+        && ok "六條驗收各自報紅兩次（原檔一輪＋加隔離屬性一輪）" \
         || bad "有驗收沒跑到或次數不對：${MISSING}"
 else
     bad "造不出測試用的 dmg"
