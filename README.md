@@ -31,6 +31,7 @@ teaser on | off | toggle         逗貓棒模式
 status                           目前狀態
 config get [key] | set <k> <v> | reset <k>|--all
 pack list | use <id> | validate <path>
+login-item [on|off]              開機時是否啟動（不帶動詞就是查詢）
 ```
 
 所有命令都吃 `--json`。exit code：`0` 成功、`1` 命令失敗、`2` 用法錯誤、`3` App 沒在跑。

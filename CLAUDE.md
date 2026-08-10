@@ -52,6 +52,14 @@ SciPy 裝在它上面，讓 mise 換一個 python 進來會讓素材管線立刻
 - **驗收命令不接管線。** `codesign ... | tail` 的 exit code 來自 `tail`，接了就
   每一條都通過。`release.sh` 的 `check()` 把輸出寫檔再讀，就是為了這個。
 
+- **開機啟動只在 `/Applications` 或 `~/Applications` 底下可用。** 開發時跑的是
+  `build/FindMouse.app`，那個勾**永遠是灰的**——那是刻意的，不是壞掉。同樣的閘門
+  也讓 e2e 不可能誤註冊。另外兩件實測過、從 SDK 文件看不出來的事：
+  `SMAppService.mainApp` **以 bundle id 為鍵**（從 `build/` 那份 `unregister()`
+  會把裝在 `/Applications` 那份一起關掉），而 `notFound` **是全新安裝的狀態**
+  不是壞掉（BTM 裡還沒有記錄，`register()` 從那裡呼叫是成功的）。量法與數據在
+  `docs/superpowers/specs/2026-08-10-login-item-design.md` 的〈未驗證的前提〉。
+
 ## 素材與 pack
 
 - `packs/mycat` 由 `python3 tools/build-mycat.py` 從 `raw/` **一鍵重建**。那支腳本
