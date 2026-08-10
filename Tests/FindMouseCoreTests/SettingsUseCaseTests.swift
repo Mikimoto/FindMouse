@@ -369,3 +369,17 @@ private func settingsError(_ body: () throws -> Void) -> SettingsError? {
         }
     }
 }
+
+@Test func factoryDefaultPackIsTheShippedCat() throws {
+    // 讀**行為**而不是註冊表的內部結構：全新的儲存（沒有人寫過 pack.id）
+    // 讀出來的就是出廠預設。
+    //
+    // 沒有這一條的話，出廠預設沒有任何東西釘住它。e2e 在啟動 App 之前就把
+    // pack.id 寫死成 test-blocks，所以它從來沒讀過 defaultValue；而
+    // release.sh 的守衛只問「那套 pack 在不在 app 裡」——預設若被改回
+    // test-blocks，release 版已經濾掉它了所以那條會紅，但 debug 版不會。
+    // 0.2.0 出貨色塊就是這個形狀：每一層都綠，而交付的不是這個產品。
+    let settings = makeUseCase()
+    #expect(try settings.get("pack.id") == "mycat",
+            "出廠預設不是 mycat——陌生人裝完會看到開發用的色塊而不是貓")
+}

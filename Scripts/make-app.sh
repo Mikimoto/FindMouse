@@ -59,5 +59,23 @@ BUNDLE_ID="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "${ROOT}/Scr
     echo "先跑 plutil -lint Scripts/Info.plist 看它是不是壞了；檔案沒壞就是那個 key 不見了，補回去再重組。" >&2
     exit 1
 }
+# 開發用的色塊 fixture 不出貨。
+#
+# 它們是 SwiftPM resource bundle 的一部分（Package.swift 的
+# `.copy("Resources/Packs")` 複製整個目錄），所以只能在組完之後拿掉。
+#
+# 兩個理由：陌生人在設定的 pack 選單裡看到「test-blocks（內建）」是荒謬的；
+# 而且拿掉之後，release.sh 那道「出廠預設有沒有跟著出貨」的守衛才**真的**
+# 擋得住「預設被改回 test-blocks」——留著的話 find 找得到，守衛會放行，
+# 而那正是 0.2.0 出貨色塊的原始形態。
+#
+# debug 版留著：e2e 與單元測試都靠它們。
+if [[ "${CONFIG}" == "release" ]]; then
+    while IFS= read -r fixture; do
+        [[ -n "${fixture}" ]] || continue
+        rm -rf "${fixture}"
+    done < <(/usr/bin/find "${APP}" -type d -path '*/Packs/*' -name 'test-blocks*')
+fi
+
 echo "已組出 ${APP}"
 echo "跑：open ${APP}    （看 log：log stream --predicate 'subsystem == \"${BUNDLE_ID}\"'）"
