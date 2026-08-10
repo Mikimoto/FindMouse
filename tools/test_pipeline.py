@@ -971,6 +971,35 @@ def _run_one(func) -> tuple[bool, str]:
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+
+def test_downscale_does_not_bleed_colour_from_transparent_pixels(tmp: Path):
+    """防：縮圖直接對 unpremultiplied RGBA 做 LANCZOS，邊緣長出一圈色暈。"""
+    # 去背之後，全透明像素的 RGB 是**任意值**——`key_frame` 只保證 alpha 正確。
+    # 這裡把那些值放成一個絕不該出現在結果裡的顏色，讓汙染看得見。
+    fg = (240, 60, 60)
+    poison = (0, 255, 0)
+    disc = soft_disc(32, 32, 22, feather=3)
+    image = Image.new("RGBA", (64, 64))
+    image.putdata([
+        (*(fg if disc(x, y) > 0 else poison), round(disc(x, y) * 255))
+        for y in range(64) for x in range(64)
+    ])
+
+    small = chroma.downscale_rgba(image, 32, 32)
+    assert small.size == (32, 32), f"縮出來是 {small.size}"
+
+    checked = 0
+    for r, g, b, a in small.getdata():
+        # 門檻取 32 而不是 1：LANCZOS 的振鈴會在圖形外緣造出「有一點 alpha
+        # 但本來就沒有顏色」的像素，那些位置的 RGB 是 0 屬正常，不是汙染。
+        if a < 32:
+            continue
+        checked += 1
+        assert g < 120, f"縮圖後出現綠色汙染：({r},{g},{b},a={a})——透明像素被加權進來了"
+        assert r > g, f"紅色不再主導：({r},{g},{b},a={a})"
+    assert checked > 200, f"只驗到 {checked} 個不透明像素，樣本太少"
+
+
 def main() -> int:
     # `--emit-pack <dir>`：把端對端那套合成 pack 落到磁碟，讓 Swift 那邊的
     # 真 PackValidator 去驗它。Python 這邊只能驗「我以為 PackValidator 要什麼」，

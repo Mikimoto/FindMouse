@@ -363,3 +363,48 @@ def _byte(value: float) -> int:
     if v > 255:
         return 255
     return v
+
+
+def downscale_rgba(rgba: Image.Image, width: int, height: int) -> Image.Image:
+    """等比縮小一張 RGBA。**先預乘、縮完再除回去。**
+
+    直接對 unpremultiplied 的 RGBA 做 LANCZOS 是錯的：去背之後全透明像素的
+    RGB 是任意值（`key_frame` 只保證 alpha 對，透明處的顏色沒有意義），
+    重取樣會依權重把那些值帶進半透明的邊緣，長出一圈色暈——正是
+    `key_frame` 裡那個 unpremultiply 花力氣消掉的東西。
+
+    所以順序是：RGB × alpha（回到預乘域，透明像素的貢獻歸零）→ 縮 → 再除回去。
+    """
+    import numpy as np
+
+    src = np.asarray(rgba.convert("RGBA"), dtype=np.float64)
+    alpha = src[..., 3:4] / 255.0
+    premultiplied = np.concatenate([src[..., :3] * alpha, src[..., 3:4]], axis=2)
+
+    # 逐通道以 32-bit 浮點重取樣。**不可以先量化成 uint8 再縮**：預乘域裡
+    # 低 alpha 的像素其 RGB 也很小（alpha=0.04、色 240 → 預乘值 10），
+    # 四捨五入到 0 之後除回去就是純黑，邊緣會冒出一圈黑點。
+    planes = [
+        np.asarray(
+            Image.fromarray(
+                # ascontiguousarray 不可省：`premultiplied[..., c]` 是 stride 為 4 的
+                # 非連續切片，而 `Image.fromarray(…, "F")` 直接照 buffer 解讀，
+                # 餵非連續的進去會拿到錯位的資料（實測：不透明像素變純黑）。
+                np.ascontiguousarray(premultiplied[..., c], dtype=np.float32), "F")
+                 .resize((width, height), Image.LANCZOS),
+            dtype=np.float64)
+        for c in range(4)
+    ]
+    out = np.stack(planes, axis=2)
+
+    # **alpha 也要 clip。** LANCZOS 會振鈴出負值（實測 -5.86），而
+    # `astype(np.uint8)` 對負數是回繞不是飽和——-5.86 會變成 250，
+    # 於是圖形外緣散出幾顆「幾乎不透明的純黑點」。那種東西 PackValidator
+    # 看不出來（它只驗尺寸與張數），要到貓畫在螢幕上才看得到。
+    alpha_out = out[..., 3:4].clip(0, 255)
+    a = alpha_out / 255.0
+    # a 是 0 的地方除不回去，也不需要——那些像素完全透明，RGB 留 0 就好。
+    rgb = np.divide(out[..., :3], a, out=np.zeros_like(out[..., :3]), where=a > 0)
+    return Image.fromarray(
+        np.concatenate([rgb.clip(0, 255), alpha_out], axis=2).round().astype(np.uint8),
+        "RGBA")
