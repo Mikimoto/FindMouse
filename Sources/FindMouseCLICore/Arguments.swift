@@ -33,6 +33,7 @@ public enum Arguments {
           pack list                        列出所有 pack（* 是正在用的那套）
           pack use <id>                    換成另一套 pack
           pack validate <path>             驗證一套 sprite pack
+          login-item [on|off]              開機時是否啟動（不帶動詞就是查詢）
 
         全域旗標：
           --json    輸出機器可讀的 JSON
@@ -78,6 +79,19 @@ public enum Arguments {
 
         case "pack":
             return try parsePack(rest, json: json)
+
+        case "login-item":
+            guard let mode = rest.first else {
+                try expectNoExtra(rest, command)
+                return request("login-item.status")
+            }
+            guard ["on", "off"].contains(mode) else {
+                // 刻意不提 toggle：那個動詞不存在，而錯誤訊息若列出它，
+                // 使用者會去試一個永遠不會有的東西。
+                throw ParseError.usage("login-item 只接 on 或 off（不帶動詞就是查詢）")
+            }
+            try expectNoExtra(Array(rest.dropFirst()), command)
+            return request("login-item.\(mode)")
 
         default:
             throw ParseError.usage("未知命令：\(command)")

@@ -327,3 +327,19 @@ private let packList = PackListPayload(packs: [
     #expect(Set(codes).count == 3)
     #expect(Set(codes.map(\.exitCode)) == [1, 2, 3])
 }
+
+// MARK: - login-item
+
+@Test func unknownLoginItemStateIsShownVerbatim() {
+    // 認不得的狀態不可以被當成「關」——那會把版本不同步偽裝成正常。
+    let text = Output.loginItemText("somethingNew")
+    #expect(text.contains("somethingNew"))
+}
+
+@Test func loginItemStatesEachSayWhatToDoNext() {
+    #expect(Output.loginItemText("enabled") == "開")
+    // notFound 是全新安裝的狀態，對使用者而言就是「還沒開」
+    #expect(Output.loginItemText("notFound") == Output.loginItemText("notRegistered"))
+    #expect(Output.loginItemText("requiresApproval").contains("系統設定"))
+    #expect(Output.loginItemText("ineligible").contains("應用程式"))
+}
