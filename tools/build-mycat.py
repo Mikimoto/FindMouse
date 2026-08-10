@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""從 raw/ 重建 packs/mycat。`python3 tools/build-mycat.py`
+"""從 raw/ 重建內建的 mycat pack。`python3 tools/build-mycat.py`
 
 切格 → 去背 → 排版 → 產 manifest，一路到可以直接 `findmouse pack validate` 的目錄。
 
@@ -41,7 +41,16 @@ import layout  # noqa: E402
 #: 使用，但是**每一次生成都要附的參考表**，而且無法從別的檔案復原，不要刪。
 RAW = ROOT / "raw"
 WORK = ROOT / "work"
-PACK = ROOT / "packs" / "mycat"
+#: 出貨位置。**直接輸出到 app 的內建 pack 目錄**，不再落在 gitignore 的
+#: `packs/` 底下——mycat 是出廠預設，它必須跟著 .app 一起出貨。
+#: `Package.swift` 的 `.copy("Resources/Packs")` 會把整個目錄打包進去。
+#: 這也讓 `git diff` 順便變成「一鍵重建是否可重現」的檢查。
+PACK = ROOT / "Sources" / "FindMouseAdapters" / "Resources" / "Packs" / "mycat"
+
+#: 輸出畫布高度上限。素材原生是 1069px，而 logicalHeight 96pt 的貓在 Mac
+#: 最高的 @2x 螢幕上（含 cat.scale 上限）也只要約 307px——原生尺寸是 12 倍的
+#: 像素量，60 張就是 39MB。384px 留了兩成餘裕，整套約 7MB。
+MAX_HEIGHT = 384
 PIPELINE = ROOT / "tools" / "pipeline.py"
 ANCHOR = RAW / "sit-final.png"
 
@@ -184,6 +193,7 @@ def main() -> int:
     print()
     shutil.rmtree(PACK, ignore_errors=True)
     run("align", str(WORK / "keyed"), "--per-action", ",".join(AIRBORNE),
+        "--max-height", str(MAX_HEIGHT),
         "--out", str(PACK), "--report", str(WORK / "geom.json"))
     run("manifest", str(PACK), "--geometry", str(WORK / "geom.json"),
         "--name", PACK_NAME, "--author", PACK_AUTHOR, "--license", PACK_LICENSE)
