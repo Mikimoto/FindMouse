@@ -349,6 +349,12 @@ def cmd_align(args: argparse.Namespace) -> int:
         frames_report = []
         for index, ((path, image), geom) in enumerate(zip(loaded[name], geoms[name])):
             placed = layout.place(image, geom, dx, dy[geom.name], geometry)
+            # 縮圖放在**貼進畫布之後**：先合成再一次縮，只做一次重取樣。
+            # 反過來（先縮每一格再排版）會讓 geometry 的像素座標與內容對不上。
+            if args.max_height and placed.height > args.max_height:
+                ratio = args.max_height / placed.height
+                placed = chroma.downscale_rgba(
+                    placed, max(1, round(placed.width * ratio)), args.max_height)
             target = action_out / (FRAME_NAME % index)
             placed.save(target)
             frames_report.append({
@@ -584,6 +590,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--bottom-pad", type=float, default=0.07, help="下緣留白（佔內容高的比例）")
     p.add_argument("--foot-band", type=float, default=0.03,
                    help="腳底帶的厚度（佔該格外框高的比例）")
+    p.add_argument("--max-height", type=int, default=0,
+                   help="輸出畫布高度的上限（像素），0 = 不限。素材通常遠大於實際顯示"
+                        "尺寸：logicalHeight 96pt 的 pack 在 Mac 最高的 @2x 螢幕上也只要"
+                        "約 307px，而生圖給的常是 1000px 以上，那是 10 倍以上的像素量")
     p.add_argument("--geometry", help="pin 住既有版面的 JSON（align --report 產生）")
     p.add_argument("--report", help="把算出來的版面寫到這個檔，之後用 --geometry 餵回來")
     p.add_argument("--json", action="store_true")

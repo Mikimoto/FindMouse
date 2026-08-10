@@ -1000,6 +1000,37 @@ def test_downscale_does_not_bleed_colour_from_transparent_pixels(tmp: Path):
     assert checked > 200, f"只驗到 {checked} 個不透明像素，樣本太少"
 
 
+
+def test_max_height_caps_the_canvas_and_keeps_the_anchor_fraction(tmp: Path):
+    """防：--max-height 是裝飾品，或縮圖把 anchor 的相對位置弄歪。"""
+    # 造一組明顯高於上限的格子
+    for i in range(3):
+        d = tmp / "keyed" / "run"
+        d.mkdir(parents=True, exist_ok=True)
+        rgba_shape(400, 600, cat_silhouette(120, 260, 200, 520 + i * 10, 320)) \
+            .save(d / f"{i:03d}.png")
+
+    big = tmp / "big"
+    small = tmp / "small"
+    code, full = run_cli("align", str(tmp / "keyed"), "--out", str(big))
+    assert code == 0, full
+    code, capped = run_cli("align", str(tmp / "keyed"), "--out", str(small),
+                           "--max-height", "128")
+    assert code == 0, capped
+
+    for path in sorted((small / "run").glob("*.png")):
+        w, h = Image.open(path).size
+        assert h <= 128, f"{path.name} 高 {h}，超過上限 128"
+
+    # 沒有上限那次一定比 128 高，否則這條測試是恆真句
+    tall = Image.open(sorted((big / "run").glob("*.png"))[0]).height
+    assert tall > 128, f"未設上限時只有 {tall} 高，這個 fixture 證明不了 --max-height 有作用"
+
+    # anchor 是**相對座標**，等比縮放不該改變它——改變了就代表縮圖動到了版面
+    assert abs(full["geometry"]["anchor"]["x"] - capped["geometry"]["anchor"]["x"]) < 1e-9
+    assert abs(full["geometry"]["anchor"]["y"] - capped["geometry"]["anchor"]["y"]) < 1e-9
+
+
 def main() -> int:
     # `--emit-pack <dir>`：把端對端那套合成 pack 落到磁碟，讓 Swift 那邊的
     # 真 PackValidator 去驗它。Python 這邊只能驗「我以為 PackValidator 要什麼」，
