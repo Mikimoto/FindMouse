@@ -40,4 +40,86 @@ public enum LoginItem {
             return Array(parts.prefix(rootParts.count)) == rootParts
         }
     }
+
+    /// 三個動詞。刻意**沒有 toggle**：`CLAUDE.md` 記過「toggle 不是幂等的，
+    /// 腳本一律用方向明確的動詞」，再造一個同樣的陷阱沒有道理。
+    public enum Command: Sendable, Equatable {
+        case query
+        case on
+        case off
+    }
+
+    /// 要不要碰系統、碰哪一邊。
+    ///
+    /// 與 `exitCode` **分開**是刻意的：這讓「回 1 且沒有碰系統」變成一個
+    /// 可斷言的事實，而不是只能從「沒看到副作用」去推論。
+    public enum Effect: Sendable, Equatable {
+        case none
+        case register
+        case unregister
+    }
+
+    /// 失敗的種類。結構化而不是字串——繁中句子在 `RequestRouter` 才組出來，
+    /// 與 `PackValidator` 的錯誤同一個規矩。
+    ///
+    /// **沒有 `notFound`**：實測那是全新安裝的狀態，`decide` 對它回 `register`
+    /// 而不是失敗。系統呼叫真的丟例外時由 Adapters 直接組
+    /// `LOGIN_ITEM_REGISTER_FAILED`，不經過這個型別。
+    public enum Failure: Sendable, Equatable {
+        case ineligible
+        case needsApproval
+    }
+
+    public struct Outcome: Sendable, Equatable {
+        public let effect: Effect
+        public let exitCode: Int
+        public let failure: Failure?
+
+        public init(effect: Effect, exitCode: Int, failure: Failure? = nil) {
+            self.effect = effect
+            self.exitCode = exitCode
+            self.failure = failure
+        }
+    }
+
+    /// 那張 5×3 的表。
+    ///
+    /// `on` 在 `requiresApproval` 下回 1 是刻意的 fail-closed：`register()`
+    /// 確實成功了，但使用者要的結果（開機會啟動）沒有達成，而
+    /// `login-item on && …` 這種寫法在回 0 之下會誤判。完整狀態由
+    /// `status --json` 的 `loginItem.state` 承載。
+    public static func decide(_ command: Command, from state: State) -> Outcome {
+        switch command {
+        case .query:
+            return Outcome(effect: .none, exitCode: 0)
+
+        case .on:
+            switch state {
+            case .ineligible:       return Outcome(effect: .none, exitCode: 1, failure: .ineligible)
+            // notFound 與 notRegistered 走同一條路。2026-08-11 實測：notFound
+            // 是全新安裝的狀態，register() 從那裡呼叫是成功的。讓它回 1 會
+            // 擋掉最主要的使用情境。若那個 app 真的壞了，register() 會丟例外，
+            // 使用者走到有說明的錯誤路徑——比事先一律拒絕安全。
+            case .notRegistered,
+                 .notFound:         return Outcome(effect: .register, exitCode: 0)
+            case .enabled:          return Outcome(effect: .none, exitCode: 0)
+            case .requiresApproval: return Outcome(effect: .none, exitCode: 1, failure: .needsApproval)
+            }
+
+        case .off:
+            switch state {
+            // 以 bundle id 為鍵（2026-08-11 實測）：從這裡 unregister 會把使用者
+            // 裝在 /Applications 那份一起關掉（實測確認：那份從 enabled 變成
+            // notRegistered），而我們同時把狀態顯示成 ineligible——在沒有誠實
+            // 顯示的狀態上做破壞性操作，不行。
+            case .ineligible:       return Outcome(effect: .none, exitCode: 1, failure: .ineligible)
+            // notFound 不呼叫 unregister：實測對它呼叫會丟
+            // SMAppServiceErrorDomain Code=1 "Operation not permitted"。
+            case .notRegistered,
+                 .notFound:         return Outcome(effect: .none, exitCode: 0)
+            case .enabled:          return Outcome(effect: .unregister, exitCode: 0)
+            case .requiresApproval: return Outcome(effect: .unregister, exitCode: 0)
+            }
+        }
+    }
 }

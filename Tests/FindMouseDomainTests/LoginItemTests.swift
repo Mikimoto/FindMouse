@@ -45,3 +45,113 @@ private func eligible(_ path: String) -> Bool {
     // 邊界：路徑就是根目錄本身，沒有 app 在裡面
     #expect(!eligible("/Applications"))
 }
+
+// MARK: - 決策表
+
+private func decide(_ c: LoginItem.Command,
+                    _ s: LoginItem.State) -> LoginItem.Outcome {
+    LoginItem.decide(c, from: s)
+}
+
+// --- 查詢：任何狀態都是 0、不碰系統 ---
+
+@Test(arguments: LoginItem.State.allCases)
+func queryNeverTouchesTheSystem(_ state: LoginItem.State) {
+    let out = decide(.query, state)
+    #expect(out.effect == .none)
+    #expect(out.exitCode == 0)
+    #expect(out.failure == nil)
+}
+
+// --- on ---
+
+@Test func onWhenIneligibleIsRefusedWithoutTouchingTheSystem() {
+    let out = decide(.on, .ineligible)
+    #expect(out.exitCode == 1)
+    #expect(out.failure == .ineligible)
+    // 這一條比 exit code 更重要：被擋下的 on **不可以**去呼叫 register()。
+    // 只斷言 exit code 的話，「先註冊了再回報失敗」會照樣通過。
+    #expect(out.effect == .none)
+}
+
+@Test func onWhenNotRegisteredRegisters() {
+    let out = decide(.on, .notRegistered)
+    #expect(out.effect == .register)
+    #expect(out.exitCode == 0)
+    #expect(out.failure == nil)
+}
+
+@Test func onWhenAlreadyEnabledIsANoOp() {
+    let out = decide(.on, .enabled)
+    #expect(out.effect == .none)
+    #expect(out.exitCode == 0)
+}
+
+@Test func onWhenRequiresApprovalFailsClosed() {
+    // register() 已經成功過了，再呼叫一次不會讓它變 enabled——
+    // 只有使用者到系統設定按核准才會。所以不再碰系統，直接回報。
+    let out = decide(.on, .requiresApproval)
+    #expect(out.effect == .none)
+    #expect(out.exitCode == 1)
+    #expect(out.failure == .needsApproval)
+}
+
+@Test func onWhenNotFoundRegistersLikeNotRegistered() {
+    // 2026-08-11 實測：notFound 是**全新安裝**的狀態（BTM 裡沒有記錄），
+    // 而 register() 從那裡呼叫是成功的。原本的設計讓這一格回 1，
+    // 那會擋掉最主要的使用情境——使用者剛裝好、第一次勾。
+    let out = decide(.on, .notFound)
+    #expect(out.effect == .register)
+    #expect(out.exitCode == 0)
+    #expect(out.failure == nil)
+}
+
+@Test func notFoundBehavesExactlyLikeNotRegistered() {
+    // 上面那條的推廣：兩個狀態在**每一個命令**下的結果都必須相同。
+    // 分開寫是因為它是這次設計修正的核心主張——只驗 on 那一格的話，
+    // 日後有人「順手」把 off × notFound 改成報錯不會有任何訊號。
+    for command in [LoginItem.Command.query, .on, .off] {
+        #expect(decide(command, .notFound) == decide(command, .notRegistered),
+                "\(command) 在 notFound 與 notRegistered 下結果不同")
+    }
+}
+
+// --- off ---
+
+@Test func offWhenEnabledUnregisters() {
+    let out = decide(.off, .enabled)
+    #expect(out.effect == .unregister)
+    #expect(out.exitCode == 0)
+}
+
+@Test func offWhenRequiresApprovalUnregisters() {
+    let out = decide(.off, .requiresApproval)
+    #expect(out.effect == .unregister)
+    #expect(out.exitCode == 0)
+}
+
+@Test func offWhenNotRegisteredIsANoOp() {
+    let out = decide(.off, .notRegistered)
+    #expect(out.effect == .none)
+    #expect(out.exitCode == 0)
+}
+
+@Test func offWhenNotFoundIsANoOp() {
+    // 實測：對一個 notFound 的項目呼叫 unregister() 會丟
+    // SMAppServiceErrorDomain Code=1 "Operation not permitted"。
+    // 所以這一格不只要回 0，還要證明它**沒有**去呼叫 unregister。
+    let out = decide(.off, .notFound)
+    #expect(out.effect == .none)
+    #expect(out.exitCode == 0)
+}
+
+@Test func offWhenIneligibleIsRefused() {
+    // 以 bundle id 為鍵（2026-08-11 實測），所以從 build/ 呼叫 unregister 會把
+    // 使用者裝在 /Applications 那份一起關掉——實測確認過：/Applications 那份
+    // 從 enabled 變成 notRegistered。而我們同時把狀態顯示成 ineligible，
+    // 等於在一個沒有誠實顯示的狀態上做破壞性操作。
+    let out = decide(.off, .ineligible)
+    #expect(out.effect == .none)
+    #expect(out.exitCode == 1)
+    #expect(out.failure == .ineligible)
+}
