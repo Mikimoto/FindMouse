@@ -223,14 +223,10 @@ SHIPPED="$(/usr/bin/find "${APP}" -type d -path '*/Packs/*' -name "${DEFAULT_PAC
 [[ -f "${SHIPPED}/pack.json" ]] \
     || die "「${DEFAULT_PACK}」的目錄在 .app 裡，但沒有 pack.json——那不是一套能載入的 pack。"
 ok "出廠預設的 pack「${DEFAULT_PACK}」有跟著出貨"
-
-# 開發用的 fixture 不能出貨。這一條與上一條是**一組**：少了它，上一條擋不住
-# 它自己訊息裡描述的那個失敗——預設若被改回 test-blocks，那套 pack 也在 app 裡，
-# find 找得到、pack.json 也在，守衛會放行，而使用者看到的就是色塊。
-FIXTURES="$(/usr/bin/find "${APP}" -type d -path '*/Packs/*' -name 'test-blocks*' 2>/dev/null || true)"
-[[ -z "${FIXTURES}" ]] \
-    || die "開發用的 fixture 跟著出貨了：${FIXTURES}。make-app.sh 應該在 release 模式濾掉它們——濾掉之後，上面那條守衛才擋得住「預設被改回 test-blocks」。"
-ok "沒有開發用的 fixture 混進去"
+# 這條守衛只證明「預設那套在」，**不**證明「預設是對的那一套」——開發用的
+# test-blocks 也跟著出貨（`.copy("Resources/Packs")` 複製整個目錄，目前刻意不濾），
+# 所以預設若被改回 test-blocks，find 照樣找得到、這裡照樣放行。
+# 釘住預設值本身的是 SettingsUseCaseTests 的 factoryDefaultPackIsTheShippedCat()。
 
 if [[ "${MODE}" == dry ]]; then
     say "--dry-run：本機那半段沒問題，停在簽章之前"

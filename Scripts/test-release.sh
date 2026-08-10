@@ -134,7 +134,7 @@ else
     # 只跑一次就把輸出留著。原本失敗分支裡又跑了一次 --verify-only 來取訊息，
     # 那會把 dmg 多掛載兩次，而且第二次的結果不保證與第一次相同。
     if GOOD_OUT="$(Scripts/release.sh --verify-only "${GOOD_DMG}" 2>&1)"; then
-        ok "已簽章 notarize 過的 dmg 通過五條驗收（原檔一輪＋加隔離屬性一輪）"
+        ok "已簽章 notarize 過的 dmg 通過六條驗收（原檔一輪＋加隔離屬性一輪）"
     else
         bad "已發布的 dmg 沒通過驗收：$(echo "${GOOD_OUT}" | tail -20)"
     fi

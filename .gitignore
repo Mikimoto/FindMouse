@@ -13,7 +13,13 @@ build/
 # tools/ 的 Python bytecode 快取。跑一次 test_pipeline.py 就會冒出來。
 __pycache__/
 
-# M6 素材工作區：原圖與中間產物不進版控
-raw/
-work/
-packs/
+# M6 素材工作區：原圖與中間產物不進版控。
+#
+# 前導斜線是必要的，不是風格。沒有它，`packs/` 會匹配**任何深度**的 packs 目錄，
+# 而 macOS 的 core.ignorecase=true 讓它連大小寫都不分——於是內建 pack 的家
+# `Sources/FindMouseAdapters/Resources/Packs/` 一起被吃掉。已經 tracked 的檔案
+# 不受 ignore 影響，所以現況看不出問題；下次重建 mycat 多出一張幀時才會發作：
+# 新的 PNG 被靜默排除，pack.json 宣告的格數比實際檔案多，而 git status 一個字都不說。
+/raw/
+/work/
+/packs/
