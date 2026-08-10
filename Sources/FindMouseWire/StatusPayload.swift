@@ -67,6 +67,16 @@ public struct StatusPayload: Codable, Sendable, Equatable {
         }
     }
 
+    /// 開機時啟動。只帶 `state`——「要不要打勾」「能不能點」都是它的函數，
+    /// 多存衍生欄位就是多一個會不一致的地方。
+    ///
+    /// 值域與 `login-item` 子命令回的 `data.state` **是同一組字串**：
+    /// `ineligible` / `notRegistered` / `enabled` / `requiresApproval` / `notFound`
+    public struct LoginItem: Codable, Sendable, Equatable {
+        public let state: String
+        public init(state: String) { self.state = state }
+    }
+
     public let appVersion: String
     public let visible: Bool
     public let phase: String
@@ -79,14 +89,21 @@ public struct StatusPayload: Codable, Sendable, Equatable {
     public let timers: Timers
     public let pack: Pack
     public let display: Display
+    public let loginItem: LoginItem
 
     public init(appVersion: String, visible: Bool, phase: String, phaseElapsed: Double,
                 teaser: Teaser, cat: Cat, cursor: Point, distance: Double,
-                spotlight: Spotlight, timers: Timers, pack: Pack, display: Display) {
+                spotlight: Spotlight, timers: Timers, pack: Pack, display: Display,
+                loginItem: LoginItem) {
         self.appVersion = appVersion; self.visible = visible
         self.phase = phase; self.phaseElapsed = phaseElapsed
         self.teaser = teaser; self.cat = cat; self.cursor = cursor
         self.distance = distance; self.spotlight = spotlight
         self.timers = timers; self.pack = pack; self.display = display
+        self.loginItem = loginItem
     }
 }
+
+/// `login-item` 子命令的回應。與 `StatusPayload.LoginItem` 同形，
+/// 刻意共用同一組狀態字串——兩邊漂掉的話，腳本讀哪一個會得到不同答案。
+public typealias LoginItemPayload = StatusPayload.LoginItem

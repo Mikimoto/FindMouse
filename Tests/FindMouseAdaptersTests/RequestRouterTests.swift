@@ -113,7 +113,8 @@ private struct Fixture {
             spotlight: .init(active: false, radius: 0, opacity: 0),
             timers: .init(rest: 0, sleep: 0),
             pack: .init(id: "test-blocks", logicalHeight: 96),
-            display: .init(screenIndex: 0, scale: 2))
+            display: .init(screenIndex: 0, scale: 2),
+            loginItem: .init(state: "notRegistered"))
     }
 
     func send(_ command: String, _ args: [String: String] = [:],

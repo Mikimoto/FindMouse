@@ -20,7 +20,8 @@ private let statusPayload = StatusPayload(
     spotlight: .init(active: false, radius: 0, opacity: 0),
     timers: .init(rest: 3.42, sleep: 0),
     pack: .init(id: "fluffy-orange", logicalHeight: 96),
-    display: .init(screenIndex: 0, scale: 2))
+    display: .init(screenIndex: 0, scale: 2),
+    loginItem: .init(state: "notRegistered"))
 
 // MARK: - exit code
 
@@ -124,7 +125,8 @@ private let statusPayload = StatusPayload(
             spotlight: .init(active: false, radius: 0, opacity: 0),
             timers: .init(rest: 0, sleep: 0),
             pack: .init(id: "p", logicalHeight: 96),
-            display: .init(screenIndex: 0, scale: 1))
+            display: .init(screenIndex: 0, scale: 1),
+            loginItem: .init(state: "notRegistered"))
         let rendered = Output.render(encode(WireResponse(data: payload)),
                                      for: WireRequest(command: "status"))
         #expect(rendered.exitCode == 0)
@@ -147,7 +149,8 @@ private let statusPayload = StatusPayload(
         spotlight: .init(active: false, radius: 0, opacity: 0),
         timers: .init(rest: 0, sleep: 0),
         pack: .init(id: "p", logicalHeight: 96),
-        display: .init(screenIndex: 0, scale: 1))
+        display: .init(screenIndex: 0, scale: 1),
+        loginItem: .init(state: "notRegistered"))
     #expect(throws: (any Error).self) {
         try JSONEncoder().encode(WireResponse(data: payload))
     }

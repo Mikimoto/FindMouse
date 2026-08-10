@@ -49,6 +49,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// `FindMouseApp` 沒有測試 target，理由詳見 `PackDefaults`。
     private static let builtInPackID = PackDefaults.factory
 
+    /// 開機啟動的系統面。`SystemLoginItem` 每次被問都重新讀 `SMAppService`，
+    /// 所以這裡持有一個實例不會讓狀態變陳舊。
+    private let loginItem: LoginItemGateway = SystemLoginItem()
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
 
@@ -223,7 +227,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             packLogicalHeight: pack?.sprites.logicalHeight ?? 0,
             screens: NSScreen.screens.map {
                 ScreenInfo(frame: $0.frame, scale: $0.backingScaleFactor)
-            })
+            },
+            // 每次都重問，不快取：使用者可能剛在系統設定裡改過，而 status
+            // 的整份意義就是「現在的實況」。
+            loginItemState: loginItem.state.rawValue)
     }
 
     // MARK: - 設定
@@ -542,9 +549,13 @@ private extension CatFrameState {
     }
 }
 
+// App 正在關閉時回的佔位資料。`loginItem` 這裡給 ineligible 而不是去問系統：
+// 這份 payload 的每一個欄位都已經是假的（版本 0.0.0、沒有 pack、沒有螢幕），
+// 唯獨一個欄位跑去拿真值，只會讓讀的人以為整份是真的。
 private let placeholderStatus = StatusJSONPresenter.payload(
     state: hiddenState(cursor: .zero), appVersion: "0.0.0",
-    packID: "", packLogicalHeight: 0, screens: [])
+    packID: "", packLogicalHeight: 0, screens: [],
+    loginItemState: LoginItem.State.ineligible.rawValue)
 
 /// `self` 已經沒了——App 正在關閉，而這條連線還在等回應。
 /// 回一個合法的錯誤信封而不是關掉連線：後者在 CLI 那端會變成

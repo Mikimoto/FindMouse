@@ -86,3 +86,18 @@ import Testing
     #expect(WireErrorCode.teaserUnavailable.exitCode == 1)
     #expect(WireErrorCode.configValueOutOfRange.exitCode == 1)
 }
+
+@Test func loginItemErrorsExitWithOne() {
+    // 這三個是「命令失敗」不是「用法錯誤」，也不是「App 沒開」。
+    // 走 default 分支拿到 1 是對的，但那是**推論**——實際斷言一次。
+    #expect(WireErrorCode.loginItemIneligible.exitCode == 1)
+    #expect(WireErrorCode.loginItemNeedsApproval.exitCode == 1)
+    #expect(WireErrorCode.loginItemRegisterFailed.exitCode == 1)
+}
+
+@Test func loginItemErrorCodeStringsAreTheContract() {
+    // rawValue 會被寫進腳本，改名就是破壞契約——所以字面比對。
+    #expect(WireErrorCode.loginItemIneligible.rawValue == "LOGIN_ITEM_INELIGIBLE")
+    #expect(WireErrorCode.loginItemNeedsApproval.rawValue == "LOGIN_ITEM_NEEDS_APPROVAL")
+    #expect(WireErrorCode.loginItemRegisterFailed.rawValue == "LOGIN_ITEM_REGISTER_FAILED")
+}
