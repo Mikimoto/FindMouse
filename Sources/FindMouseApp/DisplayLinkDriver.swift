@@ -30,7 +30,7 @@ import QuartzCore
 @MainActor
 final class DisplayLinkDriver {
 
-    private static let log = Logger(subsystem: "com.findmouse.app", category: "clock")
+    private static let log = Logger(subsystem: "tw.com.deepthought.findmouse", category: "clock")
 
     /// 本 process 是否已確認 `CADisplayLink` 不會動。
     private static var displayLinkIsDead = false

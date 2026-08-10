@@ -8,7 +8,7 @@ import OSLog
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
 
-    private let log = Logger(subsystem: "com.findmouse.app", category: "session")
+    private let log = Logger(subsystem: "tw.com.deepthought.findmouse", category: "session")
 
     private let settings = SettingsGateway()
     private let cursor = CursorGateway()

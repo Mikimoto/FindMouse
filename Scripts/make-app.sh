@@ -39,5 +39,6 @@ for bundle in "${BIN_DIR}"/*.bundle; do
 done
 shopt -u nullglob
 
+BUNDLE_ID="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "${ROOT}/Scripts/Info.plist")"
 echo "已組出 ${APP}"
-echo "跑：open ${APP}    （看 log：log stream --predicate 'subsystem == \"com.findmouse.app\"'）"
+echo "跑：open ${APP}    （看 log：log stream --predicate 'subsystem == \"${BUNDLE_ID}\"'）"

@@ -73,7 +73,11 @@ export FINDMOUSE_SOCKET="/tmp/fm-e2e-$$.sock"
 # 釘住是因為「剛啟動載入的是 test-blocks」這類斷言否則會跟著使用者上次選了什麼
 # 而變——失敗的原因與被測物無關（實測踩過：使用者在設定視窗把 rest.duration
 # 調成 5，寫死出廠值 10 的那條斷言就紅了）。
-DEFAULTS_DOMAIN="com.findmouse.app"
+# 從 Info.plist 讀而不是寫死。這兩個值一旦漂掉，症狀是「e2e 去寫一個沒人讀的
+# domain」——App 讀到的還是使用者自己的設定，於是下面「載入的是內建 pack」那條
+# 會紅，而紅的原因與被測物完全無關（實測：使用者的 pack.id 是 mycat）。
+DEFAULTS_DOMAIN="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "${ROOT}/Scripts/Info.plist")"
+[[ -n "${DEFAULTS_DOMAIN}" ]] || { echo "讀不到 Info.plist 的 CFBundleIdentifier"; exit 1; }
 SAVED_PACK_ID="$(defaults read "${DEFAULTS_DOMAIN}" pack.id 2>/dev/null || true)"
 defaults write "${DEFAULTS_DOMAIN}" pack.id -string "test-blocks"
 
