@@ -82,6 +82,39 @@ public enum LoginItem {
         }
     }
 
+    /// 說明那一行要講哪一件事。結構化而不是字串：繁中句子由 App 組。
+    ///
+    /// **沒有 `notFound`**：那個狀態不需要說明，它就是「還沒開」。
+    public enum Note: Sendable, Equatable {
+        case mustBeInApplications
+        case needsApproval
+    }
+
+    public struct Presentation: Sendable, Equatable {
+        /// 勾要不要打。**只有 `enabled`**——`requiresApproval` 的項目不會在
+        /// 開機時啟動，畫成打勾就是說謊。
+        public let checked: Bool
+        /// 勾能不能點。只有不合格才不能——不合格是唯一「使用者在這個視窗裡
+        /// 做什麼都沒用」的狀態。
+        public let interactive: Bool
+        public let note: Note?
+    }
+
+    public static func presentation(for state: State) -> Presentation {
+        switch state {
+        case .enabled:
+            return Presentation(checked: true, interactive: true, note: nil)
+        // notFound 與 notRegistered 長得一模一樣。2026-08-11 實測：notFound
+        // 是全新安裝的狀態，畫成「灰掉＋找不到」等於把最正常的情境畫成壞掉。
+        case .notRegistered, .notFound:
+            return Presentation(checked: false, interactive: true, note: nil)
+        case .requiresApproval:
+            return Presentation(checked: false, interactive: true, note: .needsApproval)
+        case .ineligible:
+            return Presentation(checked: false, interactive: false, note: .mustBeInApplications)
+        }
+    }
+
     /// 那張 5×3 的表。
     ///
     /// `on` 在 `requiresApproval` 下回 1 是刻意的 fail-closed：`register()`

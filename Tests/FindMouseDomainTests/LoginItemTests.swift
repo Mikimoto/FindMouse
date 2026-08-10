@@ -145,6 +145,51 @@ func queryNeverTouchesTheSystem(_ state: LoginItem.State) {
     #expect(out.exitCode == 0)
 }
 
+// MARK: - 呈現
+
+@Test func onlyEnabledShowsAsChecked() {
+    #expect(LoginItem.presentation(for: .enabled).checked)
+    for s in LoginItem.State.allCases where s != .enabled {
+        #expect(!LoginItem.presentation(for: s).checked,
+                "\(s) 不該顯示為打勾")
+    }
+}
+
+@Test func requiresApprovalIsNotChecked() {
+    // 這一條是上面那條的特例，但單獨留著：它是整個設計最容易被「修好」成
+    // 錯誤行為的一格。requiresApproval 的項目**不會**在開機時啟動，
+    // 畫成打勾就是說謊。
+    let p = LoginItem.presentation(for: .requiresApproval)
+    #expect(!p.checked)
+    #expect(p.interactive)
+    #expect(p.note == .needsApproval)
+}
+
+@Test func onlyIneligibleIsNotInteractive() {
+    // notFound **可以點**（2026-08-11 實測改的）：它是全新安裝的狀態，
+    // 灰掉的話，使用者剛裝好打開設定看到的就是一個不能點的勾加一句
+    // 「macOS 找不到這個項目」——把最正常的情境畫成壞掉。
+    #expect(!LoginItem.presentation(for: .ineligible).interactive)
+    for s in LoginItem.State.allCases where s != .ineligible {
+        #expect(LoginItem.presentation(for: s).interactive,
+                "\(s) 應該可以點")
+    }
+}
+
+@Test func healthyStatesShowNoNote() {
+    #expect(LoginItem.presentation(for: .enabled).note == nil)
+    #expect(LoginItem.presentation(for: .notRegistered).note == nil)
+    // notFound 也算健康：它就是還沒開而已
+    #expect(LoginItem.presentation(for: .notFound).note == nil)
+}
+
+@Test func notFoundLooksExactlyLikeNotRegistered() {
+    // 與決策表那條同源：notFound 在 UI 上也不能與 notRegistered 有任何差別，
+    // 否則使用者剛裝好會看到一個「怪怪的」勾。
+    #expect(LoginItem.presentation(for: .notFound)
+            == LoginItem.presentation(for: .notRegistered))
+}
+
 @Test func offWhenIneligibleIsRefused() {
     // 以 bundle id 為鍵（2026-08-11 實測），所以從 build/ 呼叫 unregister 會把
     // 使用者裝在 /Applications 那份一起關掉——實測確認過：/Applications 那份
