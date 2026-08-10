@@ -36,7 +36,12 @@ while [[ $# -gt 0 ]]; do
         --profile)     [[ $# -ge 2 ]] || die "--profile 後面要接 keychain profile 名稱。先跑一次：xcrun notarytool store-credentials <名稱>"
                        PROFILE="$2"; shift 2 ;;
         -*)            die "不認得的選項 ${1}。用法見 Scripts/release.sh 檔頭。" ;;
-        *)             VERSION="$1"; shift ;;
+        # 第二個位置參數要硬失敗，不能靜默覆蓋。`release.sh 0.2.0 0.3.0` 原本
+        # 取後者，於是發出去的檔名、dmg 卷標與 Info.plist 全部標成一個你沒打算
+        # 發的版本——而每一條驗收都會通過，因為產物本身是自洽的。
+        *)             [[ -z "${VERSION}" ]] \
+                           || die "版本號給了兩個：「${VERSION}」與「${1}」。只能給一個。"
+                       VERSION="$1"; shift ;;
     esac
 done
 

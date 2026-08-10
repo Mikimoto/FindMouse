@@ -36,16 +36,37 @@ cp "${ROOT}/Scripts/Info.plist" "${APP}/Contents/Info.plist"
 # SwiftPM 把 target 的 resources 放在執行檔旁的 *.bundle 裡，Bundle.module 靠它找資源。
 # 不複製進去的話，載入內建 pack 會在執行期失敗（而不是編譯期）。
 #
-# **跳過測試 target 的 bundle。** 這個迴圈原本抓 bin 目錄裡每一個 bundle，
-# 而跑過 swift test 之後那裡就有一個 FindMouse_FindMouseAdaptersTests.bundle
-# （裡面是壞 pack 的 fixture）。實測 debug 的 .app 裡真的裝著它——測試素材
-# 跟著出貨，而且沒有任何訊號。
+# **白名單，不是黑名單。** 原本這個迴圈複製每一個 bundle，只跳過名字含 Tests 的
+# ——那擋得住測試 fixture（跑過 swift test 之後 bin 目錄就有一個，實測真的裝進
+# 過 .app），但擋不住 `.build` 裡任何殘留的舊 bundle：改過名的 target、移除過的
+# 相依，都會被複製進去、被簽章、跟著出貨，而 release.sh 的守衛同樣只認 Tests 字樣。
+#
+# 兩個方向都要硬失敗：少了預期的（執行期才會炸，而且訊息是「找不到內建 pack」，
+# 沒有人會聯想到打包腳本）、多了沒預期的（悄悄出貨）。
+EXPECTED_BUNDLES=("FindMouse_FindMouseAdapters.bundle")
+
+for name in "${EXPECTED_BUNDLES[@]}"; do
+    [[ -d "${BIN_DIR}/${name}" ]] || {
+        echo "找不到 ${BIN_DIR}/${name}。它是 SwiftPM 幫有 resources 的 target 蓋的，" >&2
+        echo "少了它 App 在執行期會載不到內建 pack。先跑一次 swift build 再重組。" >&2
+        exit 1
+    }
+    cp -R "${BIN_DIR}/${name}" "${APP}/Contents/Resources/"
+done
+
 shopt -s nullglob
 for bundle in "${BIN_DIR}"/*.bundle; do
-    case "$(basename "${bundle}")" in
-        *Tests*) continue ;;
-    esac
-    cp -R "${bundle}" "${APP}/Contents/Resources/"
+    base="$(basename "${bundle}")"
+    # 測試 target 的 bundle 本來就會在（跑過 swift test 之後），不算意外
+    case "${base}" in *Tests*) continue ;; esac
+    for name in "${EXPECTED_BUNDLES[@]}"; do
+        [[ "${base}" == "${name}" ]] && continue 2
+    done
+    echo "${BIN_DIR} 裡有一個沒預期的 resource bundle：${base}" >&2
+    echo "若它是新 target 的資源，把它加進 make-app.sh 的 EXPECTED_BUNDLES；" >&2
+    echo "若它是改名或移除過的 target 留下來的殘骸，先 rm -rf .build 再重建。" >&2
+    echo "兩種都不該靜默出貨，所以這裡停下來。" >&2
+    exit 1
 done
 shopt -u nullglob
 
