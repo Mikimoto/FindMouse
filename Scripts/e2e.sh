@@ -564,8 +564,11 @@ step "13. 逗貓棒真的跑起來（spec 第 3.2 / 4.5 節）"
 #
 # 為什麼放在 step 12 之後：step 9 把 pack 換成 test-blocks-tall，而那套**缺 pounce**
 # （step 11 正是靠它驗 TEASER_UNAVAILABLE）。step 12 尾端的重啟把執行中的 pack
-# 帶回內建 test-blocks，這是整個腳本裡最後一段 teaser 可用的區間。
-expect "$(field 'd["pack"]["id"]')" "test-blocks" "前提：跑的是 teaser 齊全的內建 test-blocks"
+# 帶回**出廠預設**，這是整個腳本裡最後一段 teaser 可用的區間。
+#
+# 出廠預設從 test-blocks 換成 mycat 之後這裡跟著改。mycat 的 14 組動作齊全
+# （含 pounce），所以 teaser 照樣可用——換的只是 id。
+expect "$(field 'd["pack"]["id"]')" "mycat" "前提：跑的是 teaser 齊全的出廠預設 mycat"
 expect "$(field 'd["teaser"]["available"]')" "True" "前提：teaserAvailable"
 expect "$(field 'd["visible"]')" "False" "前提：貓不在畫面上（待會要看牠自己入場）"
 
