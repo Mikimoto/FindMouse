@@ -77,7 +77,11 @@ export FINDMOUSE_SOCKET="/tmp/fm-e2e-$$.sock"
 # domain」——App 讀到的還是使用者自己的設定，於是下面「載入的是內建 pack」那條
 # 會紅，而紅的原因與被測物完全無關（實測：使用者的 pack.id 是 mycat）。
 DEFAULTS_DOMAIN="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "${ROOT}/Scripts/Info.plist")"
-[[ -n "${DEFAULTS_DOMAIN}" ]] || { echo "讀不到 Info.plist 的 CFBundleIdentifier"; exit 1; }
+[[ -n "${DEFAULTS_DOMAIN}" ]] || {
+    echo "讀不到 ${ROOT}/Scripts/Info.plist 的 CFBundleIdentifier。"
+    echo "先跑 plutil -lint Scripts/Info.plist 看它是不是壞了；檔案沒壞就是那個 key 不見了，補回去。"
+    exit 1
+}
 SAVED_PACK_ID="$(defaults read "${DEFAULTS_DOMAIN}" pack.id 2>/dev/null || true)"
 defaults write "${DEFAULTS_DOMAIN}" pack.id -string "test-blocks"
 

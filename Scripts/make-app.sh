@@ -39,6 +39,15 @@ for bundle in "${BIN_DIR}"/*.bundle; do
 done
 shopt -u nullglob
 
-BUNDLE_ID="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "${ROOT}/Scripts/Info.plist")"
+# 讀不到就硬失敗，不要只是少印一句提示。走到這裡代表上面那個 cp 成功了，
+# 所以 Info.plist 檔案是在的——讀不出 key 只剩兩種可能：plist 壞掉、或 key 真的
+# 不見了。兩種都表示剛組出來的那個 .app 帶著一份沒有 bundle id 的 Info.plist，
+# 它根本啟動不了。這時候安靜地少印一行提示，等於把一個壞掉的 .app 交出去。
+BUNDLE_ID="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "${ROOT}/Scripts/Info.plist")" || BUNDLE_ID=""
+[[ -n "${BUNDLE_ID}" ]] || {
+    echo "讀不到 ${ROOT}/Scripts/Info.plist 的 CFBundleIdentifier，剛組出來的 .app 會沒有 bundle id、啟動不了。" >&2
+    echo "先跑 plutil -lint Scripts/Info.plist 看它是不是壞了；檔案沒壞就是那個 key 不見了，補回去再重組。" >&2
+    exit 1
+}
 echo "已組出 ${APP}"
 echo "跑：open ${APP}    （看 log：log stream --predicate 'subsystem == \"${BUNDLE_ID}\"'）"
