@@ -376,9 +376,13 @@ private func settingsError(_ body: () throws -> Void) -> SettingsError? {
     //
     // 沒有這一條的話，出廠預設沒有任何東西釘住它。e2e 在啟動 App 之前就把
     // pack.id 寫死成 test-blocks，所以它從來沒讀過 defaultValue；而
-    // release.sh 的守衛只問「那套 pack 在不在 app 裡」——預設若被改回
-    // test-blocks，release 版已經濾掉它了所以那條會紅，但 debug 版不會。
+    // release.sh 的守衛只問「那套 pack 在不在 app 裡」——test-blocks 照樣
+    // 出貨，所以預設若被改回它，那條守衛在 release 與 debug 版都放行。
     // 0.2.0 出貨色塊就是這個形狀：每一層都綠，而交付的不是這個產品。
+    //
+    // 這一條也蓋得到 App 的全新安裝路徑（`AppDelegate.builtInPackID`），
+    // 因為那邊讀的是同一個 `PackDefaults.factory`。它若哪天又變回自己一份
+    // 字面值，這裡就只剩 CLI 那半條路，而 FindMouseApp 沒有測試 target。
     let settings = makeUseCase()
     #expect(try settings.get("pack.id") == "mycat",
             "出廠預設不是 mycat——陌生人裝完會看到開發用的色塊而不是貓")

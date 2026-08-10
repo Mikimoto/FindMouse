@@ -9,7 +9,10 @@
 .DS_Store
 .build/
 *.xcuserstate
-build/
+# 前導斜線的理由同下面素材那三行：沒有它，任何深度的 build/ 都會被吃掉
+# （實測 Sources/build/x.swift 會中）。`.build/` 與 `__pycache__/` 刻意不加，
+# 它們本來就該在任何深度都被忽略。
+/build/
 # tools/ 的 Python bytecode 快取。跑一次 test_pipeline.py 就會冒出來。
 __pycache__/
 

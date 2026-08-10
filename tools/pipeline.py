@@ -319,14 +319,17 @@ def cmd_key(args: argparse.Namespace) -> int:
 # ── align ──────────────────────────────────────────────────
 
 def cmd_align(args: argparse.Namespace) -> int:
-    root = Path(args.input)
-    dirs = action_dirs(root)
-    if not dirs:
-        raise ChromaError("NO_ACTIONS", f"{root} 底下沒有動作子目錄")
+    # 參數先驗，再碰檔案系統。反過來的話，`--max-height -1` 配上一個沒有動作
+    # 子目錄的路徑會回 NO_ACTIONS——那個訊息把人指去查目錄結構，而真正打錯的
+    # 是旗標。參數錯就報參數錯，不要讓環境的問題蓋過它。
     if args.max_height < 0:
         raise ChromaError("INVALID_MAX_HEIGHT",
                           f"--max-height 不能是負的（收到 {args.max_height}）。"
                           "0 表示不限制，正整數是像素上限。")
+    root = Path(args.input)
+    dirs = action_dirs(root)
+    if not dirs:
+        raise ChromaError("NO_ACTIONS", f"{root} 底下沒有動作子目錄")
 
     loaded: dict[str, list[tuple[Path, Image.Image]]] = {}
     geoms: dict[str, list[layout.FrameGeom]] = {}

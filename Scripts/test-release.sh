@@ -88,8 +88,8 @@ N_CHECKS="$(grep -c '^ *check "' "${ROOT}/Scripts/release.sh")"
     && ok "release.sh 裡剛好六條 check，與下面列舉的標籤數相符" \
     || bad "release.sh 裡有 ${N_CHECKS} 條 check，但這裡只列舉了 6 個標籤——補上去，否則多的那條永遠不會被驗"
 
-# 拿一個沒簽過的 .app 包成 dmg。四條驗收會跑兩輪（原檔一輪、加了隔離屬性的
-# 副本一輪），八條應該全部踩紅——實測 ad-hoc 產物：codesign 回 1、spctl 回 1、
+# 拿一個沒簽過的 .app 包成 dmg。六條驗收會跑兩輪（原檔一輪、加了隔離屬性的
+# 副本一輪），十二條應該全部踩紅——實測 ad-hoc 產物：codesign 回 1、spctl 回 1、
 # stapler 回 65。
 TMP="$(mktemp -d)"
 BAD_DMG="${TMP}/unsigned.dmg"
@@ -105,18 +105,30 @@ if hdiutil create -volname "FindMouse bad" -srcfolder "${ROOT}/build/release" \
     #
     # 原本這裡寫「至少三條報紅」，那個門檻鬆到失去意義：`hdiutil attach` 若哪天
     # 壞掉（改錯旗標、mountpoint 撞名），兩輪各印一條「掛不起來」加上結尾的 die
-    # 剛好就是三條，門檻照樣過——**測試全綠，而四條驗收一條都沒執行**。
+    # 剛好就是三條，門檻照樣過——**測試全綠，而六條驗收一條都沒執行**。
     # 所以改成逐條點名，每條都要在兩輪裡各出現一次。
     #
     # grep 的 pattern 用 `✗.*<標籤>` 而不是 `✗ <標籤>`：✗ 與標籤之間夾著
     # 一段 ANSI 重設碼（`\033[0m`），寫成一個空格永遠對不上。
+    # 巢狀那條是**每個 bundle 各跑一次**，不是一次。它在 release.sh 裡是一行，
+    # 但執行次數等於 bundle 數——多一個帶 resources 的 target 就變 4 次，
+    # 寫死 2 會紅在「有驗收沒跑到」這個與事實無關的訊息上。
+    NESTED_BUNDLES="$(/usr/bin/find "${ROOT}/build/release/FindMouse.app/Contents/Resources" \
+        -maxdepth 1 -name '*.bundle' 2>/dev/null | grep -c . || true)"
+    # 數到 0 的話下面的期望值也會是 0，而 0 次出現剛好等於 0——這一條會**無聲通過**。
+    # 那正是這支腳本存在要防的東西，所以先擋掉。
+    [[ "${NESTED_BUNDLES}" -ge 1 ]] \
+        || bad "build/release/FindMouse.app 裡找不到任何 *.bundle，巢狀那條驗收根本沒有對象（期望值會變成 0 次而自動通過）"
+
     MISSING=""
     for label in "codesign --verify" "簽章者是我們" "巢狀 bundle 的簽章者也是我們" "spctl app" "spctl dmg" "stapler validate"; do
+        want=2
+        [[ "${label}" == "巢狀 bundle 的簽章者也是我們" ]] && want=$((2 * NESTED_BUNDLES))
         n="$(echo "${OUT}" | grep -c "✗.*${label}")"
-        [[ "${n}" -eq 2 ]] || MISSING="${MISSING} ${label}(${n}次)"
+        [[ "${n}" -eq "${want}" ]] || MISSING="${MISSING} ${label}(${n}次，期望 ${want})"
     done
     [[ -z "${MISSING}" ]] \
-        && ok "六條驗收各自報紅兩次（原檔一輪＋加隔離屬性一輪）" \
+        && ok "六條驗收各自報紅該有的次數（原檔一輪＋加隔離屬性一輪，巢狀那條 ×${NESTED_BUNDLES} 個 bundle）" \
         || bad "有驗收沒跑到或次數不對：${MISSING}"
 else
     bad "造不出測試用的 dmg"

@@ -41,14 +41,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var installedSummon: HotkeySpec?
     private var installedTeaser: HotkeySpec?
 
-    /// 任何 pack 都載不起來時的最後一條路。
+    /// 任何 pack 都載不起來時的最後一條路，也是全新安裝時看到的那一套。
     ///
-    /// 與 `SettingsUseCase.registry` 裡 `pack.id` 的 defaultValue 是同一個字串，
-    /// 但不能從那裡讀：`SettingsUseCase` 要一個 catalog，而 catalog 正是這一步
-    /// 要載出來的東西。改其中一邊時記得對一下另一邊。
-    // 退回時用的內建 pack，也是出廠預設。mycat 是**產品本身**——test-blocks 是
-    // 開發用的色塊，讓陌生人裝完看到方塊等於沒有交付這個 App。
-    private static let builtInPackID = "mycat"
+    /// 讀共用常數而不是自己寫一份 "mycat"：不能讀的是 `SettingsUseCase.registry`
+    /// （它要一個 catalog，而 catalog 正是這一步要載出來的東西），常數沒有這個
+    /// 問題。各寫一份的版本靠註解提醒對齊，而漂掉的那一天不會有任何訊號——
+    /// `FindMouseApp` 沒有測試 target，理由詳見 `PackDefaults`。
+    private static let builtInPackID = PackDefaults.factory
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)

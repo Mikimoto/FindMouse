@@ -1031,6 +1031,28 @@ def test_max_height_caps_the_canvas_and_keeps_the_anchor_fraction(tmp: Path):
     assert abs(full["geometry"]["anchor"]["y"] - capped["geometry"]["anchor"]["y"]) < 1e-9
 
 
+def test_negative_max_height_is_rejected_before_the_filesystem_is_touched(tmp: Path):
+    """防：負的 --max-height 被當成沒設定，或錯誤訊息把人指去查目錄結構。"""
+    d = tmp / "keyed" / "run"
+    d.mkdir(parents=True, exist_ok=True)
+    rgba_shape(400, 600, cat_silhouette(120, 260, 200, 520, 320)).save(d / "000.png")
+
+    code, payload = run_cli("align", str(tmp / "keyed"), "--out", str(tmp / "out"),
+                            "--max-height", "-1")
+    assert code != 0, f"負的上限被接受了：{payload}"
+    assert [e["code"] for e in payload["errors"]] == ["INVALID_MAX_HEIGHT"], payload
+
+    # 參數的驗證要贏過環境的問題。這個路徑底下沒有動作子目錄，驗證若排在
+    # action_dirs() 後面，回的會是 NO_ACTIONS——把人指去查目錄，而打錯的是旗標。
+    empty = tmp / "empty"
+    empty.mkdir()
+    code, payload = run_cli("align", str(empty), "--out", str(tmp / "out2"),
+                            "--max-height", "-1")
+    assert code != 0, payload
+    codes = [e["code"] for e in payload["errors"]]
+    assert codes == ["INVALID_MAX_HEIGHT"], f"參數錯被環境的問題蓋過去了：{codes}"
+
+
 def main() -> int:
     # `--emit-pack <dir>`：把端對端那套合成 pack 落到磁碟，讓 Swift 那邊的
     # 真 PackValidator 去驗它。Python 這邊只能驗「我以為 PackValidator 要什麼」，

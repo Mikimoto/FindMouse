@@ -56,18 +56,22 @@ check() {
 }
 
 # 掛起來驗 dmg 裡面那個 .app——驗的是使用者真的會拿到的東西，不是手邊那份
-# staging 副本。四條都跑完才回報，不在第一條就 die：只紅一條與四條全紅
+# staging 副本。六條都跑完才回報，不在第一條就 die：只紅一條與六條全紅
 # 是完全不同的診斷，而前者常常代表後面幾條根本沒執行。
 # spctl 在「assessments disabled」下對任何東西都回 accepted（man spctl：assessment
 # APIs "always report success"）。開發機為了測未簽版本關掉 Gatekeeper 是常見的事，
-# 而症狀是四條驗收裡的兩條**靜默變成恆真句**——正好是這份驗收最該防的東西。
+# 而症狀是六條驗收裡的兩條**靜默變成恆真句**——正好是這份驗收最該防的東西。
 require_gatekeeper_on() {
     spctl --status 2>&1 | grep -q 'assessments enabled' || die \
         "這台機器的 Gatekeeper 評估是關的（spctl --status），兩條 spctl 驗收會一律回 accepted、等於沒驗。先跑 sudo spctl --master-enable 再重來。"
 }
 
 verify_dmg() {
-    local dmg="$1" mnt app rc=0
+    # `req` 要 local。原本它沒宣告、名字又和後半段存 submission id 的那個變數
+    # 撞在一起，兩個都是全域。今天沒事只因為執行順序剛好（驗收跑在最後一次用到
+    # submission id 之後）；哪天有人在結尾的成功訊息裡多印一次 id，印出來的會是
+    # codesign 的 requirement 字串——而那看起來只是「訊息怪怪的」，不像 bug。
+    local dmg="$1" mnt app rc=0 req
     mnt="$(mktemp -d)"
     hdiutil attach "${dmg}" -readonly -nobrowse -mountpoint "${mnt}" >/dev/null 2>&1 \
         || { printf '  \033[31m✗\033[0m 掛不起來：%s\n' "${dmg}"; rmdir "${mnt}"; return 1; }
@@ -84,13 +88,13 @@ verify_dmg() {
         # `-R` 沒有 --deep，只驗**外層** bundle 的身分。巢狀的資源 bundle
         # （SwiftPM 蓋的是 ad-hoc 章）若漏簽，這條照樣過——而那正是第 5 步
         # 由內而外簽存在的理由。所以連巢狀的一起驗。
-        REQ='=anchor apple generic and certificate leaf[subject.OU] = "JA387Z4D7Q"'
+        req='=anchor apple generic and certificate leaf[subject.OU] = "JA387Z4D7Q"'
         check "簽章者是我們（Apple 根 ＋ team JA387Z4D7Q）" \
-              codesign --verify -R "${REQ}" "${app}" || rc=1
+              codesign --verify -R "${req}" "${app}" || rc=1
         while IFS= read -r nested; do
             [[ -n "${nested}" ]] || continue
             check "巢狀 bundle 的簽章者也是我們（$(basename "${nested}")）" \
-                  codesign --verify -R "${REQ}" "${nested}" || rc=1
+                  codesign --verify -R "${req}" "${nested}" || rc=1
         done < <(/usr/bin/find "${app}/Contents/Resources" -maxdepth 1 -name '*.bundle' 2>/dev/null)
         check "spctl app（Gatekeeper 對 app 的判定）" \
               spctl -a --no-cache -vvv -t exec "${app}" || rc=1
@@ -111,16 +115,17 @@ verify_dmg() {
     return "${rc}"
 }
 
-# 第二輪：對加了隔離屬性的**副本**再跑一次同樣四條。
+# 第二輪：對加了隔離屬性的**副本**再跑一次同樣六條。
 #
 # 對副本做是因為原檔加了再拿掉，殘留的 xattr 會讓下一次驗證的前提悄悄變成
 # 不同的東西。
 #
-# **這一輪目前沒有被證明有鑑別力。** 2026-08-10 拿三種產物各實測一次，兩輪的
-# 結果完全相同：
-#   完全沒簽          → 兩輪都 5 紅
-#   簽了但沒送審      → 兩輪都 3 綠 2 紅（spctl dmg 回 source=Unnotarized Developer ID）
-#   簽＋送審＋釘票    → 兩輪都 5 綠
+# **這一輪目前沒有被證明有鑑別力。** 2026-08-11 拿三種產物各實測一次（六條版本；
+# 前一次量的是加巢狀 bundle 那條之前的五條版本，數字已作廢），兩輪的結果完全相同：
+#   完全沒簽          → 兩輪都 6 紅
+#   簽了但沒送審      → 兩輪都 4 綠 2 紅（spctl dmg 回 source=Unnotarized Developer ID、
+#                        stapler validate 找不到票）
+#   簽＋送審＋釘票    → 兩輪都 6 綠（拿真的發出去的 0.2.0 dmg 量的）
 # 也就是說，「使用者從網路下載會被擋」這件事，在這台機器上構造不出一個能讓
 # 隔離屬性改變結論的樣本。留著它是因為它便宜、而且是使用者真正會遇到的狀態
 # （加上 --no-cache 之後至少強迫了一次不吃快取的重新評估）——但不要宣稱它
@@ -131,7 +136,7 @@ verify_quarantined() {
     cp "${dmg}" "${tmp}"
     xattr -w com.apple.quarantine "0081;00000000;Safari;$(uuidgen)" "${tmp}"
     # 讀回來確認屬性真的在。少了這一步，`cp` 或 `xattr -w` 失敗時第二輪會在一個
-    # **沒有隔離屬性**的副本上跑完四條、全部通過，卻仍掛在「已加隔離屬性」的標題
+    # **沒有隔離屬性**的副本上跑完六條、全部通過，卻仍掛在「已加隔離屬性」的標題
     # 底下回報——而這一輪正是整個驗收唯一測得到「使用者從網路下載會不會被擋」的
     # 地方（前一輪在本機幾乎必過）。那會讓最重要的那條變成沒有內容的恆真句。
     xattr -p com.apple.quarantine "${tmp}" >/dev/null 2>&1 || {
@@ -210,7 +215,7 @@ ok "沒有測試素材混進去"
 #
 # 預設 pack 的 id 從**它的來源**讀，不寫死在這裡：寫死的話，改了預設而忘了
 # 改這裡，守衛會繼續為舊的那套背書。
-DEFAULT_PACK="$(sed -nE 's/.*external\("pack\.id".*defaultValue: "([a-z0-9-]+)".*/\1/p' \
+DEFAULT_PACK="$(sed -nE 's/.*static let factory = "([a-z0-9-]+)".*/\1/p' \
     "${ROOT}/Sources/FindMouseCore/SettingsUseCase.swift")"
 # 抓到的必須恰好一筆。零筆代表那行的寫法變了而這個 sed 沒跟上——那時它會
 # 安靜地拿空字串去比對，而空字串找得到東西。
@@ -226,7 +231,9 @@ ok "出廠預設的 pack「${DEFAULT_PACK}」有跟著出貨"
 # 這條守衛只證明「預設那套在」，**不**證明「預設是對的那一套」——開發用的
 # test-blocks 也跟著出貨（`.copy("Resources/Packs")` 複製整個目錄，目前刻意不濾），
 # 所以預設若被改回 test-blocks，find 照樣找得到、這裡照樣放行。
-# 釘住預設值本身的是 SettingsUseCaseTests 的 factoryDefaultPackIsTheShippedCat()。
+# 釘住預設值本身的是 SettingsUseCaseTests 的 factoryDefaultPackIsTheShippedCat()，
+# 而它蓋得到 App 的全新安裝路徑，是因為 AppDelegate 的退路讀的是同一個
+# `PackDefaults.factory` 而不是自己那份字面值。
 
 if [[ "${MODE}" == dry ]]; then
     say "--dry-run：本機那半段沒問題，停在簽章之前"
@@ -264,7 +271,7 @@ say "7／9 notarize（要等 Apple，通常數分鐘）"
 SUBMIT_LOG="$(mktemp)"
 xcrun notarytool submit "${DMG}" --keychain-profile "${PROFILE}" --wait 2>&1 \
     | tee "${SUBMIT_LOG}" || true
-REQ="$(grep -Eo '[0-9a-f]{8}-([0-9a-f]{4}-){3}[0-9a-f]{12}' "${SUBMIT_LOG}" | head -1)"
+SUBMISSION_ID="$(grep -Eo '[0-9a-f]{8}-([0-9a-f]{4}-){3}[0-9a-f]{12}' "${SUBMIT_LOG}" | head -1)"
 # 不拿 exit code 當判準。notarytool 對「命令自己失敗」是有紀律的（實測：profile
 # 不存在回 69、檔案不存在回 64、合約過期回 403 且非零），但「送出成功、而 Apple
 # 判 Invalid」會不會也回非零，本專案**還沒有樣本**。看它印出來的 status 在兩種
@@ -277,14 +284,14 @@ if ! grep -qE 'status: *Accepted' "${SUBMIT_LOG}"; then
     # `|| true`：在 set -e ＋ pipefail 底下，這條管線失敗（憑證過期、斷網）會讓
     # 整支當場終止，下面的 die 與 submission id 那句話就永遠印不出來——失敗診斷
     # 反而被失敗吃掉。這正是檔頭記過的同一個坑。
-    if [[ -n "${REQ}" ]]; then
-        xcrun notarytool log "${REQ}" --keychain-profile "${PROFILE}" 2>&1 | sed 's/^/  /' || true
+    if [[ -n "${SUBMISSION_ID}" ]]; then
+        xcrun notarytool log "${SUBMISSION_ID}" --keychain-profile "${PROFILE}" 2>&1 | sed 's/^/  /' || true
     fi
     rm -f "${SUBMIT_LOG}"
-    die "notarize 失敗（submission ${REQ:-未知}）"
+    die "notarize 失敗（submission ${SUBMISSION_ID:-未知}）"
 fi
 rm -f "${SUBMIT_LOG}"
-ok "Accepted（submission ${REQ}）"
+ok "Accepted（submission ${SUBMISSION_ID}）"
 
 say "8／9 staple"
 xcrun stapler staple "${DMG}"

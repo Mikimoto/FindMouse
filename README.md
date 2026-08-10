@@ -81,7 +81,7 @@ findmouse pack use <id>
 findmouse pack validate <目錄>
 ```
 
-- 內建：`test-blocks`（開發用的色塊）
+- 內建：`mycat`（出廠預設，就是那隻貓）、`test-blocks` 與 `test-blocks-tall`（開發用的色塊）
 - 使用者的：`~/Library/Application Support/FindMouse/Packs/<id>/`
 - 缺 flourish 只會降級，缺任一 teaser 則逗貓棒不可用，缺 core 則整套無效
 
