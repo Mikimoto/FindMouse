@@ -28,8 +28,13 @@ VERIFY_TARGET=""
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --dry-run)     MODE=dry; shift ;;
-        --verify-only) MODE=verify; VERIFY_TARGET="${2:-}"; shift 2 ;;
-        --profile)     PROFILE="${2:-}"; shift 2 ;;
+        # 先驗參數個數再 shift。`shift 2` 在只剩一個參數時會失敗，而 set -e
+        # 讓整支當場死掉——實測 `release.sh --verify-only` 回 exit=1 且**零輸出**，
+        # 底下那句「找不到 …」永遠走不到。用錯旗標的人只會看到一片空白。
+        --verify-only) [[ $# -ge 2 ]] || die "--verify-only 後面要接一個 .dmg 路徑。"
+                       MODE=verify; VERIFY_TARGET="$2"; shift 2 ;;
+        --profile)     [[ $# -ge 2 ]] || die "--profile 後面要接 keychain profile 名稱。先跑一次：xcrun notarytool store-credentials <名稱>"
+                       PROFILE="$2"; shift 2 ;;
         -*)            die "不認得的選項 ${1}。用法見 Scripts/release.sh 檔頭。" ;;
         *)             VERSION="$1"; shift ;;
     esac
@@ -51,7 +56,7 @@ check() {
 }
 
 # 掛起來驗 dmg 裡面那個 .app——驗的是使用者真的會拿到的東西，不是手邊那份
-# staging 副本。四條都跑完才回報，不在第一條就 die：只紅一條與五條全紅
+# staging 副本。四條都跑完才回報，不在第一條就 die：只紅一條與四條全紅
 # 是完全不同的診斷，而前者常常代表後面幾條根本沒執行。
 verify_dmg() {
     local dmg="$1" mnt app rc=0
@@ -91,6 +96,15 @@ verify_quarantined() {
     dir="$(mktemp -d)"; tmp="${dir}/$(basename "${dmg}")"
     cp "${dmg}" "${tmp}"
     xattr -w com.apple.quarantine "0081;00000000;Safari;$(uuidgen)" "${tmp}"
+    # 讀回來確認屬性真的在。少了這一步，`cp` 或 `xattr -w` 失敗時第二輪會在一個
+    # **沒有隔離屬性**的副本上跑完四條、全部通過，卻仍掛在「已加隔離屬性」的標題
+    # 底下回報——而這一輪正是整個驗收唯一測得到「使用者從網路下載會不會被擋」的
+    # 地方（前一輪在本機幾乎必過）。那會讓最重要的那條變成沒有內容的恆真句。
+    xattr -p com.apple.quarantine "${tmp}" >/dev/null 2>&1 || {
+        printf '  \033[31m✗\033[0m 隔離屬性沒設上去，這一輪測不到「從網路下載」那條路徑\n'
+        rm -rf "${dir}"
+        return 1
+    }
     verify_dmg "${tmp}" || rc=1
     rm -rf "${dir}"
     return "${rc}"

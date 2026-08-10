@@ -69,13 +69,21 @@ fi
 
 # --- 3 -------------------------------------------------------------------
 step "3. 測試素材不會混進 .app"
-FOUND="$(/usr/bin/find "${ROOT}/build/release/FindMouse.app" -name '*Tests*' 2>/dev/null)"
-[[ -z "${FOUND}" ]] && ok "app 裡沒有 *Tests*" || bad "app 裡有測試素材：${FOUND}"
+# 先確認那個 .app 真的在。少了這一步，`--dry-run` 若在組裝之前就失敗
+# （`rm -rf "${STAGE}"` 已經執行過），`find` 對不存在的路徑回空字串，
+# 這一條就報 ✓ 而其實什麼都沒檢查。
+if [[ ! -d "${ROOT}/build/release/FindMouse.app" ]]; then
+    bad "build/release/FindMouse.app 不存在，這一條沒有被評估（前一組的 --dry-run 大概沒跑完）"
+else
+    FOUND="$(/usr/bin/find "${ROOT}/build/release/FindMouse.app" -name '*Tests*' 2>/dev/null)"
+    [[ -z "${FOUND}" ]] && ok "app 裡沒有 *Tests*" || bad "app 裡有測試素材：${FOUND}"
+fi
 
 # --- 4 -------------------------------------------------------------------
 step "4. 驗收會對壞產物說 no（負向對照組）"
-# 拿一個沒簽過的 .app 包成 dmg。它該把五條驗收全部踩紅——
-# 實測 ad-hoc 產物：codesign 回 1、spctl 回 1、stapler 回 65。
+# 拿一個沒簽過的 .app 包成 dmg。四條驗收會跑兩輪（原檔一輪、加了隔離屬性的
+# 副本一輪），八條應該全部踩紅——實測 ad-hoc 產物：codesign 回 1、spctl 回 1、
+# stapler 回 65。
 TMP="$(mktemp -d)"
 BAD_DMG="${TMP}/unsigned.dmg"
 if hdiutil create -volname "FindMouse bad" -srcfolder "${ROOT}/build/release" \
@@ -86,12 +94,23 @@ if hdiutil create -volname "FindMouse bad" -srcfolder "${ROOT}/build/release" \
     else
         bad "沒簽的 dmg 竟然通過驗收——驗收沒有鑑別力，整個 A 等於沒做"
     fi
-    # 不只要非零，還要看得出**是哪幾條**紅的。全部紅才代表五條都真的跑了；
-    # 只紅一條可能是前面某條 die 掉，後面根本沒執行。
-    N_BAD="$(echo "${OUT}" | grep -c '✗')"
-    [[ "${N_BAD}" -ge 3 ]] \
-        && ok "至少三條各自報紅（實際 ${N_BAD} 條），不是第一條就 die 掉" \
-        || bad "只有 ${N_BAD} 條報紅，其他幾條可能根本沒跑到：${OUT}"
+    # 不只要非零，還要看得出**每一條**都真的跑了。
+    #
+    # 原本這裡寫「至少三條報紅」，那個門檻鬆到失去意義：`hdiutil attach` 若哪天
+    # 壞掉（改錯旗標、mountpoint 撞名），兩輪各印一條「掛不起來」加上結尾的 die
+    # 剛好就是三條，門檻照樣過——**測試全綠，而四條驗收一條都沒執行**。
+    # 所以改成逐條點名，每條都要在兩輪裡各出現一次。
+    #
+    # grep 的 pattern 用 `✗.*<標籤>` 而不是 `✗ <標籤>`：✗ 與標籤之間夾著
+    # 一段 ANSI 重設碼（`\033[0m`），寫成一個空格永遠對不上。
+    MISSING=""
+    for label in "codesign --verify" "spctl app" "spctl dmg" "stapler validate"; do
+        n="$(echo "${OUT}" | grep -c "✗.*${label}")"
+        [[ "${n}" -eq 2 ]] || MISSING="${MISSING} ${label}(${n}次)"
+    done
+    [[ -z "${MISSING}" ]] \
+        && ok "四條驗收各自報紅兩次（原檔一輪＋加隔離屬性一輪）" \
+        || bad "有驗收沒跑到或次數不對：${MISSING}"
 else
     bad "造不出測試用的 dmg"
 fi
