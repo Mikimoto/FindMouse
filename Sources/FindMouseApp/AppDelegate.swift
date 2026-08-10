@@ -94,7 +94,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         let form = makeSettingsFormStore()
         settingsForm = form
-        settingsWindow = SettingsWindowController(store: form)
+        settingsWindow = SettingsWindowController(store: form, loginItem: loginItem)
 
         let menuBar = MenuBarController(
             onToggleCat: { [weak self] in self?.enqueue(.toggle) },

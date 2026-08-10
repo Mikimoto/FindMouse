@@ -1,5 +1,7 @@
 import AppKit
+import FindMouseAdapters
 import FindMouseCore
+import FindMouseDomain
 import SwiftUI
 
 /// 設定視窗（spec 第 9 節那張表 UI 欄打 ✓ 的 8 項）。
@@ -16,8 +18,8 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
     private let model: SettingsViewModel
     private var window: NSWindow?
 
-    init(store: SettingsFormStore) {
-        model = SettingsViewModel(store: store)
+    init(store: SettingsFormStore, loginItem: LoginItemGateway) {
+        model = SettingsViewModel(store: store, loginItem: loginItem)
     }
 
     func show() {
@@ -67,11 +69,37 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
 final class SettingsViewModel: ObservableObject {
 
     private let store: SettingsFormStore
+    private let loginItem: LoginItemGateway
     @Published private(set) var snapshot = SettingsFormStore.Snapshot()
+    /// 開機啟動的當下狀態。**不是我們存的設定，是系統狀態的快照**——
+    /// `refreshLoginItem()` 是唯一寫它的地方。
+    @Published private(set) var loginItemState: LoginItem.State = .ineligible
 
-    init(store: SettingsFormStore) {
+    init(store: SettingsFormStore, loginItem: LoginItemGateway) {
         self.store = store
+        self.loginItem = loginItem
     }
+
+    /// 重讀一次系統狀態。
+    func refreshLoginItem() { loginItemState = loginItem.state }
+
+    func setLoginItem(_ on: Bool) {
+        // 決策走 Domain 那張表，UI 不自己判斷「現在該註冊還是取消」。
+        // `try?` 是刻意的：失敗與成功走同一條路——重讀狀態，讓畫面顯示
+        // 系統的實況。吞掉的錯誤不會變成假象，因為勾的值來自重讀而不是
+        // 來自「我剛剛按了什麼」。
+        let outcome = LoginItem.decide(on ? .on : .off, from: loginItem.state)
+        switch outcome.effect {
+        case .none:       break
+        case .register:   try? loginItem.register()
+        case .unregister: try? loginItem.unregister()
+        }
+        // 立刻重讀。使用者在 requiresApproval 下按勾時，勾會自己彈回去——
+        // 那看起來像「按了沒反應」，所以說明那一行必須在**同一次更新**裡出現。
+        refreshLoginItem()
+    }
+
+    func openLoginItemSettings() { loginItem.openSystemSettings() }
 
     func kind(of key: String) -> SettingKind? { store.kind(of: key) }
 
@@ -97,6 +125,8 @@ private struct SettingsRootView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
+            loginItemRow
+            Divider()
             packSection
             Divider()
             scaleRow
@@ -117,6 +147,52 @@ private struct SettingsRootView: View {
         // 每個欄位各掛一個的話，切換焦點時兩個欄位會各收到一次。
         .onChange(of: focused) { previous, _ in
             if let previous { model.commitDraft(previous) }
+        }
+        // 勾選框是系統狀態的鏡子，我們不自己存一份——代價是要在這兩個時機
+        // 重讀。不輪詢，但要接住最常見的那條路：使用者跑去系統設定關掉、
+        // 再切回來。不加的話畫面會停在一個過期的勾。
+        .onAppear { model.refreshLoginItem() }
+        .onReceive(NotificationCenter.default.publisher(
+            for: NSApplication.didBecomeActiveNotification)) { _ in
+            model.refreshLoginItem()
+        }
+    }
+
+    // MARK: - 開機啟動
+
+    /// 判斷全在 `LoginItem.presentation`（Domain，有測試），這裡只有版面配置
+    /// ——與檔頭那條「所有判斷都在有測試的那一層」一致。
+    private var loginItemRow: some View {
+        let p = LoginItem.presentation(for: model.loginItemState)
+        return VStack(alignment: .leading, spacing: 4) {
+            HStack {
+                Text("開機時啟動").frame(width: 150, alignment: .leading)
+                Toggle("", isOn: Binding(get: { p.checked },
+                                         set: { model.setLoginItem($0) }))
+                    .labelsHidden()
+                    .disabled(!p.interactive)
+                Spacer()
+            }
+            if let note = p.note {
+                HStack(spacing: 8) {
+                    Text(noteText(note))
+                        .font(.caption).foregroundStyle(.secondary)
+                    if note == .needsApproval {
+                        Button("打開登入項目設定") { model.openLoginItemSettings() }
+                            .buttonStyle(.link).font(.caption)
+                    }
+                }
+                .padding(.leading, 150)
+            }
+        }
+    }
+
+    private func noteText(_ note: LoginItem.Note) -> String {
+        switch note {
+        case .mustBeInApplications:
+            return "要先把 FindMouse 拖進「應用程式」資料夾才能設定"
+        case .needsApproval:
+            return "macOS 需要你核准才會生效"
         }
     }
 
