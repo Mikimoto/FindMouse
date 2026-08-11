@@ -41,20 +41,31 @@ private final class Box<T>: @unchecked Sendable {
 
 /// 一套 pack 衍生出來的兩個 use case。換 pack 時 App 會把兩個一起重建
 /// （它們的 `catalog` 都是 `private let`），所以測試裡也綁成一包換。
-private struct Wiring {
+/// **class 而不是 struct**，只為了有 `deinit` 可以清掉 suite。
+///
+/// `UserDefaults(suiteName:)` 會在 `~/Library/Preferences/` 落一個 plist，
+/// 而這裡的名字每建一個 Wiring 就換一個新 UUID——實測累積到 2604 個才被發現。
+/// 那個洩漏沒有任何訊號：測試照樣綠、磁碟慢慢長大。
+///
+/// deinit 的時機在這裡是安全的：所有對 settings 的存取都經過持有它的
+/// `Fixture`，所以 Wiring 不可能在測試還在寫入時就被釋放。
+private final class Wiring {
     let control: ControlUseCase
     let settings: SettingsUseCase
+    private let suiteName: String
 
     init(teaser: Bool = true, logicalHeight: CGFloat = 96) {
         let catalog = RouterCatalog(teaser: teaser, logicalHeight: logicalHeight)
         control = ControlUseCase(catalog: catalog)
         // 每個 Wiring 一個獨立的 suite：換 pack 時 store 本身不會換，但測試要能
         // 分辨「讀到新的那份」與「讀到舊的那份」，共用 suite 就分不出來。
+        suiteName = borrowSuiteName("com.findmouse.router")
         settings = SettingsUseCase(
-            store: SettingsGateway(defaults: UserDefaults(
-                suiteName: "com.findmouse.router.\(UUID().uuidString)")!),
+            store: SettingsGateway(defaults: UserDefaults(suiteName: suiteName)!),
             catalog: catalog)
     }
+
+    deinit { removeSuite(suiteName) }
 }
 
 /// 測試用的登入項目：狀態可以直接指定，並記錄有沒有被要求碰系統。
