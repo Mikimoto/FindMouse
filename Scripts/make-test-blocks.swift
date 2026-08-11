@@ -1,7 +1,7 @@
+#!/usr/bin/env swift
 // Copyright 2026 Mikimoto
 // SPDX-License-Identifier: Apache-2.0
 
-#!/usr/bin/env swift
 // 產生 spec 第 6.6 節的 test-blocks pack 與三個刻意壞掉的 fixture。
 //
 // 用法：

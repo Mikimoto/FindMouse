@@ -684,3 +684,13 @@ private func settingValue(_ f: Fixture, _ key: String) throws -> String {
     let error = try decodeError(Fixture().send("login-item.toggle"))
     #expect(error.code == .unknownCommand)
 }
+
+@Test func loginItemDoesNotReportSuccessWhenTheStateDidNotMove() throws {
+    // 「呼叫沒丟例外」不等於「達成了」。register() 回來之後狀態若原地不動，
+    // 重判會再次要求同一個副作用——那時回 0 會讓 `login-item on && …` 誤判。
+    let f = Fixture(loginItemState: .notRegistered)
+    f.loginItem.stateAfterRegister = .notRegistered   // 呼叫成功但狀態沒動
+    let error = try decodeError(f.send("login-item.on"))
+    #expect(error.code == .loginItemRegisterFailed)
+    #expect(f.loginItem.registerCalls == 1)
+}

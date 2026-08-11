@@ -34,7 +34,11 @@ public final class SystemLoginItem: LoginItemGateway {
                         .appendingPathComponent("Applications"),
                 ]) {
         self.bundleURL = bundleURL
-        self.roots = roots
+        // roots 也要解 symlink，否則與已解過的 bundleURL 比不起來。
+        // 家目錄在外接磁碟、由 symlink 指過去時，真的裝在 ~/Applications 的 app
+        // 會永遠判成 ineligible，勾變成灰的還配一句「請拖進應用程式資料夾」——
+        // 而它已經在那裡了。`standardizedFileURL` 不解 symlink，只做路徑正規化。
+        self.roots = roots.map { $0.resolvingSymlinksInPath() }
     }
 
     public var state: LoginItem.State {
@@ -48,12 +52,14 @@ public final class SystemLoginItem: LoginItemGateway {
         case .enabled:          return .enabled
         case .requiresApproval: return .requiresApproval
         case .notFound:         return .notFound
-        // 未來的 macOS 加了新狀態時，當成 notFound 而不是硬當成 enabled——
-        // 猜錯的方向要選「看起來壞掉」而不是「看起來正常」。
+        // 未來的 macOS 加了新狀態時當成 notFound。
         //
-        // 實測（2026-08-11）notFound 的行為等同 notRegistered（可以點、on 會
-        // 去 register），所以這個 fallback 的代價是「使用者按一次 register，
-        // 成功就成功、失敗有說明」——比假裝已經開著安全。
+        // 注意這**不是**「往看起來壞掉的方向猜」：實測之後 notFound 的行為
+        // 等同 notRegistered，可以點、on 會去 register、CLI 印「關」。所以這個
+        // fallback 的實際代價是「顯示成還沒開，使用者按一下就會嘗試註冊，
+        // 成功就成功、失敗有說明」。若那個新狀態其實代表「已註冊」，畫面會
+        // 少報一個開著的項目——要避免那個就得為它開一個帶說明的獨立狀態，
+        // 而在真的出現之前沒有東西可以驗，所以先不預先造。
         @unknown default:       return .notFound
         }
     }

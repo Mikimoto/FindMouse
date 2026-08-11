@@ -193,6 +193,11 @@ SHA="$(git rev-parse --short HEAD)"
 # 而且不管 git 歷史怎麼被重寫都只會往上。跨日、跨月、跨年都遞增：
 # 2026.0811.0300 → 2026.0812.0100 → 2027.0101.0001。
 # 追溯「這是哪一版」靠檔名裡的 sha 與 CFBundleShortVersionString，不靠這個數字。
+#
+# 兩件講清楚免得被當成保證：這是**分鐘**解析度，同一分鐘內發兩次會拿到同一個
+# 數字（單調遞增仍成立，唯一性不成立）；而各段有前導零（`0811`），LaunchServices
+# 逐段當整數比所以排序沒問題，但 **App Store Connect 收不收前導零本專案還沒驗過**
+# ——第一次上傳 ASC 前先手動確認一次。
 BUILD_NUMBER="$(date -u +%Y.%m%d.%H%M)"
 ok "${VERSION}（build ${BUILD_NUMBER}）@ ${SHA}"
 

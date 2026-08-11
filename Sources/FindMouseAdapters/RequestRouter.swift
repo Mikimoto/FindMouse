@@ -129,6 +129,18 @@ public final class RequestRouter {
                 error: WireError(code: code(for: failure),
                                  message: message(for: failure))))
         }
+        // 副作用跑完之後，重判的結果若**還要求同一個副作用**，代表呼叫沒有丟
+        // 例外但狀態也沒有動——那是「成功了但沒達成」，不能回 0。少了這一條，
+        // `login-item on` 會在項目其實還關著的情況下回成功，而 `on && …` 這種
+        // 寫法就此誤判。實測 register() 是立刻反映的，所以這條走不到；留著是
+        // 因為它守的正是「不要假設呼叫成功等於達成」那個前提本身。
+        if outcome.effect != .none && final.effect == outcome.effect {
+            return encode(WireResponse<LoginItemPayload>(error: WireError(
+                code: .loginItemRegisterFailed,
+                message: "跟 macOS 溝通沒有回報錯誤，但狀態仍然是"
+                       + "\(after.rawValue)，設定沒有生效。"
+                       + "到「系統設定 → 一般 → 登入項目」看一下 FindMouse 的狀態。")))
+        }
         return encode(WireResponse(data: LoginItemPayload(state: after.rawValue)))
     }
 

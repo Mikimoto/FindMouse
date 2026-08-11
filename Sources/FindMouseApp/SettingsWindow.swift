@@ -77,29 +77,44 @@ final class SettingsViewModel: ObservableObject {
     /// 開機啟動的當下狀態。**不是我們存的設定，是系統狀態的快照**——
     /// `refreshLoginItem()` 是唯一寫它的地方。
     @Published private(set) var loginItemState: LoginItem.State = .ineligible
+    /// 上一次操作丟出來的錯誤。**不能只是吞掉**：`SMAppService` 真的丟例外時
+    /// 狀態會停在 `notRegistered`，而那個狀態的 `presentation` 沒有說明文字，
+    /// 於是勾彈回去、畫面一個字都不說——正是這個設計最想避免的「按了沒反應」。
+    /// CLI 走同一條路會拿到 `LOGIN_ITEM_REGISTER_FAILED` 加一句可行動的訊息，
+    /// 兩邊不該有這種落差。
+    @Published private(set) var loginItemError: String?
 
     init(store: SettingsFormStore, loginItem: LoginItemGateway) {
         self.store = store
         self.loginItem = loginItem
     }
 
-    /// 重讀一次系統狀態。
-    func refreshLoginItem() { loginItemState = loginItem.state }
+    /// 重讀一次系統狀態。順便清掉上一次的錯誤：重讀代表我們現在顯示的是
+    /// 系統實況，舊的失敗訊息留著只會誤導。
+    func refreshLoginItem() {
+        loginItemState = loginItem.state
+        loginItemError = nil
+    }
 
     func setLoginItem(_ on: Bool) {
         // 決策走 Domain 那張表，UI 不自己判斷「現在該註冊還是取消」。
-        // `try?` 是刻意的：失敗與成功走同一條路——重讀狀態，讓畫面顯示
-        // 系統的實況。吞掉的錯誤不會變成假象，因為勾的值來自重讀而不是
-        // 來自「我剛剛按了什麼」。
         let outcome = LoginItem.decide(on ? .on : .off, from: loginItem.state)
-        switch outcome.effect {
-        case .none:       break
-        case .register:   try? loginItem.register()
-        case .unregister: try? loginItem.unregister()
+        var failure: String?
+        do {
+            switch outcome.effect {
+            case .none:       break
+            case .register:   try loginItem.register()
+            case .unregister: try loginItem.unregister()
+            }
+        } catch {
+            failure = "跟 macOS 溝通時失敗了：\(error.localizedDescription)。"
+                    + "把 FindMouse 重新拖進「應用程式」資料夾再試一次。"
         }
         // 立刻重讀。使用者在 requiresApproval 下按勾時，勾會自己彈回去——
         // 那看起來像「按了沒反應」，所以說明那一行必須在**同一次更新**裡出現。
         refreshLoginItem()
+        // refreshLoginItem 會清掉錯誤，所以這一行要在它之後。
+        loginItemError = failure
     }
 
     func openLoginItemSettings() { loginItem.openSystemSettings() }
@@ -186,6 +201,13 @@ private struct SettingsRootView: View {
                     }
                 }
                 .padding(.leading, 150)
+            }
+            // 失敗訊息與 note 並存：note 講的是「這個狀態是什麼」，
+            // 這一行講的是「你剛剛那一下為什麼沒成功」。
+            if let error = model.loginItemError {
+                Text(error)
+                    .font(.caption).foregroundStyle(.red)
+                    .padding(.leading, 150)
             }
         }
     }
