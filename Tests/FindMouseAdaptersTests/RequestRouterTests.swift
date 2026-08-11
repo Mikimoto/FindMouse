@@ -676,6 +676,10 @@ private func settingValue(_ f: Fixture, _ key: String) throws -> String {
     f.loginItem.throwOnMutate = NSError(domain: "SMAppServiceErrorDomain", code: 1)
     let error = try decodeError(f.send("login-item.on"))
     #expect(error.code == .loginItemRegisterFailed)
+    // 三元的**另一半**也要釘住。只驗 off 那半的話，關閉那條測試的
+    // `!contains("拖進")` 會在有人改寫註冊那句措辭時靜默退化成恆真句。
+    #expect(error.message.contains("拖進"), "註冊失敗要給安裝建議：\(error.message)")
+    #expect(!error.message.contains("系統設定"), "註冊失敗不該指向系統設定：\(error.message)")
 }
 
 @Test func unknownLoginItemVerbIsAnUnknownCommand() throws {
@@ -746,4 +750,7 @@ private func settingValue(_ f: Fixture, _ key: String) throws -> String {
     let error = try decodeError(f.send("login-item.on"))
     #expect(error.code == .loginItemRegisterFailed)
     #expect(f.loginItem.registerCalls == 1)
+    // 這個 code 與「呼叫丟例外」那條共用，只驗 code 分不出是哪一條路徑觸發的
+    #expect(error.message.contains("仍然沒有生效"),
+            "應該是守衛觸發而不是 catch：\(error.message)")
 }

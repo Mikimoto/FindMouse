@@ -77,12 +77,14 @@ final class SettingsViewModel: ObservableObject {
     /// 開機啟動的當下狀態。**不是我們存的設定，是系統狀態的快照**——
     /// `refreshLoginItem()` 是唯一寫它的地方。
     @Published private(set) var loginItemState: LoginItem.State = .ineligible
-    /// 上一次操作丟出來的錯誤。**不能只是吞掉**：`SMAppService` 真的丟例外時
-    /// 狀態不會動，而它停在的那個狀態多半沒有說明文字（`notRegistered` 與
-    /// `notFound` 都沒有），於是勾彈回去、畫面一個字都不說——正是這個設計
-    /// 最想避免的「按了沒反應」。關閉失敗時更糟：勾根本不動。
+    /// 上一次操作失敗的說明。**不能只是吞掉**：操作沒達成時，狀態多半停在一個
+    /// 沒有說明文字的格子（`notRegistered` 與 `notFound` 都沒有），於是勾彈回去、
+    /// 畫面一個字都不說——正是這個設計最想避免的「按了沒反應」。
+    ///
     /// CLI 走同一條路會拿到 `LOGIN_ITEM_REGISTER_FAILED` 加一句可行動的訊息，
-    /// 兩邊不該有這種落差——包含**訊息要分方向**，兩邊都是。
+    /// 兩邊不該有落差。這條分支已經有三輪 review 抓到「只修了其中一面」，
+    /// 所以這裡列出必須同時成立的三件事，改任何一邊都回來對一次：
+    /// **訊息要分方向**、**呼叫沒丟例外但狀態沒動也要說話**、兩者 CLI 與 GUI 都要有。
     @Published private(set) var loginItemError: String?
 
     init(store: SettingsFormStore, loginItem: LoginItemGateway) {
@@ -108,14 +110,11 @@ final class SettingsViewModel: ObservableObject {
             case .unregister: try loginItem.unregister()
             }
         } catch {
-            // 訊息要分方向。同一個 catch 罩住 register 與 unregister，而
-            // 「重新拖進應用程式資料夾」對關閉失敗是錯的建議：那時 app 本來
-            // 就在那裡，而且勾會停在打勾狀態（狀態沒變），使用者看到的是
-            // 「我按了關、它還開著、然後叫我搬家」。
-            // 不寫「它現在仍然是開著的」：unregister() 丟例外之後狀態會停在
-            // 哪裡沒有量過，而這句話是在 refreshLoginItem() 之前組的。萬一它
-            // 其實已經關掉了，使用者會看到一個沒打勾的框配一句「仍然開著」。
-            // 可行動的那半句本來就站得住，不需要那個前提。
+            // 訊息要分方向。「重新拖進應用程式資料夾」對關閉失敗是錯的建議，
+            // 而且是可證明錯的：走得到 .unregister 表示狀態是 enabled 或
+            // requiresApproval，兩者都已經通過合格性閘門，所以 App 必然已經
+            // 在那個資料夾裡了。這裡刻意不提「它現在還開著」之類的狀態斷言
+            // ——unregister() 丟例外之後狀態停在哪裡沒有量過。
             failure = outcome.effect == .unregister
                 ? "關閉開機啟動時失敗了：\(error.localizedDescription)。"
                     + "到「系統設定 → 一般 → 登入項目」可以直接關掉它。"
@@ -125,6 +124,19 @@ final class SettingsViewModel: ObservableObject {
         // 立刻重讀。使用者在 requiresApproval 下按勾時，勾會自己彈回去——
         // 那看起來像「按了沒反應」，所以說明那一行必須在**同一次更新**裡出現。
         refreshLoginItem()
+
+        // 沒丟例外，但狀態也沒動。`RequestRouter` 對 CLI 有同一道守衛
+        // （loginItemCommand 的 final.effect == .register 那條），GUI 少了它
+        // 就會在**最常見的第一次點擊**上沉默：全新安裝是 notFound，
+        // presentation 給的是「沒打勾、沒有說明」，於是勾彈回去、一個字都沒有。
+        //
+        // 與 CLI 那條同樣只罩 register：unregister 之後狀態會回報什麼沒有量過。
+        if failure == nil, outcome.effect == .register,
+           LoginItem.decide(.on, from: loginItemState).effect == .register {
+            failure = "跟 macOS 註冊時沒有回報錯誤，但開機啟動仍然沒有生效。"
+                    + "到「系統設定 → 一般 → 登入項目」看一下 FindMouse 的狀態。"
+        }
+
         // refreshLoginItem 會清掉錯誤，所以這一行要在它之後。
         loginItemError = failure
     }
