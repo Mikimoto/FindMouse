@@ -43,7 +43,10 @@ fi
 
 # --- 2 -------------------------------------------------------------------
 step "2. --dry-run 把版本戳對地方"
-WANT_BUILD="$(git rev-list --count HEAD)"
+# 跑之前先記下時間戳。build number 是 date 產生的，所以不能比對「相等」
+# ——release.sh 執行到那一行時分鐘可能已經跳掉。改成比對「不早於此刻」，
+# 這個零填充格式的字串比較等同時間順序。
+BEFORE_BUILD="$(date -u +%Y.%m%d.%H%M)"
 Scripts/release.sh 9.9.9 --dry-run >/dev/null 2>&1 || bad "--dry-run 自己就失敗了"
 PL="${ROOT}/build/release/FindMouse.app/Contents/Info.plist"
 if [[ -f "${PL}" ]]; then
@@ -52,9 +55,14 @@ if [[ -f "${PL}" ]]; then
     [[ "${GOT_SHORT}" == "9.9.9" ]] \
         && ok "CFBundleShortVersionString = 9.9.9" \
         || bad "CFBundleShortVersionString 是 ${GOT_SHORT}"
-    [[ "${GOT_BUILD}" == "${WANT_BUILD}" ]] \
-        && ok "CFBundleVersion = ${WANT_BUILD}（git rev-list --count）" \
-        || bad "CFBundleVersion 是 ${GOT_BUILD}，期望 ${WANT_BUILD}"
+    [[ "${GOT_BUILD}" =~ ^[0-9]{4}\.[0-9]{4}\.[0-9]{4}$ ]] \
+        && ok "CFBundleVersion = ${GOT_BUILD}（三段時間戳，格式正確）" \
+        || bad "CFBundleVersion 是 ${GOT_BUILD}，不是 YYYY.MMDD.HHMM 三段各四位數的形狀"
+    # 單調遞增是這個欄位存在的理由。用 rev-list --count 時它被歷史重寫打回頭過
+    # （195 → 136，比已經發出去的還小），所以這裡要真的驗一次方向。
+    [[ ! "${GOT_BUILD}" < "${BEFORE_BUILD}" ]] \
+        && ok "CFBundleVersion 不早於發布開始的那一刻（${BEFORE_BUILD}）" \
+        || bad "CFBundleVersion ${GOT_BUILD} 比跑之前的 ${BEFORE_BUILD} 還早——時間倒退了？"
 else
     bad "--dry-run 沒組出 .app"
 fi

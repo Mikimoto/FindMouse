@@ -182,7 +182,18 @@ say "1／9 工作樹與版本"
 SHA="$(git rev-parse --short HEAD)"
 # CFBundleVersion 必須單調遞增。寫死 1 的話，發三個測試版全都是 1，
 # 「你手上是哪一版」就無法回答——而那正是 A 的全部目的。
-BUILD_NUMBER="$(git rev-list --count HEAD)"
+#
+# **不用 `git rev-list --count`。** 它踩過：2026-08-11 把 docs/superpowers 從歷史
+# 清除，61 個只碰那些文件的 commit 變成空 commit 被剪掉，commit 數從 195 掉到
+# 136——而 0.3.0 已經帶著 195 發出去並裝在 /Applications。下一版會是 136，
+# 比使用者手上那份**還小**，而 macOS 與 App Store Connect 都用這個數字判新舊。
+# 那個倒退不會有任何錯誤訊息。
+#
+# 改用時間戳：三段各不超過四位數（Apple 要求最多三個以句點分隔的非負整數），
+# 而且不管 git 歷史怎麼被重寫都只會往上。跨日、跨月、跨年都遞增：
+# 2026.0811.0300 → 2026.0812.0100 → 2027.0101.0001。
+# 追溯「這是哪一版」靠檔名裡的 sha 與 CFBundleShortVersionString，不靠這個數字。
+BUILD_NUMBER="$(date -u +%Y.%m%d.%H%M)"
 ok "${VERSION}（build ${BUILD_NUMBER}）@ ${SHA}"
 
 # Xcode 27 還是 beta。等正式版出來要送 App Store Connect 時，得知道先前發出去的
