@@ -82,7 +82,7 @@ final class SettingsViewModel: ObservableObject {
     /// `notFound` 都沒有），於是勾彈回去、畫面一個字都不說——正是這個設計
     /// 最想避免的「按了沒反應」。關閉失敗時更糟：勾根本不動。
     /// CLI 走同一條路會拿到 `LOGIN_ITEM_REGISTER_FAILED` 加一句可行動的訊息，
-    /// 兩邊不該有這種落差。
+    /// 兩邊不該有這種落差——包含**訊息要分方向**，兩邊都是。
     @Published private(set) var loginItemError: String?
 
     init(store: SettingsFormStore, loginItem: LoginItemGateway) {
@@ -112,12 +112,15 @@ final class SettingsViewModel: ObservableObject {
             // 「重新拖進應用程式資料夾」對關閉失敗是錯的建議：那時 app 本來
             // 就在那裡，而且勾會停在打勾狀態（狀態沒變），使用者看到的是
             // 「我按了關、它還開著、然後叫我搬家」。
-            let what = outcome.effect == .unregister
+            // 不寫「它現在仍然是開著的」：unregister() 丟例外之後狀態會停在
+            // 哪裡沒有量過，而這句話是在 refreshLoginItem() 之前組的。萬一它
+            // 其實已經關掉了，使用者會看到一個沒打勾的框配一句「仍然開著」。
+            // 可行動的那半句本來就站得住，不需要那個前提。
+            failure = outcome.effect == .unregister
                 ? "關閉開機啟動時失敗了：\(error.localizedDescription)。"
-                    + "它現在仍然是開著的，可以到「系統設定 → 一般 → 登入項目」直接關。"
+                    + "到「系統設定 → 一般 → 登入項目」可以直接關掉它。"
                 : "跟 macOS 註冊時失敗了：\(error.localizedDescription)。"
                     + "把 FindMouse 重新拖進「應用程式」資料夾再試一次。"
-            failure = what
         }
         // 立刻重讀。使用者在 requiresApproval 下按勾時，勾會自己彈回去——
         // 那看起來像「按了沒反應」，所以說明那一行必須在**同一次更新**裡出現。

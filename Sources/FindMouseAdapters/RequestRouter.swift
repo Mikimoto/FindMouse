@@ -111,10 +111,16 @@ public final class RequestRouter {
             case .unregister: try loginItem.unregister()
             }
         } catch {
-            return encode(WireResponse<LoginItemPayload>(error: WireError(
-                code: .loginItemRegisterFailed,
-                message: "跟 macOS 註冊開機啟動時失敗了：\(error.localizedDescription)。"
-                       + "把 FindMouse 重新拖進「應用程式」資料夾再試一次。")))
+            // 訊息要分方向。走得到 .unregister 表示狀態是 enabled 或
+            // requiresApproval，而兩者都已經通過合格性閘門——App **必然**已經
+            // 在「應用程式」資料夾裡，這時叫人把它拖進去是可證明無用的建議。
+            let advice = outcome.effect == .unregister
+                ? "關閉開機啟動時失敗了：\(error.localizedDescription)。"
+                    + "到「系統設定 → 一般 → 登入項目」可以直接關掉它。"
+                : "跟 macOS 註冊開機啟動時失敗了：\(error.localizedDescription)。"
+                    + "把 FindMouse 重新拖進「應用程式」資料夾再試一次。"
+            return encode(WireResponse<LoginItemPayload>(
+                error: WireError(code: .loginItemRegisterFailed, message: advice)))
         }
 
         let after = loginItem.state

@@ -706,11 +706,11 @@ private func settingValue(_ f: Fixture, _ key: String) throws -> String {
     let tmp = URL(fileURLWithPath: NSTemporaryDirectory())
         .appendingPathComponent("fm-symlink-\(UUID().uuidString)")
     let real = tmp.appendingPathComponent("real")
+    defer { try? fm.removeItem(at: tmp) }
     let apps = real.appendingPathComponent("Applications")
     try fm.createDirectory(at: apps, withIntermediateDirectories: true)
     let app = apps.appendingPathComponent("FindMouse.app")
     try fm.createDirectory(at: app, withIntermediateDirectories: true)
-    defer { try? fm.removeItem(at: tmp) }
 
     // link -> real，root 用 link 那一側表達
     let link = tmp.appendingPathComponent("link")
@@ -724,4 +724,26 @@ private func settingValue(_ f: Fixture, _ key: String) throws -> String {
     // 回什麼取決於測試 process 自己的 bundle，不是這條要驗的東西。
     #expect(gateway.state != .ineligible,
             "root 經 symlink 表達時判成 ineligible，代表 roots 沒有被解析")
+}
+
+@Test func loginItemOffFailureSaysHowToTurnItOffNotHowToInstall() throws {
+    // 走得到 unregister 表示狀態是 enabled 或 requiresApproval，而兩者都已經
+    // 通過合格性閘門——App 必然已經在「應用程式」資料夾裡。這時叫人「重新拖
+    // 進應用程式資料夾」是可證明無用的建議。
+    let f = Fixture(loginItemState: .enabled)
+    f.loginItem.throwOnMutate = NSError(domain: "SMAppServiceErrorDomain", code: 1)
+    let error = try decodeError(f.send("login-item.off"))
+    #expect(error.code == .loginItemRegisterFailed)
+    #expect(error.message.contains("系統設定"), "關閉失敗要指向系統設定：\(error.message)")
+    #expect(!error.message.contains("拖進"), "關閉失敗不該叫人搬 App：\(error.message)")
+}
+
+@Test func loginItemOnFromNotFoundAlsoCatchesAStuckState() throws {
+    // 收窄後的守衛涵蓋 notRegistered 與 notFound 兩個起點，兩個都要有測試，
+    // 否則「只罩了其中一個」不會有任何訊號。
+    let f = Fixture(loginItemState: .notFound)
+    f.loginItem.stateAfterRegister = .notFound        // 呼叫成功但狀態沒動
+    let error = try decodeError(f.send("login-item.on"))
+    #expect(error.code == .loginItemRegisterFailed)
+    #expect(f.loginItem.registerCalls == 1)
 }
