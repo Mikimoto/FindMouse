@@ -1,3 +1,6 @@
+// Copyright 2026 Mikimoto
+// SPDX-License-Identifier: Apache-2.0
+
 import CoreGraphics
 import Foundation
 import FindMouseDomain
@@ -19,11 +22,14 @@ public enum StatusJSONPresenter {
     /// 回 -1 而不是 0：0 是個看起來很正常的答案，腳本不會發現它是瞎猜的。
     public static let noScreen = -1
 
+    /// - Parameter loginItemState: `LoginItem.State` 的 rawValue。
+    ///   由呼叫端問 gateway 拿——這一層是純投影，不去碰系統。
     public static func payload(state: CatFrameState,
                                appVersion: String,
                                packID: String,
                                packLogicalHeight: CGFloat,
-                               screens: [ScreenInfo]) -> StatusPayload {
+                               screens: [ScreenInfo],
+                               loginItemState: String) -> StatusPayload {
         // 索引與 scale 是**同一次查詢**的兩個結果，不是兩個獨立的答案。
         let index = StageReader.cursorScreenIndex(screens: screens.map(\.frame),
                                                   cursor: state.cursor)
@@ -45,7 +51,8 @@ public enum StatusJSONPresenter {
             pack: .init(id: packID, logicalHeight: Double(packLogicalHeight)),
             // 以**鼠標**為準，不是貓：spec 第 8.4 節。兩者可能在不同螢幕上。
             display: .init(screenIndex: index ?? noScreen,
-                           scale: Double(index.map { screens[$0].scale } ?? 1)))
+                           scale: Double(index.map { screens[$0].scale } ?? 1)),
+            loginItem: .init(state: loginItemState))
     }
 
     /// 暗幕不活躍時半徑也要歸零。

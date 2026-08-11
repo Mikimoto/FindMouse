@@ -1,3 +1,6 @@
+// Copyright 2026 Mikimoto
+// SPDX-License-Identifier: Apache-2.0
+
 import Foundation
 
 /// 回應信封。payload 用泛型而不是任意 JSON——欄位名進型別系統，

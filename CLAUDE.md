@@ -1,6 +1,10 @@
 # FindMouse — 給 Claude 的工作守則
 
 專案介紹在 `README.md`，設計權威在 `docs/superpowers/specs/2026-08-05-findmouse-design.md`。
+
+> **`docs/superpowers/` 不在版控裡**（2026-08-11 連同歷史一起清除，見 `.gitignore`）。
+> 本檔以下所有指向它的路徑都是**作者本機的檔案**——在乾淨的 clone 裡不存在，
+> 備份由作者自行安排。讀不到那些檔案時不要當成專案壞掉，改問使用者要。
 本檔只記**從程式碼看不出來、而且踩過會浪費時間**的東西。
 
 ## 先讀哪一份
@@ -44,6 +48,21 @@ SciPy 裝在它上面，讓 mise 換一個 python 進來會讓素材管線立刻
 - **`toggle` 不是幂等的。** 腳本裡一律用 `summon` / `dismiss`。
 - SwiftUI **只給設定視窗**。Overlay 維持純 AppKit ＋ CALayer——那裡有 spec 第 7.4 節
   的每帧預算，設定視窗一秒鐘畫不到一次。
+- **不要拿 `notarytool submit --wait` 的 exit code 當審查結果。** 它對「命令自己
+  失敗」是有紀律的（實測：profile 不存在回 69、檔案不存在回 64、合約過期回 403 並
+  非零），但「送出成功、而 Apple 判 `Invalid`」會不會也回非零，**本專案還沒實測過**。
+  `release.sh` 因此改看它印出來的 `status: Accepted`——那個訊號兩種情況下都對，
+  不必賭一個沒驗過的前提。
+- **驗收命令不接管線。** `codesign ... | tail` 的 exit code 來自 `tail`，接了就
+  每一條都通過。`release.sh` 的 `check()` 把輸出寫檔再讀，就是為了這個。
+
+- **開機啟動只在 `/Applications` 或 `~/Applications` 底下可用。** 開發時跑的是
+  `build/FindMouse.app`，那個勾**永遠是灰的**——那是刻意的，不是壞掉。同樣的閘門
+  也讓 e2e 不可能誤註冊。另外兩件實測過、從 SDK 文件看不出來的事：
+  `SMAppService.mainApp` **以 bundle id 為鍵**（從 `build/` 那份 `unregister()`
+  會把裝在 `/Applications` 那份一起關掉），而 `notFound` **是全新安裝的狀態**
+  不是壞掉（BTM 裡還沒有記錄，`register()` 從那裡呼叫是成功的）。量法與數據在
+  `docs/superpowers/specs/2026-08-10-login-item-design.md` 的〈未驗證的前提〉。
 
 ## 素材與 pack
 

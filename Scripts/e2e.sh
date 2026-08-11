@@ -73,7 +73,15 @@ export FINDMOUSE_SOCKET="/tmp/fm-e2e-$$.sock"
 # 釘住是因為「剛啟動載入的是 test-blocks」這類斷言否則會跟著使用者上次選了什麼
 # 而變——失敗的原因與被測物無關（實測踩過：使用者在設定視窗把 rest.duration
 # 調成 5，寫死出廠值 10 的那條斷言就紅了）。
-DEFAULTS_DOMAIN="com.findmouse.app"
+# 從 Info.plist 讀而不是寫死。這兩個值一旦漂掉，症狀是「e2e 去寫一個沒人讀的
+# domain」——App 讀到的還是使用者自己的設定，於是下面「載入的是內建 pack」那條
+# 會紅，而紅的原因與被測物完全無關（實測：使用者的 pack.id 是 mycat）。
+DEFAULTS_DOMAIN="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "${ROOT}/Scripts/Info.plist")"
+[[ -n "${DEFAULTS_DOMAIN}" ]] || {
+    echo "讀不到 ${ROOT}/Scripts/Info.plist 的 CFBundleIdentifier。"
+    echo "先跑 plutil -lint Scripts/Info.plist 看它是不是壞了；檔案沒壞就是那個 key 不見了，補回去。"
+    exit 1
+}
 SAVED_PACK_ID="$(defaults read "${DEFAULTS_DOMAIN}" pack.id 2>/dev/null || true)"
 defaults write "${DEFAULTS_DOMAIN}" pack.id -string "test-blocks"
 
@@ -537,8 +545,12 @@ rm -rf "${USER_PACKS:?}/e2e-dropin"
 kill_started
 launch_app
 for _ in $(seq 1 40); do "${FM}" status >/dev/null 2>&1 && break; sleep 0.5; done
-expect "$(field 'd["pack"]["id"]')" "test-blocks" "正在用的 pack 被刪掉，重啟退回內建"
-expect "$(field 'int(d["pack"]["logicalHeight"])')" "96" "退回的是真的內建那套，不是只改了 id"
+expect "$(field 'd["pack"]["id"]')" "mycat" "正在用的 pack 被刪掉，重啟退回內建"
+# 原本這裡比 logicalHeight，但出廠預設從 test-blocks 換成 mycat 之後那條失效了
+# ——兩套都是 96，比它分不出載入的是哪一套，斷言變成沒有內容。
+# 改用 sitIdle 的格數：mycat 4 格、test-blocks 2 格，而貓隱藏時的動作正是 sitIdle。
+expect "$(field 'int(d["cat"]["frameCount"])')" "4" \
+       "退回的是真的 mycat（sitIdle 4 格），不是只改了 id"
 
 # --- 13 ----------------------------------------------------------------------
 step "13. 逗貓棒真的跑起來（spec 第 3.2 / 4.5 節）"
@@ -552,8 +564,11 @@ step "13. 逗貓棒真的跑起來（spec 第 3.2 / 4.5 節）"
 #
 # 為什麼放在 step 12 之後：step 9 把 pack 換成 test-blocks-tall，而那套**缺 pounce**
 # （step 11 正是靠它驗 TEASER_UNAVAILABLE）。step 12 尾端的重啟把執行中的 pack
-# 帶回內建 test-blocks，這是整個腳本裡最後一段 teaser 可用的區間。
-expect "$(field 'd["pack"]["id"]')" "test-blocks" "前提：跑的是 teaser 齊全的內建 test-blocks"
+# 帶回**出廠預設**，這是整個腳本裡最後一段 teaser 可用的區間。
+#
+# 出廠預設從 test-blocks 換成 mycat 之後這裡跟著改。mycat 的 14 組動作齊全
+# （含 pounce），所以 teaser 照樣可用——換的只是 id。
+expect "$(field 'd["pack"]["id"]')" "mycat" "前提：跑的是 teaser 齊全的出廠預設 mycat"
 expect "$(field 'd["teaser"]["available"]')" "True" "前提：teaserAvailable"
 expect "$(field 'd["visible"]')" "False" "前提：貓不在畫面上（待會要看牠自己入場）"
 
@@ -734,6 +749,27 @@ elif /usr/bin/python3 -c "import sys; sys.exit(0 if ${EXIT_TRAVEL} > ${CURSOR_ST
 else
     bad "30 秒內沒有退場，而期間游標累計只動了 ${EXIT_TRAVEL} 點"
 fi
+
+# --- 14 ----------------------------------------------------------------------
+step "14. 開機啟動：不合格的位置會被擋（spec：login-item）"
+# e2e 跑的是 build/FindMouse.app，依設計它永遠不在「應用程式」資料夾裡，
+# 所以這裡驗得到的是**不合格**那條路——而那條路是真的端到端。
+#
+# **刻意不測 `login-item off`。** 它與 on 撞同一道閘門、同一個錯誤碼，
+# 多驗一次只是多一份維護。要驗 off 的破壞性後果得在合格位置上做，
+# 那屬於手動驗收（登入項目以 bundle id 為鍵，實測從不合格的拷貝
+# unregister 會把裝在 /Applications 那份一起關掉）。
+expect "$(field 'd["loginItem"]["state"]')" "ineligible" \
+       "status 裡的 loginItem.state 是 ineligible"
+
+OUT="$("${FM}" login-item --json 2>&1)"; CODE=$?
+expect "${CODE}" "0" "查詢本身不是錯誤，回 exit 0"
+expect "$(echo "${OUT}" | /usr/bin/python3 -c 'import json,sys; print(json.load(sys.stdin)["data"]["state"])')" \
+       "ineligible" "login-item 回的狀態與 status 一致"
+
+OUT="$("${FM}" login-item on --json 2>&1)"; CODE=$?
+expect "${CODE}" "1" "login-item on 在不合格的位置回 exit 1"
+expect "$(errcode "${OUT}")" "LOGIN_ITEM_INELIGIBLE" "錯誤碼是 LOGIN_ITEM_INELIGIBLE"
 
 step "結果"
 printf '  通過 %d、失敗 %d、無法判定 %d\n' "${PASS}" "${FAIL}" "${SKIP}"

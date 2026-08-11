@@ -1,3 +1,6 @@
+// Copyright 2026 Mikimoto
+// SPDX-License-Identifier: Apache-2.0
+
 import CoreGraphics
 import Foundation
 import FindMouseCore
@@ -20,6 +23,7 @@ public final class RequestRouter {
     private let packs: () -> [PackSummary]
     private let usePack: (String) -> Void
     private let onSettingsChanged: () -> Void
+    private let loginItem: LoginItemGateway
 
     /// - Parameter control: 當下的命令佇列。**每次呼叫都重取，不在 init 綁死**——
     ///   換 pack 會連 `ControlUseCase` 一起換掉（它的 `catalog` 是 `private let`），
@@ -39,18 +43,22 @@ public final class RequestRouter {
     ///   ——「哪些 key 改了要做什麼」是 App 的政策，router 只知道「有東西變了」。
     ///   **失敗的 set 不會呼叫它**：值域擋下的寫入沒有改變任何東西，通知了只會讓
     ///   App 白白重新註冊一次快捷鍵（那期間快捷鍵是不存在的）。
+    /// - Parameter loginItem: 開機啟動的系統面。**注入而不是自己 new**——
+    ///   `SystemLoginItem` 會去問 `SMAppService`，而 router 的測試不該碰系統。
     public init(control: @escaping () -> ControlUseCase,
                 settings: @escaping () -> SettingsUseCase,
                 status: @escaping () -> StatusPayload,
                 packs: @escaping () -> [PackSummary],
                 usePack: @escaping (String) -> Void,
-                onSettingsChanged: @escaping () -> Void) {
+                onSettingsChanged: @escaping () -> Void,
+                loginItem: LoginItemGateway) {
         self.control = control
         self.settings = settings
         self.status = status
         self.packs = packs
         self.usePack = usePack
         self.onSettingsChanged = onSettingsChanged
+        self.loginItem = loginItem
     }
 
     public func handle(_ request: WireRequest) -> Data {
@@ -77,6 +85,9 @@ public final class RequestRouter {
         case "pack.validate": return packValidate(request.args)
         case "pack.list":     return packList()
         case "pack.use":      return packUse(request.args)
+        case "login-item.status": return loginItemCommand(.query)
+        case "login-item.on":     return loginItemCommand(.on)
+        case "login-item.off":    return loginItemCommand(.off)
         default:
             return encode(WireResponse<AckPayload>(error: WireError(
                 code: .unknownCommand, message: "未知命令：\(request.command)")))
@@ -84,6 +95,83 @@ public final class RequestRouter {
     }
 
     // MARK: - 命令
+
+    /// 開機啟動。決策全在 `LoginItem.decide`（Domain，有窮舉測試），
+    /// 這裡只負責照它說的碰系統、把結構化的失敗翻成繁中句子。
+    private func loginItemCommand(_ command: LoginItem.Command) -> Data {
+        let before = loginItem.state
+        let outcome = LoginItem.decide(command, from: before)
+
+        // 先做副作用，再重讀狀態。**不能假設 register() 成功就等於 enabled**
+        // ——requiresApproval 正是「呼叫成功但結果不是你要的」。
+        do {
+            switch outcome.effect {
+            case .none:       break
+            case .register:   try loginItem.register()
+            case .unregister: try loginItem.unregister()
+            }
+        } catch {
+            // 訊息要分方向。走得到 .unregister 表示狀態是 enabled 或
+            // requiresApproval，而兩者都已經通過合格性閘門——App **必然**已經
+            // 在「應用程式」資料夾裡，這時叫人把它拖進去是可證明無用的建議。
+            let advice = outcome.effect == .unregister
+                ? "關閉開機啟動時失敗了：\(error.localizedDescription)。"
+                    + "到「系統設定 → 一般 → 登入項目」可以直接關掉它。"
+                : "跟 macOS 註冊開機啟動時失敗了：\(error.localizedDescription)。"
+                    + "把 FindMouse 重新拖進「應用程式」資料夾再試一次。"
+            return encode(WireResponse<LoginItemPayload>(
+                error: WireError(code: .loginItemRegisterFailed, message: advice)))
+        }
+
+        let after = loginItem.state
+        // 副作用之後要重新判一次：register() 之後可能落在 requiresApproval，
+        // 那時該回的是 1 而不是 outcome 當初算的 0。
+        let final = outcome.effect == .none
+            ? outcome
+            : LoginItem.decide(command, from: after)
+
+        if let failure = final.failure {
+            return encode(WireResponse<LoginItemPayload>(
+                error: WireError(code: code(for: failure),
+                                 message: message(for: failure))))
+        }
+        // register 跑完之後狀態若沒動，代表呼叫沒丟例外但也沒達成——那是
+        // 「成功了但沒達成」，不能回 0，否則 `login-item on && …` 會誤判。
+        //
+        // **只罩 register，不罩 unregister。** 這條的依據是「register() 立刻
+        // 反映」那個實測，而它只量過 register。unregister 之後狀態會回報什麼
+        // 沒有量過——`requiresApproval` 那格的 BTM 記錄從來沒有被 allow 過，
+        // 取消之後很可能仍讀到 requiresApproval，那時這條會把一個成功的操作
+        // 判成失敗，而決策表明文寫它回 0。要擴到 unregister 就得先量那兩格。
+        if outcome.effect == .register && final.effect == .register {
+            return encode(WireResponse<LoginItemPayload>(error: WireError(
+                code: .loginItemRegisterFailed,
+                message: "跟 macOS 註冊時沒有回報錯誤，但開機啟動仍然沒有生效。"
+                       + "到「系統設定 → 一般 → 登入項目」看一下 FindMouse 的狀態。")))
+        }
+        return encode(WireResponse(data: LoginItemPayload(state: after.rawValue)))
+    }
+
+    private func code(for failure: LoginItem.Failure) -> WireErrorCode {
+        switch failure {
+        case .ineligible:    return .loginItemIneligible
+        case .needsApproval: return .loginItemNeedsApproval
+        }
+    }
+
+    /// 每一句都要講「接下來能做什麼」（`CLAUDE.md` 的規範）。
+    private func message(for failure: LoginItem.Failure) -> String {
+        switch failure {
+        case .ineligible:
+            return "FindMouse 要放在「應用程式」資料夾裡才能設定開機啟動。"
+                 + "把它拖進去之後從那裡打開，再試一次。"
+                 + "（若你已經裝好了一份，請到那一份去改——登入項目是以 App 的"
+                 + "識別碼為準，從這一份改會動到那一份。）"
+        case .needsApproval:
+            return "已經跟 macOS 註冊了，但還要你核准才會生效："
+                 + "打開「系統設定 → 一般 → 登入項目」，把 FindMouse 打開。"
+        }
+    }
 
     private func enqueue(_ command: Command, named name: String) -> Data {
         do {

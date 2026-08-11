@@ -1,3 +1,6 @@
+// Copyright 2026 Mikimoto
+// SPDX-License-Identifier: Apache-2.0
+
 public enum SpotlightTrigger: String, Sendable, Codable, CaseIterable {
     /// 只有從 hidden 被召喚那一次的 hunting 會亮
     case onSummonOnly

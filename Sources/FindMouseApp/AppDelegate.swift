@@ -1,3 +1,6 @@
+// Copyright 2026 Mikimoto
+// SPDX-License-Identifier: Apache-2.0
+
 import AppKit
 import FindMouseAdapters
 import FindMouseCore
@@ -8,7 +11,7 @@ import OSLog
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
 
-    private let log = Logger(subsystem: "com.findmouse.app", category: "session")
+    private let log = Logger(subsystem: "tw.com.deepthought.findmouse", category: "session")
 
     private let settings = SettingsGateway()
     private let cursor = CursorGateway()
@@ -41,12 +44,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var installedSummon: HotkeySpec?
     private var installedTeaser: HotkeySpec?
 
-    /// 任何 pack 都載不起來時的最後一條路。
+    /// 任何 pack 都載不起來時的最後一條路，也是全新安裝時看到的那一套。
     ///
-    /// 與 `SettingsUseCase.registry` 裡 `pack.id` 的 defaultValue 是同一個字串，
-    /// 但不能從那裡讀：`SettingsUseCase` 要一個 catalog，而 catalog 正是這一步
-    /// 要載出來的東西。改其中一邊時記得對一下另一邊。
-    private static let builtInPackID = "test-blocks"
+    /// 讀共用常數而不是自己寫一份 "mycat"：不能讀的是 `SettingsUseCase.registry`
+    /// （它要一個 catalog，而 catalog 正是這一步要載出來的東西），常數沒有這個
+    /// 問題。各寫一份的版本靠註解提醒對齊，而漂掉的那一天不會有任何訊號——
+    /// `FindMouseApp` 沒有測試 target，理由詳見 `PackDefaults`。
+    private static let builtInPackID = PackDefaults.factory
+
+    /// 開機啟動的系統面。`SystemLoginItem` 每次被問都重新讀 `SMAppService`，
+    /// 所以這裡持有一個實例不會讓狀態變陳舊。
+    private let loginItem: LoginItemGateway = SystemLoginItem()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
@@ -89,7 +97,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         let form = makeSettingsFormStore()
         settingsForm = form
-        settingsWindow = SettingsWindowController(store: form)
+        settingsWindow = SettingsWindowController(store: form, loginItem: loginItem)
 
         let menuBar = MenuBarController(
             onToggleCat: { [weak self] in self?.enqueue(.toggle) },
@@ -165,7 +173,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             },
             onSettingsChanged: { [weak self] in
                 MainActor.assumeIsolated { self?.settingsDidChange() }
-            })
+            },
+            // 與上面那些不同，這個不包 closure：`SystemLoginItem` 不會隨換 pack
+            // 而被換掉，而且它每次被問都重新讀 `SMAppService`，本身就沒有陳舊問題。
+            loginItem: loginItem)
 
         let server = UnixSocketServer(path: UnixSocketServer.defaultPath) { [weak self] request in
             // handler 跑在 accept 執行緒上。**所有**對 session／sprites 的存取都要
@@ -222,7 +233,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             packLogicalHeight: pack?.sprites.logicalHeight ?? 0,
             screens: NSScreen.screens.map {
                 ScreenInfo(frame: $0.frame, scale: $0.backingScaleFactor)
-            })
+            },
+            // 每次都重問，不快取：使用者可能剛在系統設定裡改過，而 status
+            // 的整份意義就是「現在的實況」。
+            loginItemState: loginItem.state.rawValue)
     }
 
     // MARK: - 設定
@@ -541,9 +555,13 @@ private extension CatFrameState {
     }
 }
 
+// App 正在關閉時回的佔位資料。`loginItem` 這裡給 ineligible 而不是去問系統：
+// 這份 payload 的每一個欄位都已經是假的（版本 0.0.0、沒有 pack、沒有螢幕），
+// 唯獨一個欄位跑去拿真值，只會讓讀的人以為整份是真的。
 private let placeholderStatus = StatusJSONPresenter.payload(
     state: hiddenState(cursor: .zero), appVersion: "0.0.0",
-    packID: "", packLogicalHeight: 0, screens: [])
+    packID: "", packLogicalHeight: 0, screens: [],
+    loginItemState: LoginItem.State.ineligible.rawValue)
 
 /// `self` 已經沒了——App 正在關閉，而這條連線還在等回應。
 /// 回一個合法的錯誤信封而不是關掉連線：後者在 CLI 那端會變成

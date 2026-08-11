@@ -1,3 +1,6 @@
+// Copyright 2026 Mikimoto
+// SPDX-License-Identifier: Apache-2.0
+
 /// 一個 sprite pack 可能提供的動作。rawValue 同時是 pack 內的目錄名。
 public enum CatAction: String, Sendable, CaseIterable {
     case run, brake, sit, sitIdle, stretch, yawn, scratch, lieDown, sleep

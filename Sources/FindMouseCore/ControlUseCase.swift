@@ -1,3 +1,6 @@
+// Copyright 2026 Mikimoto
+// SPDX-License-Identifier: Apache-2.0
+
 import FindMouseDomain
 
 /// 命令被拒絕的理由。Core 不能 import Wire（架構邊界測試釘著），

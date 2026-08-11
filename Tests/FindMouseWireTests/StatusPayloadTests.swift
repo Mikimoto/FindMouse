@@ -1,3 +1,6 @@
+// Copyright 2026 Mikimoto
+// SPDX-License-Identifier: Apache-2.0
+
 import Foundation
 import Testing
 @testable import FindMouseWire
@@ -17,7 +20,8 @@ private let specExample = StatusPayload(
     spotlight: .init(active: false, radius: 0, opacity: 0),
     timers: .init(rest: 3.42, sleep: 0),
     pack: .init(id: "fluffy-orange", logicalHeight: 96),
-    display: .init(screenIndex: 0, scale: 2))
+    display: .init(screenIndex: 0, scale: 2),
+    loginItem: .init(state: "enabled"))
 
 /// spec 第 8.4 節那段 JSON 的 `data` 部分，一字不改。
 private let specExampleJSON = #"""
@@ -34,7 +38,8 @@ private let specExampleJSON = #"""
   "spotlight":{"active":false,"radius":0,"opacity":0},
   "timers":{"rest":3.42,"sleep":0},
   "pack":{"id":"fluffy-orange","logicalHeight":96},
-  "display":{"screenIndex":0,"scale":2}
+  "display":{"screenIndex":0,"scale":2},
+  "loginItem":{"state":"enabled"}
 }
 """#
 
@@ -50,6 +55,7 @@ private func encodedObject(_ payload: StatusPayload) throws -> [String: Any] {
     #expect(Set(object.keys) == [
         "appVersion", "visible", "phase", "phaseElapsed", "teaser", "cat",
         "cursor", "distance", "spotlight", "timers", "pack", "display",
+        "loginItem",
     ])
 }
 
@@ -109,6 +115,14 @@ private func encodedObject(_ payload: StatusPayload) throws -> [String: Any] {
     #expect(Set(pack.keys) == ["id", "logicalHeight"])
     #expect(pack["id"] as? String == "fluffy-orange")
     #expect(pack["logicalHeight"] as? Double == 96)
+}
+
+@Test func loginItemEncodesOnlyTheState() throws {
+    // 只帶 state。要不要打勾、能不能點都是它的函數——多送一個衍生欄位，
+    // 就多一個會與 state 不一致的地方。
+    let item = try #require(try encodedObject(specExample)["loginItem"] as? [String: Any])
+    #expect(Set(item.keys) == ["state"])
+    #expect(item["state"] as? String == "enabled")
 }
 
 @Test func displayEncodesScreenIndexAndScale() throws {

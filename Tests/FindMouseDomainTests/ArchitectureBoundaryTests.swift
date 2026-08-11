@@ -1,3 +1,6 @@
+// Copyright 2026 Mikimoto
+// SPDX-License-Identifier: Apache-2.0
+
 import Foundation
 import Testing
 
@@ -54,6 +57,11 @@ struct ArchitectureBoundaryTests {
         // 「JSON 好看」而長出欄位，而那正是 Wire 單獨存在要防的事。
         "FindMouseAdapters": ["Foundation", "CoreGraphics", "AppKit", "QuartzCore",
                               "ImageIO", "UniformTypeIdentifiers", "OSLog",
+                              // 開機啟動只能問 SMAppService。這是明確地擴一格，
+                              // 不是繞過這個測試——依賴方向仍然只往內。
+                              // 擴之前先看它紅過：它精確地指出
+                              // LoginItemGateway.swift:2 import ServiceManagement。
+                              "ServiceManagement",
                               "FindMouseCore", "FindMouseDomain", "FindMouseWire"],
         // app（驅動層）：可以碰 UI 與系統框架，這是依賴方向的最外層
         //

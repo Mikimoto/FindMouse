@@ -1,6 +1,21 @@
+// Copyright 2026 Mikimoto
+// SPDX-License-Identifier: Apache-2.0
+
 import CoreGraphics
 import Foundation
 import FindMouseDomain
+
+/// 出廠預設的內建 pack。mycat 是**產品本身**——test-blocks 是開發用的色塊，
+/// 讓陌生人裝完看到方塊等於沒有交付這個 App（0.2.0 就是這樣出去的）。
+///
+/// 它是一個常數而不是兩份字面值，理由是後者踩過：`AppDelegate` 的載入失敗
+/// 退路與這裡的 `defaultValue` 各寫一份 "mycat"，靠註解互相提醒對齊。改壞
+/// App 那一份的話，`SettingsUseCase` 的測試照樣綠（它讀的是 registry）、
+/// release.sh 的守衛照樣綠（它 sed 的是這個檔）、e2e 照樣綠（它在啟動前就把
+/// `pack.id` 寫死），而全新安裝的使用者看到的是色塊——沒有任何一層會紅。
+public enum PackDefaults {
+    public static let factory = "mycat"
+}
 
 /// 一個設定項的型別。spec 第 9 節的「範圍」欄位在這裡變成可執行的東西。
 public enum SettingKind: Sendable, Equatable {
@@ -254,7 +269,7 @@ public final class SettingsUseCase {
 
     static var registry: [SettingSpec] {
         [
-            external("pack.id", .packID, defaultValue: "test-blocks"),
+            external("pack.id", .packID, defaultValue: PackDefaults.factory),
             cg("cat.scale", 0.5...2.0, \.catScale),
             seconds("rest.duration", 1...120, \.restDuration),
             seconds("sleep.duration", 1...60, \.sleepDuration),

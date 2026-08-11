@@ -1,3 +1,6 @@
+// Copyright 2026 Mikimoto
+// SPDX-License-Identifier: Apache-2.0
+
 import CoreGraphics
 
 /// 一套 pack 的中介資料。`pack list` 與設定視窗的清單共用同一份。

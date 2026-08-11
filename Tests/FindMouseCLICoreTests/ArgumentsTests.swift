@@ -1,3 +1,6 @@
+// Copyright 2026 Mikimoto
+// SPDX-License-Identifier: Apache-2.0
+
 import Foundation
 import Testing
 @testable import FindMouseCLICore
@@ -132,4 +135,25 @@ private func request(_ line: String) throws -> WireRequest {
 
     let empty = try Arguments.parse(["config", "set", "pack.id", ""])
     #expect(empty.request.args["value"] == "")
+}
+
+// MARK: - login-item
+
+@Test func loginItemParsesThreeForms() throws {
+    #expect(try Arguments.parse(["login-item"]).request.command == "login-item.status")
+    #expect(try Arguments.parse(["login-item", "on"]).request.command == "login-item.on")
+    #expect(try Arguments.parse(["login-item", "off"]).request.command == "login-item.off")
+}
+
+@Test func loginItemRejectsToggle() {
+    // toggle 刻意不存在。它若被默默接受成別的東西，腳本會拿到非幂等的行為。
+    #expect(throws: (any Error).self) {
+        try Arguments.parse(["login-item", "toggle"])
+    }
+}
+
+@Test func loginItemRejectsExtraArguments() {
+    #expect(throws: (any Error).self) {
+        try Arguments.parse(["login-item", "on", "please"])
+    }
 }

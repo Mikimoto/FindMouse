@@ -1,3 +1,6 @@
+// Copyright 2026 Mikimoto
+// SPDX-License-Identifier: Apache-2.0
+
 /// 一套 pack 實際能做什麼。CatSessionUseCase 用它動態組休息池、
 /// 動態決定逗貓棒可用性。
 public struct PackCapabilities: Sendable, Equatable {

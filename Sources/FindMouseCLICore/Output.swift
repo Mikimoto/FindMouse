@@ -1,3 +1,6 @@
+// Copyright 2026 Mikimoto
+// SPDX-License-Identifier: Apache-2.0
+
 import Foundation
 import FindMouseWire
 
@@ -102,6 +105,12 @@ public enum Output {
             // 答出來就是 0；換不過去要等 `pack use` 自己回錯。
             return Rendered(text: describe(p), exitCode: 0)
 
+        case "login-item.status", "login-item.on", "login-item.off":
+            guard let l = try? decoder.decode(WireResponse<LoginItemPayload>.self,
+                                              from: line).data
+            else { return malformed(line) }
+            return Rendered(text: "開機時啟動：" + loginItemText(l.state), exitCode: 0)
+
         case "pack.validate":
             guard let p = try? decoder.decode(WireResponse<PackValidatePayload>.self,
                                               from: line).data
@@ -160,6 +169,26 @@ public enum Output {
         }.joined(separator: "\n")
     }
 
+    /// 五個狀態各一句，每句都講「接下來能做什麼」。
+    ///
+    /// 狀態字串來自 Wire，與 `login-item` 子命令回的 `data.state` 同一組值。
+    /// 認不得的值原樣印出來而不是當成關閉——那代表 CLI 與 App 版本不同步，
+    /// 而「印一個看不懂的字」比「安靜地說關閉」更容易被發現。
+    public static func loginItemText(_ state: String) -> String {
+        switch state {
+        case "enabled":          return "開"
+        // notFound 與 notRegistered 都印「關」：實測 notFound 是全新安裝的
+        // 狀態（BTM 裡還沒有記錄），對使用者而言就是還沒開，不是壞掉。
+        case "notRegistered", "notFound": return "關"
+        case "requiresApproval":
+            return "需要核准——到「系統設定 → 一般 → 登入項目」把 FindMouse 打開"
+        case "ineligible":
+            return "不可用——要先把 FindMouse 拖進「應用程式」資料夾"
+        default:
+            return "\(state)（這個 CLI 不認得這個狀態，可能與 App 版本不同步）"
+        }
+    }
+
     private static func malformed(_ line: Data) -> Rendered {
         Rendered(text: "App 的回應解不開：\(String(decoding: line, as: UTF8.self))", exitCode: 1)
     }
@@ -180,6 +209,7 @@ public enum Output {
             ("timers", "rest \(fixed(s.timers.rest)) s、sleep \(fixed(s.timers.sleep)) s"),
             ("pack", "\(s.pack.id)（體高 \(fixed(s.pack.logicalHeight))）"),
             ("display", "螢幕 #\(s.display.screenIndex)、scale \(fixed(s.display.scale))"),
+            ("開機啟動", loginItemText(s.loginItem.state)),
             ("version", s.appVersion),
         ]
         let width = rows.map(\.0.count).max() ?? 0

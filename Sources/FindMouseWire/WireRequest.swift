@@ -1,3 +1,6 @@
+// Copyright 2026 Mikimoto
+// SPDX-License-Identifier: Apache-2.0
+
 import Foundation
 
 /// 一行一個 JSON，request → response → 關閉連線（spec 第 8.2 節）。

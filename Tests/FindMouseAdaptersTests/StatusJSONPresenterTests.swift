@@ -1,3 +1,6 @@
+// Copyright 2026 Mikimoto
+// SPDX-License-Identifier: Apache-2.0
+
 import CoreGraphics
 import Foundation
 import Testing
@@ -34,7 +37,8 @@ private func makePayload(_ state: CatFrameState,
                          screens: [ScreenInfo] = oneScreen) -> StatusPayload {
     StatusJSONPresenter.payload(state: state, appVersion: "9.9.9",
                                 packID: "test-blocks", packLogicalHeight: 96,
-                                screens: screens)
+                                screens: screens,
+                                loginItemState: "notRegistered")
 }
 
 /// 每個欄位都對得上來源，沒有一個是這一層自己算的。

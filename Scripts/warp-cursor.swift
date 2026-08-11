@@ -1,4 +1,7 @@
 #!/usr/bin/env swift
+// Copyright 2026 Mikimoto
+// SPDX-License-Identifier: Apache-2.0
+
 // 把鼠標移到指定的**全域座標**（原點左下、Y 向上，與 status --json 一致）。
 // 用法：Scripts/warp-cursor.swift <x> <y>
 //

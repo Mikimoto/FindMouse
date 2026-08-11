@@ -1,5 +1,10 @@
+// Copyright 2026 Mikimoto
+// SPDX-License-Identifier: Apache-2.0
+
 import AppKit
+import FindMouseAdapters
 import FindMouseCore
+import FindMouseDomain
 import SwiftUI
 
 /// 設定視窗（spec 第 9 節那張表 UI 欄打 ✓ 的 8 項）。
@@ -16,8 +21,8 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
     private let model: SettingsViewModel
     private var window: NSWindow?
 
-    init(store: SettingsFormStore) {
-        model = SettingsViewModel(store: store)
+    init(store: SettingsFormStore, loginItem: LoginItemGateway) {
+        model = SettingsViewModel(store: store, loginItem: loginItem)
     }
 
     func show() {
@@ -67,11 +72,76 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
 final class SettingsViewModel: ObservableObject {
 
     private let store: SettingsFormStore
+    private let loginItem: LoginItemGateway
     @Published private(set) var snapshot = SettingsFormStore.Snapshot()
+    /// 開機啟動的當下狀態。**不是我們存的設定，是系統狀態的快照**——
+    /// `refreshLoginItem()` 是唯一寫它的地方。
+    @Published private(set) var loginItemState: LoginItem.State = .ineligible
+    /// 上一次操作失敗的說明。**不能只是吞掉**：操作沒達成時，狀態多半停在一個
+    /// 沒有說明文字的格子（`notRegistered` 與 `notFound` 都沒有），於是勾彈回去、
+    /// 畫面一個字都不說——正是這個設計最想避免的「按了沒反應」。
+    ///
+    /// CLI 走同一條路會拿到 `LOGIN_ITEM_REGISTER_FAILED` 加一句可行動的訊息，
+    /// 兩邊不該有落差。這條分支已經有三輪 review 抓到「只修了其中一面」，
+    /// 所以這裡列出必須同時成立的三件事，改任何一邊都回來對一次：
+    /// **訊息要分方向**、**呼叫沒丟例外但狀態沒動也要說話**、兩者 CLI 與 GUI 都要有。
+    @Published private(set) var loginItemError: String?
 
-    init(store: SettingsFormStore) {
+    init(store: SettingsFormStore, loginItem: LoginItemGateway) {
         self.store = store
+        self.loginItem = loginItem
     }
+
+    /// 重讀一次系統狀態。順便清掉上一次的錯誤：重讀代表我們現在顯示的是
+    /// 系統實況，舊的失敗訊息留著只會誤導。
+    func refreshLoginItem() {
+        loginItemState = loginItem.state
+        loginItemError = nil
+    }
+
+    func setLoginItem(_ on: Bool) {
+        // 決策走 Domain 那張表，UI 不自己判斷「現在該註冊還是取消」。
+        let outcome = LoginItem.decide(on ? .on : .off, from: loginItem.state)
+        var failure: String?
+        do {
+            switch outcome.effect {
+            case .none:       break
+            case .register:   try loginItem.register()
+            case .unregister: try loginItem.unregister()
+            }
+        } catch {
+            // 訊息要分方向。「重新拖進應用程式資料夾」對關閉失敗是錯的建議，
+            // 而且是可證明錯的：走得到 .unregister 表示狀態是 enabled 或
+            // requiresApproval，兩者都已經通過合格性閘門，所以 App 必然已經
+            // 在那個資料夾裡了。這裡刻意不提「它現在還開著」之類的狀態斷言
+            // ——unregister() 丟例外之後狀態停在哪裡沒有量過。
+            failure = outcome.effect == .unregister
+                ? "關閉開機啟動時失敗了：\(error.localizedDescription)。"
+                    + "到「系統設定 → 一般 → 登入項目」可以直接關掉它。"
+                : "跟 macOS 註冊時失敗了：\(error.localizedDescription)。"
+                    + "把 FindMouse 重新拖進「應用程式」資料夾再試一次。"
+        }
+        // 立刻重讀。使用者在 requiresApproval 下按勾時，勾會自己彈回去——
+        // 那看起來像「按了沒反應」，所以說明那一行必須在**同一次更新**裡出現。
+        refreshLoginItem()
+
+        // 沒丟例外，但狀態也沒動。`RequestRouter` 對 CLI 有同一道守衛
+        // （loginItemCommand 的 final.effect == .register 那條），GUI 少了它
+        // 就會在**最常見的第一次點擊**上沉默：全新安裝是 notFound，
+        // presentation 給的是「沒打勾、沒有說明」，於是勾彈回去、一個字都沒有。
+        //
+        // 與 CLI 那條同樣只罩 register：unregister 之後狀態會回報什麼沒有量過。
+        if failure == nil, outcome.effect == .register,
+           LoginItem.decide(.on, from: loginItemState).effect == .register {
+            failure = "跟 macOS 註冊時沒有回報錯誤，但開機啟動仍然沒有生效。"
+                    + "到「系統設定 → 一般 → 登入項目」看一下 FindMouse 的狀態。"
+        }
+
+        // refreshLoginItem 會清掉錯誤，所以這一行要在它之後。
+        loginItemError = failure
+    }
+
+    func openLoginItemSettings() { loginItem.openSystemSettings() }
 
     func kind(of key: String) -> SettingKind? { store.kind(of: key) }
 
@@ -97,6 +167,8 @@ private struct SettingsRootView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
+            loginItemRow
+            Divider()
             packSection
             Divider()
             scaleRow
@@ -117,6 +189,59 @@ private struct SettingsRootView: View {
         // 每個欄位各掛一個的話，切換焦點時兩個欄位會各收到一次。
         .onChange(of: focused) { previous, _ in
             if let previous { model.commitDraft(previous) }
+        }
+        // 勾選框是系統狀態的鏡子，我們不自己存一份——代價是要在這兩個時機
+        // 重讀。不輪詢，但要接住最常見的那條路：使用者跑去系統設定關掉、
+        // 再切回來。不加的話畫面會停在一個過期的勾。
+        .onAppear { model.refreshLoginItem() }
+        .onReceive(NotificationCenter.default.publisher(
+            for: NSApplication.didBecomeActiveNotification)) { _ in
+            model.refreshLoginItem()
+        }
+    }
+
+    // MARK: - 開機啟動
+
+    /// 判斷全在 `LoginItem.presentation`（Domain，有測試），這裡只有版面配置
+    /// ——與檔頭那條「所有判斷都在有測試的那一層」一致。
+    private var loginItemRow: some View {
+        let p = LoginItem.presentation(for: model.loginItemState)
+        return VStack(alignment: .leading, spacing: 4) {
+            HStack {
+                Text("開機時啟動").frame(width: 150, alignment: .leading)
+                Toggle("", isOn: Binding(get: { p.checked },
+                                         set: { model.setLoginItem($0) }))
+                    .labelsHidden()
+                    .disabled(!p.interactive)
+                Spacer()
+            }
+            if let note = p.note {
+                HStack(spacing: 8) {
+                    Text(noteText(note))
+                        .font(.caption).foregroundStyle(.secondary)
+                    if note == .needsApproval {
+                        Button("打開登入項目設定") { model.openLoginItemSettings() }
+                            .buttonStyle(.link).font(.caption)
+                    }
+                }
+                .padding(.leading, 150)
+            }
+            // 失敗訊息與 note 並存：note 講的是「這個狀態是什麼」，
+            // 這一行講的是「你剛剛那一下為什麼沒成功」。
+            if let error = model.loginItemError {
+                Text(error)
+                    .font(.caption).foregroundStyle(.red)
+                    .padding(.leading, 150)
+            }
+        }
+    }
+
+    private func noteText(_ note: LoginItem.Note) -> String {
+        switch note {
+        case .mustBeInApplications:
+            return "要先把 FindMouse 拖進「應用程式」資料夾才能設定"
+        case .needsApproval:
+            return "macOS 需要你核准才會生效"
         }
     }
 

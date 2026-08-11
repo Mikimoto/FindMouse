@@ -5,7 +5,7 @@
     <key>CFBundleName</key>
     <string>FindMouse</string>
     <key>CFBundleIdentifier</key>
-    <string>com.findmouse.app</string>
+    <string>tw.com.deepthought.findmouse</string>
     <key>CFBundleExecutable</key>
     <string>FindMouse</string>
     <key>CFBundlePackageType</key>

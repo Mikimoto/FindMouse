@@ -1,3 +1,6 @@
+// Copyright 2026 Mikimoto
+// SPDX-License-Identifier: Apache-2.0
+
 import CoreGraphics
 import Foundation
 import Testing
@@ -41,24 +44,75 @@ private final class Box<T>: @unchecked Sendable {
 
 /// 一套 pack 衍生出來的兩個 use case。換 pack 時 App 會把兩個一起重建
 /// （它們的 `catalog` 都是 `private let`），所以測試裡也綁成一包換。
-private struct Wiring {
+/// **class 而不是 struct**，只為了有 `deinit` 可以清掉 suite。
+///
+/// `UserDefaults(suiteName:)` 會在 `~/Library/Preferences/` 落一個 plist，
+/// 而這裡的名字每建一個 Wiring 就換一個新 UUID——實測累積到 2604 個才被發現。
+/// 那個洩漏沒有任何訊號：測試照樣綠、磁碟慢慢長大。
+///
+/// deinit 的時機在這裡是安全的：所有對 settings 的存取都經過持有它的
+/// `Fixture`，所以 Wiring 不可能在測試還在寫入時就被釋放。
+private final class Wiring {
     let control: ControlUseCase
     let settings: SettingsUseCase
+    private let suiteName: String
 
     init(teaser: Bool = true, logicalHeight: CGFloat = 96) {
         let catalog = RouterCatalog(teaser: teaser, logicalHeight: logicalHeight)
         control = ControlUseCase(catalog: catalog)
         // 每個 Wiring 一個獨立的 suite：換 pack 時 store 本身不會換，但測試要能
         // 分辨「讀到新的那份」與「讀到舊的那份」，共用 suite 就分不出來。
+        suiteName = borrowSuiteName("com.findmouse.router")
         settings = SettingsUseCase(
-            store: SettingsGateway(defaults: UserDefaults(
-                suiteName: "com.findmouse.router.\(UUID().uuidString)")!),
+            store: SettingsGateway(defaults: UserDefaults(suiteName: suiteName)!),
             catalog: catalog)
     }
+
+    deinit { removeSuite(suiteName) }
+}
+
+/// 測試用的登入項目：狀態可以直接指定，並記錄有沒有被要求碰系統。
+///
+/// 記錄呼叫次數是關鍵——「回 1 且**沒有**碰系統」是決策表的核心保證，
+/// 只斷言 exit code 的話，「先註冊了再回報失敗」會照樣通過。
+private final class FakeLoginItem: LoginItemGateway, @unchecked Sendable {
+    private let lock = NSLock()
+    private var storage: LoginItem.State
+    private(set) var registerCalls = 0
+    private(set) var unregisterCalls = 0
+    private(set) var openedSettings = 0
+    /// 設成非 nil 時，`register()`／`unregister()` 會丟它——用來驗
+    /// LOGIN_ITEM_REGISTER_FAILED 那條路。
+    var throwOnMutate: Error?
+    /// `register()` 之後要變成哪一個狀態。預設 enabled；設成
+    /// requiresApproval 就能驗「呼叫成功但結果不是你要的」。
+    var stateAfterRegister: LoginItem.State = .enabled
+
+    init(state: LoginItem.State) { storage = state }
+
+    var state: LoginItem.State {
+        get { lock.lock(); defer { lock.unlock() }; return storage }
+        set { lock.lock(); storage = newValue; lock.unlock() }
+    }
+
+    func register() throws {
+        registerCalls += 1
+        if let error = throwOnMutate { throw error }
+        state = stateAfterRegister
+    }
+
+    func unregister() throws {
+        unregisterCalls += 1
+        if let error = throwOnMutate { throw error }
+        state = .notRegistered
+    }
+
+    func openSystemSettings() { openedSettings += 1 }
 }
 
 private struct Fixture {
     let router: RequestRouter
+    let loginItem: FakeLoginItem
     /// router 該讀到的那一份。放在可變的盒子裡而不是 `let` 欄位，
     /// 因為「換 pack」在這一層就是換掉它的內容。
     let live: Box<Wiring>
@@ -87,7 +141,7 @@ private struct Fixture {
                     errors: ["缺少必要動作：sit"], warnings: [], teaserAvailable: true),
     ]
 
-    init(teaser: Bool = true) {
+    init(teaser: Bool = true, loginItemState: LoginItem.State = .notRegistered) {
         // 先接成區域變數再交給 closure：struct 的所有屬性都填完之前碰不到 self
         let live = Box(Wiring(teaser: teaser))
         self.live = live
@@ -95,12 +149,15 @@ private struct Fixture {
         self.swapped = swapped
         let settingsChanges = Box(0)
         self.settingsChanges = settingsChanges
+        let loginItem = FakeLoginItem(state: loginItemState)
+        self.loginItem = loginItem
         router = RequestRouter(control: { live.value.control },
                                settings: { live.value.settings },
                                status: Fixture.status,
                                packs: { Fixture.packs },
                                usePack: { id in swapped.value = id },
-                               onSettingsChanged: { settingsChanges.value += 1 })
+                               onSettingsChanged: { settingsChanges.value += 1 },
+                               loginItem: loginItem)
     }
 
     static func status() -> StatusPayload {
@@ -113,7 +170,8 @@ private struct Fixture {
             spotlight: .init(active: false, radius: 0, opacity: 0),
             timers: .init(rest: 0, sleep: 0),
             pack: .init(id: "test-blocks", logicalHeight: 96),
-            display: .init(screenIndex: 0, scale: 2))
+            display: .init(screenIndex: 0, scale: 2),
+            loginItem: .init(state: "notRegistered"))
     }
 
     func send(_ command: String, _ args: [String: String] = [:],
@@ -546,4 +604,153 @@ private func settingValue(_ f: Fixture, _ key: String) throws -> String {
     let f = Fixture()
     #expect(try decodeError(f.send("pack.use")).code == .invalidArgument)
     #expect(f.swapped.value == nil)
+}
+
+// MARK: - 開機啟動
+
+@Test func loginItemQueryReportsStateWithoutTouchingTheSystem() throws {
+    let f = Fixture(loginItemState: .enabled)
+    let response = try decode(f.send("login-item.status"), as: LoginItemPayload.self)
+    #expect(response.data?.state == "enabled")
+    // 查詢就是查詢。這兩條是「查詢不該有副作用」唯一的證據——
+    // 只斷言回傳值的話，「查一次順手註冊一下」會照樣通過。
+    #expect(f.loginItem.registerCalls == 0)
+    #expect(f.loginItem.unregisterCalls == 0)
+}
+
+@Test func loginItemOnRegistersAndReportsTheNewState() throws {
+    let f = Fixture(loginItemState: .notRegistered)
+    let response = try decode(f.send("login-item.on"), as: LoginItemPayload.self)
+    #expect(f.loginItem.registerCalls == 1)
+    // 回報的是**副作用之後**重讀的狀態，不是當初那個
+    #expect(response.data?.state == "enabled")
+}
+
+@Test func loginItemOnFromNotFoundAlsoRegisters() throws {
+    // notFound 是全新安裝的狀態（2026-08-11 實測）。這一條端到端地釘住
+    // 「剛裝好、第一次勾」會真的去註冊，而不是被擋下。
+    let f = Fixture(loginItemState: .notFound)
+    let response = try decode(f.send("login-item.on"), as: LoginItemPayload.self)
+    #expect(f.loginItem.registerCalls == 1)
+    #expect(response.data?.state == "enabled")
+}
+
+@Test func loginItemOnWhenIneligibleIsRefusedWithoutRegistering() throws {
+    let f = Fixture(loginItemState: .ineligible)
+    let error = try decodeError(f.send("login-item.on"))
+    #expect(error.code == .loginItemIneligible)
+    // 比錯誤碼更重要的一條：被擋下的 on 不可以已經註冊過了
+    #expect(f.loginItem.registerCalls == 0)
+}
+
+@Test func loginItemOffWhenIneligibleIsRefusedWithoutUnregistering() throws {
+    // 以 bundle id 為鍵（實測），所以從不合格的拷貝 unregister 會關掉
+    // 使用者正式安裝的那份。這一條守的是那個破壞性操作。
+    let f = Fixture(loginItemState: .ineligible)
+    let error = try decodeError(f.send("login-item.off"))
+    #expect(error.code == .loginItemIneligible)
+    #expect(f.loginItem.unregisterCalls == 0)
+}
+
+@Test func loginItemOffUnregistersWhenEnabled() throws {
+    let f = Fixture(loginItemState: .enabled)
+    let response = try decode(f.send("login-item.off"), as: LoginItemPayload.self)
+    #expect(f.loginItem.unregisterCalls == 1)
+    #expect(response.data?.state == "notRegistered")
+}
+
+@Test func loginItemOnThatLandsInRequiresApprovalFailsClosed() throws {
+    // 「呼叫成功但結果不是你要的」。register() 有被呼叫、也沒有丟例外，
+    // 但使用者要的結果（開機會啟動）沒有達成，所以回 1。
+    // 這一條同時證明了副作用之後**有重新判一次**——只用當初算出來的
+    // outcome 的話，這裡會回 0。
+    let f = Fixture(loginItemState: .notRegistered)
+    f.loginItem.stateAfterRegister = .requiresApproval
+    let error = try decodeError(f.send("login-item.on"))
+    #expect(error.code == .loginItemNeedsApproval)
+    #expect(f.loginItem.registerCalls == 1)
+}
+
+@Test func loginItemReportsRegisterFailureRatherThanPretendingItWorked() throws {
+    let f = Fixture(loginItemState: .notRegistered)
+    f.loginItem.throwOnMutate = NSError(domain: "SMAppServiceErrorDomain", code: 1)
+    let error = try decodeError(f.send("login-item.on"))
+    #expect(error.code == .loginItemRegisterFailed)
+    // 三元的**另一半**也要釘住。只驗 off 那半的話，關閉那條測試的
+    // `!contains("拖進")` 會在有人改寫註冊那句措辭時靜默退化成恆真句。
+    #expect(error.message.contains("拖進"), "註冊失敗要給安裝建議：\(error.message)")
+    #expect(!error.message.contains("系統設定"), "註冊失敗不該指向系統設定：\(error.message)")
+}
+
+@Test func unknownLoginItemVerbIsAnUnknownCommand() throws {
+    // 分派是逐字比對的三個點分命令，不是 login-item + args["action"]。
+    // 打錯動詞要在第一層就變成 UNKNOWN_COMMAND。
+    let error = try decodeError(Fixture().send("login-item.toggle"))
+    #expect(error.code == .unknownCommand)
+}
+
+@Test func loginItemDoesNotReportSuccessWhenTheStateDidNotMove() throws {
+    // 「呼叫沒丟例外」不等於「達成了」。register() 回來之後狀態若原地不動，
+    // 重判會再次要求同一個副作用——那時回 0 會讓 `login-item on && …` 誤判。
+    let f = Fixture(loginItemState: .notRegistered)
+    f.loginItem.stateAfterRegister = .notRegistered   // 呼叫成功但狀態沒動
+    let error = try decodeError(f.send("login-item.on"))
+    #expect(error.code == .loginItemRegisterFailed)
+    #expect(f.loginItem.registerCalls == 1)
+}
+
+// MARK: - SystemLoginItem 的路徑判定
+
+@Test func rootsAreSymlinkResolvedBeforeComparing() throws {
+    // bundleURL 有解 symlink，roots 也必須解，否則比不起來。
+    // 真實情境：家目錄在外接磁碟、由 symlink 指過去，那時真的裝在
+    // ~/Applications 的 app 會永遠判成 ineligible，勾變灰還配一句
+    // 「請拖進應用程式資料夾」，而它已經在那裡了。
+    let fm = FileManager.default
+    let tmp = URL(fileURLWithPath: NSTemporaryDirectory())
+        .appendingPathComponent("fm-symlink-\(UUID().uuidString)")
+    let real = tmp.appendingPathComponent("real")
+    defer { try? fm.removeItem(at: tmp) }
+    let apps = real.appendingPathComponent("Applications")
+    try fm.createDirectory(at: apps, withIntermediateDirectories: true)
+    let app = apps.appendingPathComponent("FindMouse.app")
+    try fm.createDirectory(at: app, withIntermediateDirectories: true)
+
+    // link -> real，root 用 link 那一側表達
+    let link = tmp.appendingPathComponent("link")
+    try fm.createSymbolicLink(at: link, withDestinationURL: real)
+
+    let gateway = SystemLoginItem(
+        bundleURL: app.resolvingSymlinksInPath(),
+        roots: [link.appendingPathComponent("Applications")])
+
+    // 只斷言「不是 ineligible」。合格之後它會去問 SMAppService，那是唯讀查詢，
+    // 回什麼取決於測試 process 自己的 bundle，不是這條要驗的東西。
+    #expect(gateway.state != .ineligible,
+            "root 經 symlink 表達時判成 ineligible，代表 roots 沒有被解析")
+}
+
+@Test func loginItemOffFailureSaysHowToTurnItOffNotHowToInstall() throws {
+    // 走得到 unregister 表示狀態是 enabled 或 requiresApproval，而兩者都已經
+    // 通過合格性閘門——App 必然已經在「應用程式」資料夾裡。這時叫人「重新拖
+    // 進應用程式資料夾」是可證明無用的建議。
+    let f = Fixture(loginItemState: .enabled)
+    f.loginItem.throwOnMutate = NSError(domain: "SMAppServiceErrorDomain", code: 1)
+    let error = try decodeError(f.send("login-item.off"))
+    #expect(error.code == .loginItemRegisterFailed)
+    #expect(error.message.contains("系統設定"), "關閉失敗要指向系統設定：\(error.message)")
+    #expect(!error.message.contains("拖進"), "關閉失敗不該叫人搬 App：\(error.message)")
+}
+
+@Test func loginItemOnFromNotFoundAlsoCatchesAStuckState() throws {
+    // 收窄後的守衛涵蓋 notRegistered 與 notFound 兩個起點，兩個都要有測試，
+    // 否則「只罩了其中一個」不會有任何訊號。
+    let f = Fixture(loginItemState: .notFound)
+    f.loginItem.stateAfterRegister = .notFound        // 呼叫成功但狀態沒動
+    let error = try decodeError(f.send("login-item.on"))
+    #expect(error.code == .loginItemRegisterFailed)
+    #expect(f.loginItem.registerCalls == 1)
+    // 這個 code 與「呼叫丟例外」那條共用，只驗 code 分不出是哪一條路徑觸發的
+    #expect(error.message.contains("仍然沒有生效"),
+            "應該是守衛觸發而不是 catch：\(error.message)")
 }

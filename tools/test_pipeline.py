@@ -971,6 +971,88 @@ def _run_one(func) -> tuple[bool, str]:
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+
+def test_downscale_does_not_bleed_colour_from_transparent_pixels(tmp: Path):
+    """防：縮圖直接對 unpremultiplied RGBA 做 LANCZOS，邊緣長出一圈色暈。"""
+    # 去背之後，全透明像素的 RGB 是**任意值**——`key_frame` 只保證 alpha 正確。
+    # 這裡把那些值放成一個絕不該出現在結果裡的顏色，讓汙染看得見。
+    fg = (240, 60, 60)
+    poison = (0, 255, 0)
+    disc = soft_disc(32, 32, 22, feather=3)
+    image = Image.new("RGBA", (64, 64))
+    image.putdata([
+        (*(fg if disc(x, y) > 0 else poison), round(disc(x, y) * 255))
+        for y in range(64) for x in range(64)
+    ])
+
+    small = chroma.downscale_rgba(image, 32, 32)
+    assert small.size == (32, 32), f"縮出來是 {small.size}"
+
+    checked = 0
+    for r, g, b, a in small.getdata():
+        # 門檻取 32 而不是 1：LANCZOS 的振鈴會在圖形外緣造出「有一點 alpha
+        # 但本來就沒有顏色」的像素，那些位置的 RGB 是 0 屬正常，不是汙染。
+        if a < 32:
+            continue
+        checked += 1
+        assert g < 120, f"縮圖後出現綠色汙染：({r},{g},{b},a={a})——透明像素被加權進來了"
+        assert r > g, f"紅色不再主導：({r},{g},{b},a={a})"
+    assert checked > 200, f"只驗到 {checked} 個不透明像素，樣本太少"
+
+
+
+def test_max_height_caps_the_canvas_and_keeps_the_anchor_fraction(tmp: Path):
+    """防：--max-height 是裝飾品，或縮圖把 anchor 的相對位置弄歪。"""
+    # 造一組明顯高於上限的格子
+    for i in range(3):
+        d = tmp / "keyed" / "run"
+        d.mkdir(parents=True, exist_ok=True)
+        rgba_shape(400, 600, cat_silhouette(120, 260, 200, 520 + i * 10, 320)) \
+            .save(d / f"{i:03d}.png")
+
+    big = tmp / "big"
+    small = tmp / "small"
+    code, full = run_cli("align", str(tmp / "keyed"), "--out", str(big))
+    assert code == 0, full
+    code, capped = run_cli("align", str(tmp / "keyed"), "--out", str(small),
+                           "--max-height", "128")
+    assert code == 0, capped
+
+    for path in sorted((small / "run").glob("*.png")):
+        w, h = Image.open(path).size
+        assert h <= 128, f"{path.name} 高 {h}，超過上限 128"
+
+    # 沒有上限那次一定比 128 高，否則這條測試是恆真句
+    tall = Image.open(sorted((big / "run").glob("*.png"))[0]).height
+    assert tall > 128, f"未設上限時只有 {tall} 高，這個 fixture 證明不了 --max-height 有作用"
+
+    # anchor 是**相對座標**，等比縮放不該改變它——改變了就代表縮圖動到了版面
+    assert abs(full["geometry"]["anchor"]["x"] - capped["geometry"]["anchor"]["x"]) < 1e-9
+    assert abs(full["geometry"]["anchor"]["y"] - capped["geometry"]["anchor"]["y"]) < 1e-9
+
+
+def test_negative_max_height_is_rejected_before_the_filesystem_is_touched(tmp: Path):
+    """防：負的 --max-height 被當成沒設定，或錯誤訊息把人指去查目錄結構。"""
+    d = tmp / "keyed" / "run"
+    d.mkdir(parents=True, exist_ok=True)
+    rgba_shape(400, 600, cat_silhouette(120, 260, 200, 520, 320)).save(d / "000.png")
+
+    code, payload = run_cli("align", str(tmp / "keyed"), "--out", str(tmp / "out"),
+                            "--max-height", "-1")
+    assert code != 0, f"負的上限被接受了：{payload}"
+    assert [e["code"] for e in payload["errors"]] == ["INVALID_MAX_HEIGHT"], payload
+
+    # 參數的驗證要贏過環境的問題。這個路徑底下沒有動作子目錄，驗證若排在
+    # action_dirs() 後面，回的會是 NO_ACTIONS——把人指去查目錄，而打錯的是旗標。
+    empty = tmp / "empty"
+    empty.mkdir()
+    code, payload = run_cli("align", str(empty), "--out", str(tmp / "out2"),
+                            "--max-height", "-1")
+    assert code != 0, payload
+    codes = [e["code"] for e in payload["errors"]]
+    assert codes == ["INVALID_MAX_HEIGHT"], f"參數錯被環境的問題蓋過去了：{codes}"
+
+
 def main() -> int:
     # `--emit-pack <dir>`：把端對端那套合成 pack 落到磁碟，讓 Swift 那邊的
     # 真 PackValidator 去驗它。Python 這邊只能驗「我以為 PackValidator 要什麼」，

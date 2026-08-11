@@ -1,3 +1,6 @@
+// Copyright 2026 Mikimoto
+// SPDX-License-Identifier: Apache-2.0
+
 import AppKit
 
 /// 覆蓋所有螢幕聯集矩形的透明視窗。

@@ -1,3 +1,6 @@
+// Copyright 2026 Mikimoto
+// SPDX-License-Identifier: Apache-2.0
+
 /// 換 pack 的**時序**（spec 第 6.5 節）：貓在場就先淡出，退場之後才換，換完叫回來。
 ///
 /// 為什麼是一個型別而不是 `AppDelegate` 裡的幾行 if：那幾行跨越多個 frame，

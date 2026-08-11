@@ -1,3 +1,6 @@
+// Copyright 2026 Mikimoto
+// SPDX-License-Identifier: Apache-2.0
+
 import CoreGraphics
 import FindMouseCore
 import FindMouseDomain
@@ -368,4 +371,22 @@ private func settingsError(_ body: () throws -> Void) -> SettingsError? {
                     "體高 \(height) × 縮放 \(scale) 的 \(key) 衍生預設 \(value) 不被 set 接受")
         }
     }
+}
+
+@Test func factoryDefaultPackIsTheShippedCat() throws {
+    // 讀**行為**而不是註冊表的內部結構：全新的儲存（沒有人寫過 pack.id）
+    // 讀出來的就是出廠預設。
+    //
+    // 沒有這一條的話，出廠預設沒有任何東西釘住它。e2e 在啟動 App 之前就把
+    // pack.id 寫死成 test-blocks，所以它從來沒讀過 defaultValue；而
+    // release.sh 的守衛只問「那套 pack 在不在 app 裡」——test-blocks 照樣
+    // 出貨，所以預設若被改回它，那條守衛在 release 與 debug 版都放行。
+    // 0.2.0 出貨色塊就是這個形狀：每一層都綠，而交付的不是這個產品。
+    //
+    // 這一條也蓋得到 App 的全新安裝路徑（`AppDelegate.builtInPackID`），
+    // 因為那邊讀的是同一個 `PackDefaults.factory`。它若哪天又變回自己一份
+    // 字面值，這裡就只剩 CLI 那半條路，而 FindMouseApp 沒有測試 target。
+    let settings = makeUseCase()
+    #expect(try settings.get("pack.id") == "mycat",
+            "出廠預設不是 mycat——陌生人裝完會看到開發用的色塊而不是貓")
 }
