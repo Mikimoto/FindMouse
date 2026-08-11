@@ -129,16 +129,18 @@ public final class RequestRouter {
                 error: WireError(code: code(for: failure),
                                  message: message(for: failure))))
         }
-        // 副作用跑完之後，重判的結果若**還要求同一個副作用**，代表呼叫沒有丟
-        // 例外但狀態也沒有動——那是「成功了但沒達成」，不能回 0。少了這一條，
-        // `login-item on` 會在項目其實還關著的情況下回成功，而 `on && …` 這種
-        // 寫法就此誤判。實測 register() 是立刻反映的，所以這條走不到；留著是
-        // 因為它守的正是「不要假設呼叫成功等於達成」那個前提本身。
-        if outcome.effect != .none && final.effect == outcome.effect {
+        // register 跑完之後狀態若沒動，代表呼叫沒丟例外但也沒達成——那是
+        // 「成功了但沒達成」，不能回 0，否則 `login-item on && …` 會誤判。
+        //
+        // **只罩 register，不罩 unregister。** 這條的依據是「register() 立刻
+        // 反映」那個實測，而它只量過 register。unregister 之後狀態會回報什麼
+        // 沒有量過——`requiresApproval` 那格的 BTM 記錄從來沒有被 allow 過，
+        // 取消之後很可能仍讀到 requiresApproval，那時這條會把一個成功的操作
+        // 判成失敗，而決策表明文寫它回 0。要擴到 unregister 就得先量那兩格。
+        if outcome.effect == .register && final.effect == .register {
             return encode(WireResponse<LoginItemPayload>(error: WireError(
                 code: .loginItemRegisterFailed,
-                message: "跟 macOS 溝通沒有回報錯誤，但狀態仍然是"
-                       + "\(after.rawValue)，設定沒有生效。"
+                message: "跟 macOS 註冊時沒有回報錯誤，但開機啟動仍然沒有生效。"
                        + "到「系統設定 → 一般 → 登入項目」看一下 FindMouse 的狀態。")))
         }
         return encode(WireResponse(data: LoginItemPayload(state: after.rawValue)))

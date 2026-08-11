@@ -694,3 +694,34 @@ private func settingValue(_ f: Fixture, _ key: String) throws -> String {
     #expect(error.code == .loginItemRegisterFailed)
     #expect(f.loginItem.registerCalls == 1)
 }
+
+// MARK: - SystemLoginItem 的路徑判定
+
+@Test func rootsAreSymlinkResolvedBeforeComparing() throws {
+    // bundleURL 有解 symlink，roots 也必須解，否則比不起來。
+    // 真實情境：家目錄在外接磁碟、由 symlink 指過去，那時真的裝在
+    // ~/Applications 的 app 會永遠判成 ineligible，勾變灰還配一句
+    // 「請拖進應用程式資料夾」，而它已經在那裡了。
+    let fm = FileManager.default
+    let tmp = URL(fileURLWithPath: NSTemporaryDirectory())
+        .appendingPathComponent("fm-symlink-\(UUID().uuidString)")
+    let real = tmp.appendingPathComponent("real")
+    let apps = real.appendingPathComponent("Applications")
+    try fm.createDirectory(at: apps, withIntermediateDirectories: true)
+    let app = apps.appendingPathComponent("FindMouse.app")
+    try fm.createDirectory(at: app, withIntermediateDirectories: true)
+    defer { try? fm.removeItem(at: tmp) }
+
+    // link -> real，root 用 link 那一側表達
+    let link = tmp.appendingPathComponent("link")
+    try fm.createSymbolicLink(at: link, withDestinationURL: real)
+
+    let gateway = SystemLoginItem(
+        bundleURL: app.resolvingSymlinksInPath(),
+        roots: [link.appendingPathComponent("Applications")])
+
+    // 只斷言「不是 ineligible」。合格之後它會去問 SMAppService，那是唯讀查詢，
+    // 回什麼取決於測試 process 自己的 bundle，不是這條要驗的東西。
+    #expect(gateway.state != .ineligible,
+            "root 經 symlink 表達時判成 ineligible，代表 roots 沒有被解析")
+}

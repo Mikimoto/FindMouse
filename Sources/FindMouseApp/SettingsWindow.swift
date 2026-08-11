@@ -78,8 +78,9 @@ final class SettingsViewModel: ObservableObject {
     /// `refreshLoginItem()` 是唯一寫它的地方。
     @Published private(set) var loginItemState: LoginItem.State = .ineligible
     /// 上一次操作丟出來的錯誤。**不能只是吞掉**：`SMAppService` 真的丟例外時
-    /// 狀態會停在 `notRegistered`，而那個狀態的 `presentation` 沒有說明文字，
-    /// 於是勾彈回去、畫面一個字都不說——正是這個設計最想避免的「按了沒反應」。
+    /// 狀態不會動，而它停在的那個狀態多半沒有說明文字（`notRegistered` 與
+    /// `notFound` 都沒有），於是勾彈回去、畫面一個字都不說——正是這個設計
+    /// 最想避免的「按了沒反應」。關閉失敗時更糟：勾根本不動。
     /// CLI 走同一條路會拿到 `LOGIN_ITEM_REGISTER_FAILED` 加一句可行動的訊息，
     /// 兩邊不該有這種落差。
     @Published private(set) var loginItemError: String?
@@ -107,8 +108,16 @@ final class SettingsViewModel: ObservableObject {
             case .unregister: try loginItem.unregister()
             }
         } catch {
-            failure = "跟 macOS 溝通時失敗了：\(error.localizedDescription)。"
+            // 訊息要分方向。同一個 catch 罩住 register 與 unregister，而
+            // 「重新拖進應用程式資料夾」對關閉失敗是錯的建議：那時 app 本來
+            // 就在那裡，而且勾會停在打勾狀態（狀態沒變），使用者看到的是
+            // 「我按了關、它還開著、然後叫我搬家」。
+            let what = outcome.effect == .unregister
+                ? "關閉開機啟動時失敗了：\(error.localizedDescription)。"
+                    + "它現在仍然是開著的，可以到「系統設定 → 一般 → 登入項目」直接關。"
+                : "跟 macOS 註冊時失敗了：\(error.localizedDescription)。"
                     + "把 FindMouse 重新拖進「應用程式」資料夾再試一次。"
+            failure = what
         }
         // 立刻重讀。使用者在 requiresApproval 下按勾時，勾會自己彈回去——
         // 那看起來像「按了沒反應」，所以說明那一行必須在**同一次更新**裡出現。
