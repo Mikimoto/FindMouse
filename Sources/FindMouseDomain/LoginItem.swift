@@ -1,3 +1,6 @@
+// Copyright 2026 Mikimoto
+// SPDX-License-Identifier: Apache-2.0
+
 import Foundation
 
 /// 「開機時啟動」的純邏輯。碰系統的部分在 Adapters 的 `LoginItemGateway`。

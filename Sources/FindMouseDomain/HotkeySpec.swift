@@ -1,3 +1,6 @@
+// Copyright 2026 Mikimoto
+// SPDX-License-Identifier: Apache-2.0
+
 import Foundation
 
 /// 一個全域快捷鍵：一到四個修飾鍵 ＋ 一個主鍵。spec 第 9 節把它存成

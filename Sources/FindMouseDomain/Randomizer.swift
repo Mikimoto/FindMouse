@@ -1,3 +1,6 @@
+// Copyright 2026 Mikimoto
+// SPDX-License-Identifier: Apache-2.0
+
 import Foundation
 
 /// 可注入的隨機來源。用 AnyObject 約束，讓實作可以持有可變狀態

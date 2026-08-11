@@ -1,3 +1,6 @@
+// Copyright 2026 Mikimoto
+// SPDX-License-Identifier: Apache-2.0
+
 import CoreGraphics
 
 /// 螢幕幾何。由 driver（M2）從 NSScreen 填入，Domain 不需要知道 AppKit。

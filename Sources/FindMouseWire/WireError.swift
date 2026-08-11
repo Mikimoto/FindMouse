@@ -1,3 +1,6 @@
+// Copyright 2026 Mikimoto
+// SPDX-License-Identifier: Apache-2.0
+
 import Foundation
 
 /// spec 第 8.5 節的錯誤碼。**rawValue 是對外契約**，AI 會把它寫死在腳本裡。

@@ -89,7 +89,7 @@ findmouse pack validate <目錄>
 `tools/` 是把 AI 生圖的橫排多格圖變成一套 pack 的後處理管線
 （切格 → chroma key 去背 → 統一畫布 → 對齊腳底線 → 產 manifest），
 詳見 [`tools/README.md`](tools/README.md)。生圖那一側的操作在
-[`docs/superpowers/plans/2026-08-08-m6-asset-generation-guide.md`](docs/superpowers/plans/2026-08-08-m6-asset-generation-guide.md)。
+`docs/superpowers/plans/2026-08-08-m6-asset-generation-guide.md`（不進版控）。
 
 ## 架構
 
@@ -105,4 +105,10 @@ FindMouseCLICore    參數解析與輸出格式（只准 Wire）
 FindMouseApp        NSApplication、overlay、快捷鍵
 ```
 
-設計文件：[`docs/superpowers/specs/2026-08-05-findmouse-design.md`](docs/superpowers/specs/2026-08-05-findmouse-design.md)
+設計文件（`docs/superpowers/`）**不進版控**，只存在於作者本機。
+
+## 授權
+
+Apache License 2.0，見 [`LICENSE`](LICENSE)。
+
+Copyright 2026 Mikimoto

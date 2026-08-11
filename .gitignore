@@ -26,3 +26,8 @@ __pycache__/
 /raw/
 /work/
 /packs/
+
+# superpowers 的規格與實作計畫。刻意不進版控（2026-08-11 連同歷史一起清除）。
+# 它們仍是設計權威，CLAUDE.md 與 README 都指著它們——備份由使用者自行安排，
+# repo 這一側不再持有任何副本。
+/docs/superpowers/

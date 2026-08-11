@@ -1,3 +1,6 @@
+// Copyright 2026 Mikimoto
+// SPDX-License-Identifier: Apache-2.0
+
 import CoreGraphics
 
 /// spec 第 6.4 節列舉的全部驗證問題。

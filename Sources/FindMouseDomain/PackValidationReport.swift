@@ -1,3 +1,6 @@
+// Copyright 2026 Mikimoto
+// SPDX-License-Identifier: Apache-2.0
+
 public struct PackValidationReport: Sendable, Equatable {
     public var errors: [PackIssue]
     public var warnings: [PackIssue]

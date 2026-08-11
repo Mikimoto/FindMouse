@@ -1,3 +1,6 @@
+// Copyright 2026 Mikimoto
+// SPDX-License-Identifier: Apache-2.0
+
 import CoreGraphics
 import FindMouseDomain
 import Foundation

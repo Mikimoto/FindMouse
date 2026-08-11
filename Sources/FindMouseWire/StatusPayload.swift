@@ -1,3 +1,6 @@
+// Copyright 2026 Mikimoto
+// SPDX-License-Identifier: Apache-2.0
+
 import Foundation
 
 /// `findmouse status --json` 的 `data`。spec 第 8.4 節。
