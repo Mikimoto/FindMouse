@@ -164,6 +164,18 @@ FM="${BIN}/findmouse"
 APP="${ROOT}/build/FindMouse.app"
 echo "  findmouse：${FM}"
 
+# 「寫入」那一段就在這裡驗，**緊接著 make-app.sh**——這是唯一沒有時間窗口的位置。
+# 隔幾十秒再算一次 describe 就有兩種假紅：期間改了任何 tracked 檔案會讓 -dirty
+# 翻轉（而使用者本人常常就坐在這台機器前），以及 describe 失敗時（非 git 目錄／
+# 零 commit，都是 exit 128）期望值變成一個空前綴而產品端正確地顯示「開發版」。
+PLIST_STAMP="$(/usr/libexec/PlistBuddy -c 'Print :FMSourceVersion' "${APP}/Contents/Info.plist" 2>/dev/null || true)"
+DESCRIBE_NOW="$(git -C "${ROOT}" describe --tags --long --always --dirty 2>/dev/null || true)"
+if [[ "${PLIST_STAMP}" == "${DESCRIBE_NOW}" ]]; then
+    ok "make-app.sh 把 describe 寫進了 plist（${PLIST_STAMP:-（describe 失敗，兩邊都空）}）"
+else
+    bad "plist 的 FMSourceVersion 是「${PLIST_STAMP}」，而 describe 是「${DESCRIBE_NOW}」"
+fi
+
 echo "  socket：${FINDMOUSE_SOCKET}（不是使用者的那個）"
 rm -f "${FINDMOUSE_SOCKET}"
 
@@ -184,16 +196,23 @@ field() { json | /usr/bin/python3 -c "import json,sys; d=json.load(sys.stdin)['d
 expect "$(field 'd["visible"]')" "False" "剛啟動時貓不可見"
 expect "$(field 'd["pack"]["id"]')" "test-blocks" "載入的是內建 pack"
 
-# 建置身分。驗的是「寫入 → 讀取 → 顯示」整條路：make-app.sh（這支腳本在上面
-# 剛跑過）把 git describe 寫進 Info.plist，BuildInfo 讀回來，BuildStamp 組字串。
-# 設定視窗右下角顯示的是同一個值，所以這條同時守住了那一列——那一列本身
-# 沒有測試 target 驗得到。
+# 建置身分的「讀取 → 顯示」那一段（「寫入」在建置那一步就驗過了，那裡沒有
+# 時間窗口）。期望值從**plist 自己**組，不重算 describe：重算會在改過 tracked
+# 檔案或 describe 失敗時假紅，而那兩種情況產品端的行為都是對的。
+#
+# 設定視窗右下角走同一支 BuildInfo.stamp()，所以這條也守住了那一列——
+# 那一列本身沒有測試 target 驗得到。
 #
 # **不是非空檢查。** plist 沒寫、BuildInfo 沒接上，appVersion 都會是一個非空
 # 字串（「開發版」）——非空檢查對整個機制壞掉的情況照樣通過。
-EXPECTED_STAMP="$(git -C "${ROOT}" describe --tags --long --always --dirty 2>/dev/null) (dev)"
+if [[ -n "${PLIST_STAMP}" ]]; then
+    EXPECTED_STAMP="${PLIST_STAMP} (dev)"
+else
+    # describe 失敗時 make-app.sh 不寫那個鍵，規格要求降級成這一句。
+    EXPECTED_STAMP="開發版"
+fi
 expect "$(field 'd["appVersion"]')" "${EXPECTED_STAMP}" \
-       "appVersion 等於當下的 describe ＋ (dev)"
+       "appVersion 是 plist 的 FMSourceVersion ＋ (dev)"
 
 # --- 3 -----------------------------------------------------------------------
 step "3. summon → 抵達 resting，而且貓宣稱抵達時真的在游標附近"

@@ -235,7 +235,14 @@ done
 /usr/libexec/PlistBuddy -c "Add :FMSourceVersion string ${VERSION}" "${APP}/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Add :FMSourceCommit string ${SHA}" "${APP}/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c 'Add :FMIsDevelopmentBuild bool false' "${APP}/Contents/Info.plist"
-ok "建置身分：$(/usr/libexec/PlistBuddy -c 'Print :FMSourceVersion' "${APP}/Contents/Info.plist") @ $(/usr/libexec/PlistBuddy -c 'Print :FMSourceCommit' "${APP}/Contents/Info.plist")（開發旗標 $(/usr/libexec/PlistBuddy -c 'Print :FMIsDevelopmentBuild' "${APP}/Contents/Info.plist")）"
+# 開發旗標要驗**型別**，不只驗值。`PlistBuddy Print` 對 `bool false` 與
+# `string false` 都印 `false`（實測），而 Swift 那側 `as? Bool` 對字串回 nil、
+# 落到 `?? true` 的安全預設——於是上面那行只要打成 `Add … string false`，
+# 就會出貨一個標著「0.4.0 (dev)」的發布版，而每一條驗收都通過。
+# `plutil -p` 給字串加引號，分得出來（實測 `"S" => "false"` vs `"B" => false`）。
+plutil -p "${APP}/Contents/Info.plist" | grep -q '"FMIsDevelopmentBuild" => false' \
+    || die "FMIsDevelopmentBuild 不是 bool false（plutil 看到的是 $(plutil -p "${APP}/Contents/Info.plist" | grep FMIsDevelopmentBuild)）。發布版會被標成 (dev)。"
+ok "建置身分：$(/usr/libexec/PlistBuddy -c 'Print :FMSourceVersion' "${APP}/Contents/Info.plist") @ $(/usr/libexec/PlistBuddy -c 'Print :FMSourceCommit' "${APP}/Contents/Info.plist")（開發旗標是 bool false）"
 
 # 測試素材不能跟著出貨。make-app.sh 已經過濾，這條是證明它有效的守衛——
 # 把那個過濾拿掉，這裡就該紅。
@@ -342,17 +349,28 @@ verify_quarantined "${DMG}" || RC=1
 [[ "${RC}" -eq 0 ]] || die "驗收沒過。這份產物不能發出去。"
 
 say "10／10 打 tag"
-# 打在**驗收全過之後**：失敗的發布不留垃圾 tag。第 1 步已經擋過髒工作樹，
-# 所以這個 tag 一定落在乾淨的樹上。
+# 打在**驗收全過之後**：失敗的發布不留垃圾 tag。
+#
+# **tag 明確指向 ${SHA}，不是指向此刻的 HEAD。** 第 1 步的乾淨工作樹檢查是幾分鐘前
+# 的事——notarize 要等 Apple，這段窗口裡任何 commit／checkout／pull 都會讓
+# 「HEAD」不再是被建置的那個 commit，而 tag 一旦指錯，B 的 Homebrew cask 靠這個
+# tag 組出來的下載連結就對應到一份不含該產物的原始碼。這正是這整段功能要防的事。
 #
 # 不自動 push：收成本不對稱。本地打錯是 `git tag -d` 一行；遠端要 push 一個
 # 刪除 ref，而中間可能已經有人抓下去了。
 TAG="v${VERSION}"
 if git -C "${ROOT}" rev-parse -q --verify "refs/tags/${TAG}" >/dev/null; then
-    ok "tag ${TAG} 已存在，跳過"
+    # 已存在不代表沒事：它可能指向別的 commit（重跑同一版、或上次發布後又改了東西）。
+    # 靜默跳過會留下一個「tag 說是這版、產物其實是另一個 commit」的組合，
+    # 而那從外面完全看不出來。
+    EXISTING="$(git -C "${ROOT}" rev-parse "${TAG}^{commit}")"
+    WANTED="$(git -C "${ROOT}" rev-parse "${SHA}^{commit}")"
+    [[ "${EXISTING}" == "${WANTED}" ]] \
+        || die "tag ${TAG} 已存在但指向 ${EXISTING:0:7}，而這份產物建自 ${WANTED:0:7}。先確認哪一個才對，再手動處理那個 tag。"
+    ok "tag ${TAG} 已存在且指向同一個 commit（${WANTED:0:7}）"
 else
-    git -C "${ROOT}" tag -a "${TAG}" -m "${VERSION}"
-    ok "tag ${TAG} 已建立（本地）"
+    git -C "${ROOT}" tag -a "${TAG}" "${SHA}" -m "${VERSION}"
+    ok "tag ${TAG} → $(git -C "${ROOT}" rev-parse --short "${TAG}^{commit}")（本地）"
 fi
 
 printf '\n\033[32m✓\033[0m %s\n' "${DMG}"

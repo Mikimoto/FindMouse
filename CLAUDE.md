@@ -45,9 +45,12 @@ SciPy 裝在它上面，讓 mise 換一個 python 進來會讓素材管線立刻
   `pgrep -x <名字>` 可靠（bundle 內執行檔名與 SwiftPM 產物名不同）。
   **但「零個實例」不是唯一的路**——身分既然是 socket，給不同的 socket 就是不同的
   身分：`open -n --env "FINDMOUSE_SOCKET=/tmp/xxx.sock" <某個.app>` 可以與使用者
-  自己那份（`/Applications`，常常正在跑）共存，`e2e.sh` 的 `launch_app` 就是這樣做的。
-  要驗開發建置時**不要去殺使用者的實例**，用獨立 socket 開自己那份，收工用
-  `pkill -f 'build/FindMouse.app/...'`（路徑片段區分得開）。
+  自己那份（`/Applications`，常常正在跑）共存，`e2e.sh:131` 的 `launch_app` 就是
+  這樣做的。要驗開發建置時**不要去殺使用者的實例**。
+  收工要照 `e2e.sh:99` 的 `kill_started`：它用 before/after 的 `pgrep` 差集記下
+  **自己啟動的 pid**、只殺那些，並等到它們真的不在了才繼續。
+  **不要用 `pkill -f <路徑片段>`**——那會連另一個 session 開在同一路徑的實例一起殺，
+  正是這條要避免的事。
 - **`findmouse pack validate` 走 socket，App 必須在跑。** CLI 是薄用戶端，
   App 沒跑會回 `APP_NOT_RUNNING`（exit 3），那不是 pack 有問題。
 - **`toggle` 不是幂等的。** 腳本裡一律用 `summon` / `dismiss`。
@@ -58,8 +61,8 @@ SciPy 裝在它上面，讓 mise 換一個 python 進來會讓素材管線立刻
   寫真值。要判斷「手上這份 .app 是哪一版」看 `FMSourceVersion` /
   `FMSourceCommit` / `FMIsDevelopmentBuild` 三個鍵，或直接跑
   `findmouse status --json` 讀 `appVersion`——它與設定視窗右下角是同一串
-  （同一支 `BuildInfo.stamp()`）。發布版是 `0.3.2 (fcea598)`，開發建置是
-  `v0.3.1-5-g89976fc-dirty (dev)`。
+  （同一支 `BuildInfo.stamp()`）。形狀是：發布版 `<版本> (<sha>)`、開發建置
+  `<git describe 輸出> (dev)`、拿不到版本時 `開發版`。
 - **`git describe --always` 不是萬用退路。** 它只涵蓋「有 repo、有 commit、
   沒有 tag」（退到裸 sha）。**完全沒有 `.git` 或零 commit 都是 exit 128**，
   腳本裡必須接非零（`make-app.sh` 的 `|| DESCRIBE=""`）。另外兩件實測：

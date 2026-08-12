@@ -450,6 +450,9 @@ private struct SettingsRootView: View {
             Text(copiedStamp ? "已複製 ✓" : stamp)
                 .font(.caption)
                 .foregroundStyle(.secondary)
+                // 沒有這個提示，「可以點」這件事沒有任何線索——而回報問題時
+                // 不用手抄 sha 正是這一列存在的主要用途。
+                .help("點一下複製")
                 .onTapGesture {
                     // 複製的與顯示的是**同一個值**，不各自組一次：回報問題時貼上的
                     // 東西必須與畫面一致，而共用一個值是唯一不需要測試就成立的做法。

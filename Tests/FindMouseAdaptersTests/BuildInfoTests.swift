@@ -27,11 +27,17 @@ import Testing
     #expect(BuildInfo.stamp(from: nil) == "開發版")
 }
 
-/// **型別不對時一律當開發建置。** 2026-08-12 實測 `PlistBuddy Add ... bool true`
-/// 進到 Swift 確實是 `Bool`，所以這條在正常流程走不到——它釘的是一個不變式：
-/// `Add :K string true` 與 `Add :K bool true` 只差一個字，寫錯時降級方向必須是
-/// 安全的那邊。把開發建置誤標成發布版，會讓人拿一份含未提交改動的 .app 當發布
-/// 產物來判斷問題；反過來把發布版誤標成 (dev) 只是難看。
+/// **型別不對時一律當開發建置。**
+///
+/// 這條**不要刪**。它唯一能反駁的是「把 `as? Bool` 換成寬鬆轉型」這個很自然的
+/// 重構——`(x as AnyObject).boolValue` 或 `NSString.boolValue` 會把字串 `"false"`
+/// 讀成 `false`，於是一個型別打錯的發布版會被當成真的發布版出貨。其他測試都抓不到
+/// 那個改動（對「刪掉這段」型的突變，它與 `missingKeysDegradeToDevelopment` 無法區分，
+/// 所以光看突變結果會覺得它多餘）。
+///
+/// 型別打錯的來源在**腳本**而不是這裡：`Add :K string false` 與 `Add :K bool false`
+/// 只差一個字，而 `PlistBuddy Print` 對兩者都印 `false`（實測）。`release.sh` 因此
+/// 用 `plutil -p` 斷言型別——那一側是這個不變式的另一半。
 @Test func wrongTypeOnTheDevelopmentFlagIsTreatedAsDevelopment() {
     let info: [String: Any] = ["FMSourceVersion": "0.4.0",
                                "FMSourceCommit": "a3c3feb",
