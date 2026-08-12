@@ -33,6 +33,28 @@ cp "${BIN_DIR}/FindMouseApp" "${APP}/Contents/MacOS/FindMouse"
 # 關鍵字（它能讓檔案躲過分層掃描），後者語意不對（執行期不讀它）。
 cp "${ROOT}/Scripts/Info.plist" "${APP}/Contents/Info.plist"
 
+# 建置身分。這三個鍵讓 .app 自己答得出「你是哪一版」——Scripts/Info.plist 裡的
+# CFBundleShortVersionString 是佔位符（寫死 0.1.0），只有 release.sh 會寫真值。
+#
+# 用 Add 而不是預先在 Scripts/Info.plist 放佔位值：漏寫時鍵不存在，畫面顯示
+# 「開發版」，異常看得見；放佔位值則會顯示一個看起來完全正常的假版本。
+#
+# --always 只涵蓋「有 repo、有 commit、沒有 tag」（退到裸 sha）。完全沒有 .git
+# 或零 commit 都是 exit 128（實測），所以這裡要接非零：拿不到就不寫那個鍵，
+# 讓 BuildStamp 走它的降級路徑。
+#
+# --long 讓格式恆定帶 sha（不加時，坐在 tag 上的 commit 回的是 v0.3.1、沒有 sha）。
+# -dirty 只反映 tracked 檔案的修改，untracked 不算（實測）。
+DESCRIBE="$(git -C "${ROOT}" describe --tags --long --always --dirty 2>/dev/null)" || DESCRIBE=""
+if [[ -n "${DESCRIBE}" ]]; then
+    /usr/libexec/PlistBuddy -c "Add :FMSourceVersion string ${DESCRIBE}" \
+        "${APP}/Contents/Info.plist" >/dev/null
+fi
+# 開發建置不寫 FMSourceCommit：describe 已經含 sha，而 describe 失敗時
+# git rev-parse 的失敗條件相同（都要 repo ＋ commit），它補不上。
+/usr/libexec/PlistBuddy -c 'Add :FMIsDevelopmentBuild bool true' \
+    "${APP}/Contents/Info.plist" >/dev/null
+
 # SwiftPM 把 target 的 resources 放在執行檔旁的 *.bundle 裡，Bundle.module 靠它找資源。
 # 不複製進去的話，載入內建 pack 會在執行期失敗（而不是編譯期）。
 #
