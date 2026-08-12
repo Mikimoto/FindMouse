@@ -184,6 +184,17 @@ field() { json | /usr/bin/python3 -c "import json,sys; d=json.load(sys.stdin)['d
 expect "$(field 'd["visible"]')" "False" "剛啟動時貓不可見"
 expect "$(field 'd["pack"]["id"]')" "test-blocks" "載入的是內建 pack"
 
+# 建置身分。驗的是「寫入 → 讀取 → 顯示」整條路：make-app.sh（這支腳本在上面
+# 剛跑過）把 git describe 寫進 Info.plist，BuildInfo 讀回來，BuildStamp 組字串。
+# 設定視窗右下角顯示的是同一個值，所以這條同時守住了那一列——那一列本身
+# 沒有測試 target 驗得到。
+#
+# **不是非空檢查。** plist 沒寫、BuildInfo 沒接上，appVersion 都會是一個非空
+# 字串（「開發版」）——非空檢查對整個機制壞掉的情況照樣通過。
+EXPECTED_STAMP="$(git -C "${ROOT}" describe --tags --long --always --dirty 2>/dev/null) (dev)"
+expect "$(field 'd["appVersion"]')" "${EXPECTED_STAMP}" \
+       "appVersion 等於當下的 describe ＋ (dev)"
+
 # --- 3 -----------------------------------------------------------------------
 step "3. summon → 抵達 resting，而且貓宣稱抵達時真的在游標附近"
 "${FM}" summon >/dev/null
