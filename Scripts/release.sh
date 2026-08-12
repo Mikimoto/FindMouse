@@ -363,7 +363,9 @@ if git -C "${ROOT}" rev-parse -q --verify "refs/tags/${TAG}" >/dev/null; then
     # 已存在不代表沒事：它可能指向別的 commit（重跑同一版、或上次發布後又改了東西）。
     # 靜默跳過會留下一個「tag 說是這版、產物其實是另一個 commit」的組合，
     # 而那從外面完全看不出來。
-    EXISTING="$(git -C "${ROOT}" rev-parse "${TAG}^{commit}")"
+    # 用 refs/tags/ 限定：同名分支存在時 git 雖然會正確解到 tag，但會往 stderr
+    # 印一行 ambiguous warning，而發布流程的輸出不該有看起來像錯誤的雜訊。
+    EXISTING="$(git -C "${ROOT}" rev-parse "refs/tags/${TAG}^{commit}")"
     WANTED="$(git -C "${ROOT}" rev-parse "${SHA}^{commit}")"
     [[ "${EXISTING}" == "${WANTED}" ]] \
         || die "tag ${TAG} 已存在但指向 ${EXISTING:0:7}，而這份產物建自 ${WANTED:0:7}。先確認哪一個才對，再手動處理那個 tag。"

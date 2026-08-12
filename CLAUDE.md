@@ -47,10 +47,12 @@ SciPy 裝在它上面，讓 mise 換一個 python 進來會讓素材管線立刻
   身分：`open -n --env "FINDMOUSE_SOCKET=/tmp/xxx.sock" <某個.app>` 可以與使用者
   自己那份（`/Applications`，常常正在跑）共存，`e2e.sh:131` 的 `launch_app` 就是
   這樣做的。要驗開發建置時**不要去殺使用者的實例**。
-  收工要照 `e2e.sh:99` 的 `kill_started`：它用 before/after 的 `pgrep` 差集記下
-  **自己啟動的 pid**、只殺那些，並等到它們真的不在了才繼續。
-  **不要用 `pkill -f <路徑片段>`**——那會連另一個 session 開在同一路徑的實例一起殺，
-  正是這條要避免的事。
+  收工要照 e2e 那兩支的分工：`launch_app`（`e2e.sh:131`）用 before/after 的 `pgrep`
+  差集記下**自己啟動的 pid**，`kill_started`（`:99`）只殺那些、並等到它們真的不在了
+  才繼續。（那個差集有個已知邊界：它會收養 `open` 之後 2 秒內出現的**任何**實例，
+  所以「只殺自己的」在那個窗口內有別人啟動時不成立。）
+  **不要用 `pkill -f <路徑片段>`**——路徑片段是相對的，它會匹配**任何** worktree 的
+  `build/FindMouse.app`，連另一個 session 的實例一起殺，正是這條要避免的事。
 - **`findmouse pack validate` 走 socket，App 必須在跑。** CLI 是薄用戶端，
   App 沒跑會回 `APP_NOT_RUNNING`（exit 3），那不是 pack 有問題。
 - **`toggle` 不是幂等的。** 腳本裡一律用 `summon` / `dismiss`。
