@@ -158,8 +158,43 @@ public enum Arguments {
             }
             return parsed("pack.validate", ["path": rest[1]])
 
+        case "install":
+            // `--force` 可以在路徑前或後——使用者不該記順序。其餘旗標一律拒絕，
+            // 靜默忽略會讓人以為那個旗標有作用。
+            var operands = Array(rest.dropFirst())
+            var force = false
+            if let i = operands.firstIndex(of: "--force") {
+                force = true
+                operands.remove(at: i)
+            }
+            if let unknown = operands.first(where: { $0.hasPrefix("--") }) {
+                throw ParseError.usage("pack install 不認得 \(unknown)（只吃 --force）")
+            }
+            guard operands.count == 1 else {
+                throw ParseError.usage(
+                    "pack install 要接一個路徑（.fmpack、.zip 或一個目錄），"
+                    + "可加 --force 覆蓋同 id 的")
+            }
+            var installArgs = ["path": operands[0]]
+            if force { installArgs["force"] = "true" }
+            return parsed("pack.install", installArgs)
+
+        case "remove":
+            // --force 對 remove 沒有意義，明確擋下：靜默忽略會讓人以為
+            // 「加了 --force 就能刪內建」，而內建是拿不掉的。
+            let operands = Array(rest.dropFirst())
+            guard !operands.contains("--force") else {
+                throw ParseError.usage(
+                    "pack remove 不吃 --force；內建圖組拿不掉，其餘直接移除")
+            }
+            guard operands.count == 1 else {
+                throw ParseError.usage("pack remove 要接一個 pack id（用 pack list 看有哪些）")
+            }
+            return parsed("pack.remove", ["id": operands[0]])
+
         default:
-            throw ParseError.usage("pack 要接 list、use <id> 或 validate <path>")
+            throw ParseError.usage(
+                "pack 要接 list、use <id>、validate <path>、install <path> 或 remove <id>")
         }
     }
 
