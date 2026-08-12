@@ -164,10 +164,14 @@ FM="${BIN}/findmouse"
 APP="${ROOT}/build/FindMouse.app"
 echo "  findmouse：${FM}"
 
-# 「寫入」那一段就在這裡驗，**緊接著 make-app.sh**——這是唯一沒有時間窗口的位置。
-# 隔幾十秒再算一次 describe 就有兩種假紅：期間改了任何 tracked 檔案會讓 -dirty
-# 翻轉（而使用者本人常常就坐在這台機器前），以及 describe 失敗時（非 git 目錄／
-# 零 commit，都是 exit 128）期望值變成一個空前綴而產品端正確地顯示「開發版」。
+# 「寫入」那一段就在這裡驗，**緊接著 make-app.sh**：兩次取值之間的窗口從幾十秒
+# 縮到毫秒級。窗口不是零——真的在那一瞬間改了 tracked 檔案，這條就會紅，而那時
+# 報紅是誠實的（plist 與 describe 確實已經不一致）。
+#
+# 放在後面才是真的會假紅：隔幾十秒再算一次 describe 有兩條路——期間改了任何
+# tracked 檔案會讓 -dirty 翻轉（而使用者本人常常就坐在這台機器前），以及 describe
+# 失敗時（非 git 目錄／零 commit，都是 exit 128）期望值變成一個空前綴，而產品端
+# 此時正確地顯示「開發版」。後者是確定性假紅：程式碼完全正確卻永遠紅。
 PLIST_STAMP="$(/usr/libexec/PlistBuddy -c 'Print :FMSourceVersion' "${APP}/Contents/Info.plist" 2>/dev/null || true)"
 DESCRIBE_NOW="$(git -C "${ROOT}" describe --tags --long --always --dirty 2>/dev/null || true)"
 if [[ "${PLIST_STAMP}" == "${DESCRIBE_NOW}" ]]; then
