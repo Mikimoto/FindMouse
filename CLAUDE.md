@@ -43,11 +43,30 @@ SciPy 裝在它上面，讓 mise 換一個 python 進來會讓素材管線立刻
 - **同時只能有一個 FindMouse 實例。** 身分是 unix socket，第二個實例會自己退出。
   測試前要斷言零個實例，不能「殺完就當作乾淨」；`pgrep -f <路徑片段>` 比
   `pgrep -x <名字>` 可靠（bundle 內執行檔名與 SwiftPM 產物名不同）。
+  **但「零個實例」不是唯一的路**——身分既然是 socket，給不同的 socket 就是不同的
+  身分：`open -n --env "FINDMOUSE_SOCKET=/tmp/xxx.sock" <某個.app>` 可以與使用者
+  自己那份（`/Applications`，常常正在跑）共存，`e2e.sh` 的 `launch_app` 就是這樣做的。
+  要驗開發建置時**不要去殺使用者的實例**，用獨立 socket 開自己那份，收工用
+  `pkill -f 'build/FindMouse.app/...'`（路徑片段區分得開）。
 - **`findmouse pack validate` 走 socket，App 必須在跑。** CLI 是薄用戶端，
   App 沒跑會回 `APP_NOT_RUNNING`（exit 3），那不是 pack 有問題。
 - **`toggle` 不是幂等的。** 腳本裡一律用 `summon` / `dismiss`。
 - SwiftUI **只給設定視窗**。Overlay 維持純 AppKit ＋ CALayer——那裡有 spec 第 7.4 節
   的每帧預算，設定視窗一秒鐘畫不到一次。
+- **`Scripts/Info.plist` 的版本值是佔位符。** `CFBundleShortVersionString` 寫死
+  `0.1.0`、`CFBundleVersion` 寫死 `1`，只有 `release.sh` 會在**複製到 .app 裡的那份**
+  寫真值。要判斷「手上這份 .app 是哪一版」看 `FMSourceVersion` /
+  `FMSourceCommit` / `FMIsDevelopmentBuild` 三個鍵，或直接跑
+  `findmouse status --json` 讀 `appVersion`——它與設定視窗右下角是同一串
+  （同一支 `BuildInfo.stamp()`）。發布版是 `0.3.2 (fcea598)`，開發建置是
+  `v0.3.1-5-g89976fc-dirty (dev)`。
+- **`git describe --always` 不是萬用退路。** 它只涵蓋「有 repo、有 commit、
+  沒有 tag」（退到裸 sha）。**完全沒有 `.git` 或零 commit 都是 exit 128**，
+  腳本裡必須接非零（`make-app.sh` 的 `|| DESCRIBE=""`）。另外兩件實測：
+  不加 `--long` 時，坐在 tag 上的 commit 回的是 `v0.3.1`、**不帶 sha**；
+  而 `--long` 的 `-N-` 是**可達 commit 數**不是線性距離（tag 打在 `HEAD~3`
+  實測回 `-61-`，因為 merge commit 帶進整條 feature 分支）。`-dirty` 只反映
+  tracked 檔案的修改，untracked 不算。
 - **不要拿 `notarytool submit --wait` 的 exit code 當審查結果。** 它對「命令自己
   失敗」是有紀律的（實測：profile 不存在回 69、檔案不存在回 64、合約過期回 403 並
   非零），但「送出成功、而 Apple 判 `Invalid`」會不會也回非零，**本專案還沒實測過**。
