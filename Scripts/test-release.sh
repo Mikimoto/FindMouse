@@ -75,6 +75,37 @@ else
     bad "跑完之後工作樹髒了：$(git status --porcelain)"
 fi
 
+# --- 2b ------------------------------------------------------------------
+step "2b. 開發旗標的型別守衛分得出 bool 與 string（雙向對照組）"
+# release.sh 用 `plutil -p | grep -q` 而不是 `PlistBuddy Print` 驗這個鍵，因為後者
+# 對 `bool false` 與 `string false` **都印 false**，而 Swift 側 `as? Bool` 對字串回
+# nil、落到「當成開發建置」的安全預設——`Add :K string false` 這一個字的手滑就會
+# 出貨一份標著「0.4.0 (dev)」的發布版，而每一條驗收都通過。
+#
+# 只有負向不夠：光證明它會擋，擋不住「這個判別式整個壞掉、對什麼都不匹配」。
+# 所以兩個方向都要。
+if [[ -f "${PL}" ]]; then
+    plutil -p "${PL}" | grep -q '"FMIsDevelopmentBuild" => false' \
+        && ok "真實的 dry-run 產物通過型別守衛" \
+        || bad "真實產物沒通過型別守衛——release.sh 的那條 die 會擋住每一次發布"
+fi
+TYPEDIR="$(mktemp -d)"
+for form in string bool; do
+    T="${TYPEDIR}/${form}.plist"
+    /usr/libexec/PlistBuddy -c "Save" "${T}" >/dev/null 2>&1
+    /usr/libexec/PlistBuddy -c "Add :FMIsDevelopmentBuild ${form} false" "${T}" >/dev/null
+    if plutil -p "${T}" | grep -q '"FMIsDevelopmentBuild" => false'; then
+        [[ "${form}" == bool ]] \
+            && ok "守衛放行 bool false" \
+            || bad "守衛對 string false 放行了——那條驗收沒有鑑別力"
+    else
+        [[ "${form}" == string ]] \
+            && ok "守衛擋下 string false" \
+            || bad "守衛連正確的 bool false 都擋下——發布會停在驗收之前"
+    fi
+done
+rm -rf "${TYPEDIR}"
+
 # --- 3 -------------------------------------------------------------------
 step "3. 測試素材不會混進 .app"
 # 先確認那個 .app 真的在。少了這一步，`--dry-run` 若在組裝之前就失敗

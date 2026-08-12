@@ -227,8 +227,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let state = driver?.isRunning == true ? frame : frame.withCursor(cursor.location)
         return StatusJSONPresenter.payload(
             state: state,
-            appVersion: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString")
-                as? String ?? "0.0.0",
+            // CFBundleShortVersionString 在開發建置是佔位符（Scripts/Info.plist 寫死
+            // 0.1.0，只有 release.sh 會寫真值），拿它當版本會讓 status 對開發建置
+            // 說謊。BuildInfo 讀的是建置腳本寫入的三個鍵，與設定視窗右下角同一串。
+            appVersion: BuildInfo.stamp(),
             packID: pack?.id ?? "",
             packLogicalHeight: pack?.sprites.logicalHeight ?? 0,
             screens: NSScreen.screens.map {

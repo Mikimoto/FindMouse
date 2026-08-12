@@ -164,6 +164,8 @@ private struct SettingsRootView: View {
     @State private var showAdvanced = false
     /// 哪個文字欄有焦點。`nil` 代表都沒有。
     @FocusState private var focused: String?
+    /// 複製版本字串後的短暫回饋。1.5 秒後自己復原。
+    @State private var copiedStamp = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -182,6 +184,7 @@ private struct SettingsRootView: View {
             hotkeyRow("hotkey.teaser", title: "逗貓棒")
             Divider()
             advancedSection
+            buildStampRow
         }
         .padding(20)
         .frame(width: 480)
@@ -429,6 +432,35 @@ private struct SettingsRootView: View {
                 .padding(.top, 6)
             }
             .frame(height: 200)
+        }
+    }
+
+    // MARK: - 建置身分
+
+    /// 右下角一行。**這裡沒有任何判斷**——`FindMouseApp` 沒有測試 target，
+    /// 所以「要不要標 (dev)」「缺值怎麼降級」全在 `BuildStamp`（Domain，有測試），
+    /// 讀 plist 在 `BuildInfo`（Adapters，有測試）。與 `loginItemRow` 同一個做法。
+    ///
+    /// `status --json` 的 `appVersion` 走同一支 `BuildInfo.stamp()`，所以 e2e 驗
+    /// 那個欄位時，連帶驗到了這一列的內容。
+    private var buildStampRow: some View {
+        let stamp = BuildInfo.stamp()
+        return HStack {
+            Spacer()
+            Text(copiedStamp ? "已複製 ✓" : stamp)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                // 沒有這個提示，「可以點」這件事沒有任何線索——而回報問題時
+                // 不用手抄 sha 正是這一列存在的主要用途。
+                .help("點一下複製")
+                .onTapGesture {
+                    // 複製的與顯示的是**同一個值**，不各自組一次：回報問題時貼上的
+                    // 東西必須與畫面一致，而共用一個值是唯一不需要測試就成立的做法。
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(stamp, forType: .string)
+                    copiedStamp = true
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { copiedStamp = false }
+                }
         }
     }
 }

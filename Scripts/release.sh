@@ -171,7 +171,7 @@ fi
 [[ "${MODE}" == dry || -n "${PROFILE}" ]] \
     || die "要給 --profile <名稱>。先跑一次：xcrun notarytool store-credentials <名稱>"
 
-say "1／9 工作樹與版本"
+say "1／10 工作樹與版本"
 # 版本號會進檔名（`rm -f "${DMG}"` 打得到它）、dmg 卷標、與 Info.plist。
 # 沒有 shell injection 的風險（全程雙引號、無 eval），但 `0.2.0/../../x` 這種值
 # 會讓那個 rm 打到 build/ 之外，而且產物標籤與 plist 會對不起來。
@@ -204,11 +204,11 @@ ok "${VERSION}（build ${BUILD_NUMBER}）@ ${SHA}"
 # Xcode 27 還是 beta。等正式版出來要送 App Store Connect 時，得知道先前發出去的
 # 哪幾版是 beta SDK 建的——那些不能直接送審。不手寫 DTXcode 之類的鍵：
 # Apple 會讀它們，手寫等於謊報。
-say "2／9 工具鏈"
+say "2／10 工具鏈"
 swift --version 2>&1 | sed 's/^/  /'
 xcodebuild -version 2>&1 | sed 's/^/  /'
 
-say "3／9 · 4／9 建置與組裝"
+say "3／10 · 4／10 建置與組裝"
 rm -rf "${STAGE}"
 mkdir -p "${STAGE}"
 APP_DIR="${STAGE}/FindMouse.app" Scripts/make-app.sh release >/dev/null
@@ -220,6 +220,29 @@ APP="${STAGE}/FindMouse.app"
 /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString ${VERSION}" "${APP}/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Set :CFBundleVersion ${BUILD_NUMBER}" "${APP}/Contents/Info.plist"
 ok "Info.plist：$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "${APP}/Contents/Info.plist") / $(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "${APP}/Contents/Info.plist")"
+
+# 建置身分。上面第 214 行走的是 make-app.sh，所以這三個鍵**已經帶著開發建置的值**
+# （FMSourceVersion 是 git describe 的輸出、FMIsDevelopmentBuild 是 true）。
+# 先刪再加，不用 Set：語意是「不管前面寫了什麼，發布版重新定義這三個」，
+# 而且不必依賴「Set 對缺失的鍵會失敗」這個沒驗過的前提——describe 失敗時
+# make-app.sh 根本不會寫 FMSourceVersion，那時 Set 就沒有東西可設。
+#
+# **不要改成 git describe。** 這一段跑在打 tag 之前（tag 在驗收全過之後才打），
+# 所以此刻 describe 拿到的是「上一個版本的 tag 名」，不是正在發布的這一版。
+for key in FMSourceVersion FMSourceCommit FMIsDevelopmentBuild; do
+    /usr/libexec/PlistBuddy -c "Delete :${key}" "${APP}/Contents/Info.plist" 2>/dev/null || true
+done
+/usr/libexec/PlistBuddy -c "Add :FMSourceVersion string ${VERSION}" "${APP}/Contents/Info.plist"
+/usr/libexec/PlistBuddy -c "Add :FMSourceCommit string ${SHA}" "${APP}/Contents/Info.plist"
+/usr/libexec/PlistBuddy -c 'Add :FMIsDevelopmentBuild bool false' "${APP}/Contents/Info.plist"
+# 開發旗標要驗**型別**，不只驗值。`PlistBuddy Print` 對 `bool false` 與
+# `string false` 都印 `false`（實測），而 Swift 那側 `as? Bool` 對字串回 nil、
+# 落到 `?? true` 的安全預設——於是上面那行只要打成 `Add … string false`，
+# 就會出貨一個標著「0.4.0 (dev)」的發布版，而每一條驗收都通過。
+# `plutil -p` 給字串加引號，分得出來（實測 `"S" => "false"` vs `"B" => false`）。
+plutil -p "${APP}/Contents/Info.plist" | grep -q '"FMIsDevelopmentBuild" => false' \
+    || die "FMIsDevelopmentBuild 不是 bool false（plutil 看到的是 $(plutil -p "${APP}/Contents/Info.plist" | grep FMIsDevelopmentBuild)）。發布版會被標成 (dev)。"
+ok "建置身分：$(/usr/libexec/PlistBuddy -c 'Print :FMSourceVersion' "${APP}/Contents/Info.plist") @ $(/usr/libexec/PlistBuddy -c 'Print :FMSourceCommit' "${APP}/Contents/Info.plist")（開發旗標是 bool false）"
 
 # 測試素材不能跟著出貨。make-app.sh 已經過濾，這條是證明它有效的守衛——
 # 把那個過濾拿掉，這裡就該紅。
@@ -262,7 +285,7 @@ if [[ "${MODE}" == dry ]]; then
     exit 0
 fi
 
-say "5／9 簽章"
+say "5／10 簽章"
 # 由內而外簽。SwiftPM 給資源 bundle 蓋的是 ad-hoc 章（實測
 # `codesign -dv` 回 Signature=adhoc、Identifier=findmouse.FindMouseAdapters.resources），
 # 留著它會讓外層的 Developer ID 簽章包著一個非 Developer ID 的巢狀 bundle。
@@ -276,7 +299,7 @@ done < <(/usr/bin/find "${APP}/Contents/Resources" -maxdepth 1 -name '*.bundle' 
 codesign --force --options runtime --timestamp --sign "${IDENTITY}" "${APP}"
 ok "已簽 ${IDENTITY}"
 
-say "6／9 打包 dmg"
+say "6／10 打包 dmg"
 # 為什麼是 dmg 不是 zip：**票釘不釘得上**。zip 不能 staple，流程會變成
 # 「簽 → 壓 → notarize → staple 裡面的 .app → 重壓」，多一次拆裝、多一個漏掉
 # 最後那步的機會。而漏 staple 的症狀很賤——本機測都過，使用者離線時被擋。
@@ -288,7 +311,7 @@ hdiutil create -volname "FindMouse ${VERSION}" -srcfolder "${STAGE}" \
 codesign --force --timestamp --sign "${IDENTITY}" "${DMG}"
 ok "$(basename "${DMG}")"
 
-say "7／9 notarize（要等 Apple，通常數分鐘）"
+say "7／10 notarize（要等 Apple，通常數分鐘）"
 SUBMIT_LOG="$(mktemp)"
 xcrun notarytool submit "${DMG}" --keychain-profile "${PROFILE}" --wait 2>&1 \
     | tee "${SUBMIT_LOG}" || true
@@ -314,10 +337,10 @@ fi
 rm -f "${SUBMIT_LOG}"
 ok "Accepted（submission ${SUBMISSION_ID}）"
 
-say "8／9 staple"
+say "8／10 staple"
 xcrun stapler staple "${DMG}"
 
-say "9／9 驗收"
+say "9／10 驗收"
 require_gatekeeper_on
 RC=0
 verify_dmg "${DMG}" || RC=1
@@ -325,6 +348,34 @@ say "再驗一次（已加隔離屬性，模擬從網路下載）"
 verify_quarantined "${DMG}" || RC=1
 [[ "${RC}" -eq 0 ]] || die "驗收沒過。這份產物不能發出去。"
 
+say "10／10 打 tag"
+# 打在**驗收全過之後**：失敗的發布不留垃圾 tag。
+#
+# **tag 明確指向 ${SHA}，不是指向此刻的 HEAD。** 第 1 步的乾淨工作樹檢查是幾分鐘前
+# 的事——notarize 要等 Apple，這段窗口裡任何 commit／checkout／pull 都會讓
+# 「HEAD」不再是被建置的那個 commit，而 tag 一旦指錯，B 的 Homebrew cask 靠這個
+# tag 組出來的下載連結就對應到一份不含該產物的原始碼。這正是這整段功能要防的事。
+#
+# 不自動 push：收成本不對稱。本地打錯是 `git tag -d` 一行；遠端要 push 一個
+# 刪除 ref，而中間可能已經有人抓下去了。
+TAG="v${VERSION}"
+if git -C "${ROOT}" rev-parse -q --verify "refs/tags/${TAG}" >/dev/null; then
+    # 已存在不代表沒事：它可能指向別的 commit（重跑同一版、或上次發布後又改了東西）。
+    # 靜默跳過會留下一個「tag 說是這版、產物其實是另一個 commit」的組合，
+    # 而那從外面完全看不出來。
+    # 用 refs/tags/ 限定：同名分支存在時 git 雖然會正確解到 tag，但會往 stderr
+    # 印一行 ambiguous warning，而發布流程的輸出不該有看起來像錯誤的雜訊。
+    EXISTING="$(git -C "${ROOT}" rev-parse "refs/tags/${TAG}^{commit}")"
+    WANTED="$(git -C "${ROOT}" rev-parse "${SHA}^{commit}")"
+    [[ "${EXISTING}" == "${WANTED}" ]] \
+        || die "tag ${TAG} 已存在但指向 ${EXISTING:0:7}，而這份產物建自 ${WANTED:0:7}。先確認哪一個才對，再手動處理那個 tag。"
+    ok "tag ${TAG} 已存在且指向同一個 commit（${WANTED:0:7}）"
+else
+    git -C "${ROOT}" tag -a "${TAG}" "${SHA}" -m "${VERSION}"
+    ok "tag ${TAG} → $(git -C "${ROOT}" rev-parse --short "${TAG}^{commit}")（本地）"
+fi
+
 printf '\n\033[32m✓\033[0m %s\n' "${DMG}"
 printf '  版本 %s（build %s）@ %s\n' "${VERSION}" "${BUILD_NUMBER}" "${SHA}"
+printf '  推 tag：git push origin %s\n' "${TAG}"
 printf '  最後一關本機測不到：傳給一台沒有這些憑證的機器（或另一個使用者帳號）雙擊一次。\n'

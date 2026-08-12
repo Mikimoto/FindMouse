@@ -164,6 +164,28 @@ FM="${BIN}/findmouse"
 APP="${ROOT}/build/FindMouse.app"
 echo "  findmouse：${FM}"
 
+# 「寫入」那一段就在這裡驗，**緊接著 make-app.sh**：兩次取值之間的窗口從幾十秒
+# 縮到毫秒級。窗口不是零——真的在那一瞬間改了 tracked 檔案，這條就會紅，而那時
+# 報紅是誠實的（plist 與 describe 確實已經不一致）。
+#
+# 放在後面才是真的會假紅：隔幾十秒再算一次 describe 有兩條路——期間改了任何
+# tracked 檔案會讓 -dirty 翻轉（而使用者本人常常就坐在這台機器前），以及 describe
+# 失敗時（非 git 目錄／零 commit，都是 exit 128）期望值變成一個空前綴，而產品端
+# 此時正確地顯示「開發版」。後者是確定性假紅：程式碼完全正確卻永遠紅。
+PLIST_STAMP="$(/usr/libexec/PlistBuddy -c 'Print :FMSourceVersion' "${APP}/Contents/Info.plist" 2>/dev/null || true)"
+DESCRIBE_NOW="$(git -C "${ROOT}" describe --tags --long --always --dirty 2>/dev/null || true)"
+# describe 拿不到（tarball、零 commit）時**不要斷言 fallback**：那時「兩邊都空」會讓
+# 這條通過，而下面那條的期望值變成「開發版」——恰好也是 BuildInfo 完全斷線時的產出。
+# 兩條會一起變成恆真句，整個功能刪掉照樣綠，正是這裡最該防的事。
+# 走第三種結果（無法判定）：它不算通過，而且整輪的 exit code 仍然非零。
+if [[ -z "${DESCRIBE_NOW}" ]]; then
+    skip "git describe 在這個 checkout 拿不到（tarball 或零 commit），建置身分這兩條沒被評估"
+elif [[ "${PLIST_STAMP}" == "${DESCRIBE_NOW}" ]]; then
+    ok "make-app.sh 把 describe 寫進了 plist（${PLIST_STAMP}）"
+else
+    bad "plist 的 FMSourceVersion 是「${PLIST_STAMP}」，而 describe 是「${DESCRIBE_NOW}」"
+fi
+
 echo "  socket：${FINDMOUSE_SOCKET}（不是使用者的那個）"
 rm -f "${FINDMOUSE_SOCKET}"
 
@@ -183,6 +205,27 @@ field() { json | /usr/bin/python3 -c "import json,sys; d=json.load(sys.stdin)['d
 
 expect "$(field 'd["visible"]')" "False" "剛啟動時貓不可見"
 expect "$(field 'd["pack"]["id"]')" "test-blocks" "載入的是內建 pack"
+
+# 建置身分的「讀取 → 顯示」那一段（「寫入」在建置那一步驗過，那裡的窗口是毫秒級）。
+# 期望值從**plist 自己**組，不重算 describe：重算會在改過 tracked 檔案或 describe
+# 失敗時假紅，而那兩種情況產品端的行為都是對的。
+#
+# 設定視窗右下角走同一支 BuildInfo.stamp()，所以這條也守住了那一列——
+# 那一列本身沒有測試 target 驗得到。
+#
+# **不是非空檢查。** plist 沒寫、BuildInfo 沒接上，appVersion 都會是一個非空
+# 字串（「開發版」）——非空檢查對整個機制壞掉的情況照樣通過。
+#
+# plist 沒有那個鍵時走無法判定，不斷言「開發版」：那個值同時也是「BuildInfo 完全
+# 斷線」的產出，斷言它等於承認這條在該環境下沒有鑑別力（與上面那條同一個理由）。
+if [[ -z "${PLIST_STAMP}" ]]; then
+    skip "plist 沒有 FMSourceVersion，appVersion 這條沒被評估（期望值會與斷線時的產出同形）"
+    EXPECTED_STAMP=""
+else
+    EXPECTED_STAMP="${PLIST_STAMP} (dev)"
+fi
+[[ -z "${EXPECTED_STAMP}" ]] || expect "$(field 'd["appVersion"]')" "${EXPECTED_STAMP}" \
+       "appVersion 是 plist 的 FMSourceVersion ＋ (dev)"
 
 # --- 3 -----------------------------------------------------------------------
 step "3. summon → 抵達 resting，而且貓宣稱抵達時真的在游標附近"
