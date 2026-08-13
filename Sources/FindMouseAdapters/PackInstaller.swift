@@ -18,9 +18,44 @@ public enum PackInstaller {
     /// 暫存目錄用完立刻刪（`defer`）且它在 `NSTemporaryDirectory()` 底下。
     public static let byteLimit = 200 * 1024 * 1024
 
-    public enum Failure: Error, Equatable {
+    /// **實作 `LocalizedError`**，否則 `error.localizedDescription` 會吐
+    /// 「The operation couldn't be completed. (…Failure error 1.)」——英文樣板，
+    /// 而且 `extract` 為了避免 deadlock 精心收下的 ditto stderr 會整段遺失
+    /// （壞 zip 的使用者看不到「這不是一個 zip」）。
+    public enum Failure: Error, Equatable, LocalizedError {
         case tooLarge(bytes: Int, limit: Int)
         case extractionFailed(String)
+        /// id 不符 `[a-z0-9-]+`。**這是路徑注入的守衛**，不只是格式檢查——見 `requireSafeID`。
+        case invalidID(String)
+
+        public var errorDescription: String? {
+            switch self {
+            case let .tooLarge(bytes, limit):
+                return "解開之後有 \(bytes / 1_048_576) MB，超過上限 \(limit / 1_048_576) MB。"
+            case let .extractionFailed(text):
+                return "解不開這個檔案：\(text.trimmingCharacters(in: .whitespacesAndNewlines))"
+            case let .invalidID(id):
+                return "pack.json 的 id「\(id)」不合法。只能用小寫英數與連字號"
+                     + "（`[a-z0-9-]+`），因為它會被當成資料夾名稱。"
+            }
+        }
+    }
+
+    /// id 會被當成**目的地**的路徑組件，而它完全來自不受信任的 `pack.json`。
+    ///
+    /// `appendingPathComponent("../victim")` 標準化之後會指到 `Packs` 的**外面**
+    /// （實測），於是 `install` 的 `removeItem(at: final)` 會遞迴刪掉那個目錄，
+    /// 而 `Packs` 底下什麼都沒有、零錯誤。`../../../../Users/<u>/Documents`
+    /// 就是刪家目錄。
+    ///
+    /// 整份安全論述原本只管**來源側**（zip 裡的 `../x`），目的地側被漏掉了——
+    /// 而目的地側才是攻擊者真正控制的東西。`PackCatalogRepository.swift:80`
+    /// 掃描那條路早就有一模一樣的守衛，匯入這條路補上它。
+    ///
+    /// 在 Adapters 這一層 throw 而不只在 `RequestRouter` guard：這兩支是 public，
+    /// 未來的呼叫端（C-2 的 GUI 拖放）不該重新發明這個檢查。
+    private static func requireSafeID(_ id: String) throws {
+        guard PackValidator.isValidID(id) else { throw Failure.invalidID(id) }
     }
 
     /// 來源是目錄還是檔案。**要問檔案系統，不能用 `URL.hasDirectoryPath`**——
@@ -138,6 +173,8 @@ public enum PackInstaller {
     /// 「像是裝好了」的殘缺目錄，而 `PackValidator` 只會說它不合格——使用者看到的是
     /// 「我裝的 pack 壞了」而不是「安裝沒完成」。
     public static func install(source: URL, id: String, into packsDirectory: URL) throws {
+        // 先驗 id，在動任何檔案之前。理由見 requireSafeID。
+        try requireSafeID(id)
         let staging = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("fm-install-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: staging, withIntermediateDirectories: true)
@@ -184,6 +221,8 @@ public enum PackInstaller {
     /// **呼叫端要先確認它不是內建、也不是當前使用中的那套**
     /// （分別在 `PackInstallDecision` 與 `RequestRouter.packRemove`）。
     public static func remove(id: String, from packsDirectory: URL) throws {
+        // remove 同樣拿 id 當路徑組件，同樣要驗——這支的後果是直接刪目錄。
+        try requireSafeID(id)
         try FileManager.default.removeItem(at: packsDirectory.appendingPathComponent(id))
     }
 }

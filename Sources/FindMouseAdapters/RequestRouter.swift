@@ -333,6 +333,15 @@ public final class RequestRouter {
                         "讀不出這個來源的 pack.json：\(error.localizedDescription)")
         }
 
+        // id 會變成目的地的路徑組件，而它完全來自不受信任的 pack.json。
+        // `PackInstaller` 內部也擋（縱深），這裡先擋是為了給出對的錯誤碼與訊息，
+        // 而且**在問衝突決策之前**——一個 `../victim` 這種 id 連比對都不該進行。
+        guard PackValidator.isValidID(incomingID) else {
+            return fail(.packSourceInvalid,
+                "pack.json 的 id「\(incomingID)」不合法。只能用小寫英數與連字號"
+                + "（a-z 0-9 -），因為它會被當成資料夾名稱。")
+        }
+
         let existing = packs().map {
             PackInstallDecision.Existing(id: $0.id, isBuiltIn: $0.isBuiltIn)
         }
@@ -359,9 +368,13 @@ public final class RequestRouter {
             do {
                 try PackInstaller.install(source: source, id: incomingID,
                                           into: packsDirectory())
-            } catch let PackInstaller.Failure.tooLarge(bytes, limit) {
-                return fail(.packTooLarge,
-                    "解開之後有 \(bytes / 1_048_576) MB，超過上限 \(limit / 1_048_576) MB。")
+            } catch let e as PackInstaller.Failure {
+                // 型別分類決定錯誤碼；訊息一律用 Failure 自己的 errorDescription
+                // （它是 LocalizedError），這樣 ditto 的 stderr 不會遺失。
+                switch e {
+                case .tooLarge: return fail(.packTooLarge, e.localizedDescription)
+                default:        return fail(.packSourceInvalid, e.localizedDescription)
+                }
             } catch let e as ExtractedTree.Failure {
                 return fail(.packSourceInvalid, describe(e))
             } catch {
@@ -395,6 +408,10 @@ public final class RequestRouter {
         }
         do {
             try PackInstaller.remove(id: id, from: packsDirectory())
+        } catch let e as PackInstaller.Failure {
+            // 走得到 invalidID：id 來自呼叫端，而 `pack list` 若曾列出一個壞 id
+            // （目錄名合法但 manifest 不合法），使用者會照著它打。
+            return fail(.packSourceInvalid, e.localizedDescription)
         } catch {
             return fail(.packInvalid, "刪不掉：\(error.localizedDescription)")
         }

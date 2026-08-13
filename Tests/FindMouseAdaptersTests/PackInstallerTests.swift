@@ -157,3 +157,74 @@ private let minimalManifest = """
 
     #expect(try PackInstaller.manifestVersion(atPackDirectory: pack) == "2026.08")
 }
+
+// MARK: - id 是路徑組件（review 抓到的 Critical）
+
+/// **這是路徑注入的守衛。** id 完全來自不受信任的 `pack.json`，而它會被當成
+/// 目的地的路徑組件：`appendingPathComponent("../victim")` 標準化後指到
+/// `Packs` 外面，於是 `install` 的 `removeItem(at: final)` 會遞迴刪掉那個目錄。
+///
+/// 這條測試**必須斷言目標目錄還在**，不能只斷言 install 丟例外——守衛在錯的
+/// 位置（例如放在 removeItem 之後）時，例外照丟而東西已經被刪了。
+@Test func installRefusesAnIDThatWouldEscapeThePacksDirectory() throws {
+    let root = try tempDir()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let packs = root.appendingPathComponent("Packs")
+    let victim = root.appendingPathComponent("victim")
+    try FileManager.default.createDirectory(at: packs, withIntermediateDirectories: true)
+    try FileManager.default.createDirectory(at: victim, withIntermediateDirectories: true)
+    try Data("重要".utf8).write(to: victim.appendingPathComponent("keep.txt"))
+
+    let source = root.appendingPathComponent("src")
+    try FileManager.default.createDirectory(at: source, withIntermediateDirectories: true)
+    try Data(minimalManifest.utf8).write(to: source.appendingPathComponent("pack.json"))
+
+    #expect(throws: PackInstaller.Failure.invalidID("../victim")) {
+        try PackInstaller.install(source: source, id: "../victim", into: packs)
+    }
+    #expect(FileManager.default.fileExists(
+        atPath: victim.appendingPathComponent("keep.txt").path),
+        "Packs 外面的目錄不該被碰到")
+}
+
+@Test func removeRefusesAnIDThatWouldEscapeThePacksDirectory() throws {
+    let root = try tempDir()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let packs = root.appendingPathComponent("Packs")
+    let victim = root.appendingPathComponent("victim")
+    try FileManager.default.createDirectory(at: packs, withIntermediateDirectories: true)
+    try FileManager.default.createDirectory(at: victim, withIntermediateDirectories: true)
+
+    #expect(throws: PackInstaller.Failure.invalidID("../victim")) {
+        try PackInstaller.remove(id: "../victim", from: packs)
+    }
+    #expect(FileManager.default.fileExists(atPath: victim.path), "目錄不該被刪")
+}
+
+/// 絕對路徑同樣是逃逸：`appendingPathComponent("/etc")` 會變成
+/// `Packs/etc`（不是 `/etc`），但 id 規則本來就該擋掉斜線。
+@Test func installRefusesOtherShapesOfBadID() throws {
+    let root = try tempDir()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let packs = root.appendingPathComponent("Packs")
+    try FileManager.default.createDirectory(at: packs, withIntermediateDirectories: true)
+    let source = root.appendingPathComponent("src")
+    try FileManager.default.createDirectory(at: source, withIntermediateDirectories: true)
+    try Data(minimalManifest.utf8).write(to: source.appendingPathComponent("pack.json"))
+
+    for bad in ["/etc", "a/b", "..", ".", "Cat", "cat_1", "", "cat.json"] {
+        #expect(throws: PackInstaller.Failure.invalidID(bad)) {
+            try PackInstaller.install(source: source, id: bad, into: packs)
+        }
+    }
+}
+
+/// 錯誤訊息不能是英文樣板：`Failure` 實作 `LocalizedError`，否則
+/// `localizedDescription` 會吐 "The operation couldn't be completed."
+@Test func failuresCarryATraditionalChineseMessage() {
+    #expect(PackInstaller.Failure.invalidID("../x").localizedDescription.contains("不合法"))
+    #expect(PackInstaller.Failure.tooLarge(bytes: 300 * 1_048_576, limit: 200 * 1_048_576)
+        .localizedDescription.contains("300 MB"))
+    #expect(PackInstaller.Failure.extractionFailed("ditto: 不是 zip\n")
+        .localizedDescription.contains("ditto: 不是 zip"), "ditto 的 stderr 不能遺失")
+}
