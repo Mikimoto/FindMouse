@@ -844,6 +844,31 @@ private func makePacksDirectory() throws -> URL {
     #expect(error.message.contains("--force"), "訊息要講出下一步")
 }
 
+/// 確認訊息裡「已安裝的版本」要讀**注入的**那個目錄。
+///
+/// 走 `PackCatalogRepository.currentDirectory(for:)` 的話這一行會去問真實環境，
+/// 於是單元測試讀的是使用者真正的 Packs 目錄——注入 `packsDirectory` 就是為了
+/// 不要發生這件事，而那種洩漏在測試裡沒有任何症狀（讀不到就當作沒版本）。
+@Test func theInstalledVersionInThePromptComesFromTheInjectedDirectory() throws {
+    let packs = try makePacksDirectory()
+    defer { try? FileManager.default.removeItem(at: packs) }
+    let installed = packs.appendingPathComponent("test-blocks-tall")
+    try FileManager.default.createDirectory(at: installed, withIntermediateDirectories: true)
+    try Data("""
+    {"schemaVersion":1,"id":"test-blocks-tall","name":"測試","version":"1.0",
+     "logicalHeight":96,"anchor":{"x":0.5,"y":0.94},"facing":"right",
+     "mirrorForOpposite":true,"actions":{"run":{"frames":1,"fps":14,"loop":true}}}
+    """.utf8).write(to: installed.appendingPathComponent("pack.json"))
+
+    let source = try makeSource(id: "test-blocks-tall")
+    defer { try? FileManager.default.removeItem(at: source.deletingLastPathComponent()) }
+
+    let f = Fixture(packsDirectory: packs)
+    let error = try decodeError(f.send("pack.install", ["path": source.path]))
+    #expect(error.code == .packAlreadyInstalled)
+    #expect(error.message.contains("1.0"), "要講出已安裝的版本：\(error.message)")
+}
+
 @Test func removeRefusesBuiltInPacks() throws {
     let f = Fixture()
     let error = try decodeError(f.send("pack.remove", ["id": "test-blocks"]))
@@ -867,4 +892,26 @@ private func makePacksDirectory() throws -> URL {
     #expect(error.code == .packInvalid)
     #expect(error.message.contains("pack use"), "訊息要講出下一步")
     #expect(f.swapped.value == nil, "不該偷偷幫使用者切走")
+}
+
+/// **被內建遮蔽的使用者目錄拿得掉。** `scan` 去重且內建排前面，所以 `packs()`
+/// 只報得出內建那一筆（`isBuiltIn` 為 true、而且它就是當前那套），照兩個守衛
+/// 一律擋下的話，這種目錄永遠移除不了——正是 `PACK_ID_RESERVED` 要防的狀態，
+/// 但那個守衛是後來才加的，既存的目錄解不掉。
+///
+/// 用 `test-blocks`：它在 `Fixture.packs` 裡是內建那套，也是 `status().pack.id`
+/// 的預設值，所以兩個守衛都會被踩到。
+@Test func aUserDirectoryShadowedByABuiltInCanStillBeRemoved() throws {
+    let packs = try makePacksDirectory()
+    defer { try? FileManager.default.removeItem(at: packs) }
+    let shadowed = packs.appendingPathComponent("test-blocks")
+    try FileManager.default.createDirectory(at: shadowed, withIntermediateDirectories: true)
+    try Data("{}".utf8).write(to: shadowed.appendingPathComponent("pack.json"))
+
+    let f = Fixture(packsDirectory: packs)
+    let response = try decode(f.send("pack.remove", ["id": "test-blocks"]),
+                              as: AckPayload.self)
+    #expect(response.ok == true)
+    #expect(!FileManager.default.fileExists(atPath: shadowed.path),
+            "遮蔽住內建的那個目錄要真的被刪掉")
 }

@@ -356,8 +356,14 @@ public final class RequestRouter {
         case .needsConfirmation:
             // 訊息帶上兩邊的版本。這是 `PackVersion.replacementPrompt` 的消費者。
             // 讀不到版本不是錯誤（欄位是 optional），所以兩邊都用 `try?`。
-            let installedVersion = PackCatalogRepository.currentDirectory(for: incomingID)
-                .flatMap { try? PackInstaller.manifestVersion(atPackDirectory: $0) } ?? nil
+            //
+            // 讀**注入的**那個目錄，不走 `PackCatalogRepository.currentDirectory(for:)`
+            // ——後者去問真實環境，於是單元測試會在這一行讀到使用者真正的 Packs
+            // 目錄，與 `packsDirectory` 注入的理由直接牴觸。走到這裡表示撞到的不是
+            // 內建（那條在上面回 rejectedIDReserved），所以要找的本來就在這個目錄裡；
+            // id 也已經在上面驗過值域。
+            let installedVersion = (try? PackInstaller.manifestVersion(
+                atPackDirectory: packsDirectory().appendingPathComponent(incomingID))) ?? nil
             let incomingVersion = (try? PackInstaller.manifestVersion(of: source)) ?? nil
             let prompt = PackVersion.replacementPrompt(packName: incomingID,
                                                        installed: installedVersion,
@@ -397,14 +403,30 @@ public final class RequestRouter {
         guard let summary = packs().first(where: { $0.id == id }) else {
             return fail(.packNotFound, "沒有叫「\(id)」的圖組（用 pack list 看有哪些）。")
         }
-        guard !summary.isBuiltIn else {
-            return fail(.packBuiltIn, "「\(id)」是內建圖組，拿不掉。")
-        }
-        // 用 `status().pack.id`——`packList` 判斷 `current` 也是這個來源，
-        // 兩處共用同一個才不會出現「status 說在用 A、remove 說 A 不是當前」。
-        guard status().pack.id != id else {
-            return fail(.packInvalid,
-                "「\(id)」正在使用中。請先 pack use 換成別的圖組，再移除它。")
+        // **被內建遮蔽的使用者目錄要放行。** `scan` 用 seen set 去重且內建排在
+        // 前面，所以同 id 時 `packs()` 只報得出內建那一筆、`isBuiltIn` 為 true
+        // ——而使用者目錄底下確實有一個拿得掉的東西。照 `isBuiltIn` 一律擋掉的話
+        // 那種目錄**永遠移除不了**（正是 `PACK_ID_RESERVED` 要防的狀態，但既存的
+        // 解不掉，因為那個守衛是後來才加的）。放行不會碰到內建：`remove` 只動
+        // `packsDirectory()`。
+        //
+        // 這裡不重驗 id 的值域：組出來的路徑只餵給唯讀的 `fileExists`，而真正
+        // 會刪東西的 `PackInstaller.remove` 自己 `requireSafeID`。多驗一次沒有
+        // 任何可觀測的差別——那種擋不出東西的守衛不留。
+        let shadowsABuiltIn = summary.isBuiltIn && FileManager.default.fileExists(
+            atPath: packsDirectory().appendingPathComponent(id).path)
+        if !shadowsABuiltIn {
+            guard !summary.isBuiltIn else {
+                return fail(.packBuiltIn, "「\(id)」是內建圖組，拿不掉。")
+            }
+            // 用 `status().pack.id`——`packList` 判斷 `current` 也是這個來源，
+            // 兩處共用同一個才不會出現「status 說在用 A、remove 說 A 不是當前」。
+            //
+            // 被遮蔽的那種不必問：載入的是內建那一份，刪掉被遮蔽的目錄動不到它。
+            guard status().pack.id != id else {
+                return fail(.packInvalid,
+                    "「\(id)」正在使用中。請先 pack use 換成別的圖組，再移除它。")
+            }
         }
         do {
             try PackInstaller.remove(id: id, from: packsDirectory())
