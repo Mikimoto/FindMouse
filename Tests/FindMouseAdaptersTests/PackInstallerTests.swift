@@ -112,9 +112,22 @@ private let minimalManifest = """
 
     try PackInstaller.install(source: zip, id: "cat", into: packs)
 
+    let installed = packs.appendingPathComponent("cat")
     let names = try FileManager.default
-        .contentsOfDirectory(atPath: packs.appendingPathComponent("cat").path).sorted()
+        .contentsOfDirectory(atPath: installed.path).sorted()
     #expect(names == ["pack.json", "run"], "cruft 不該被裝進去：\(names)")
+
+    // 那個 cruft 目錄**實際的後果**，不是只斷言檔名：`SpritePackRepository.listing`
+    // 收的是 pack 底下的每一個子目錄，而 `PackValidator` 對沒宣告的每一個報一筆
+    // undeclaredDirectory——所以留著 `__MACOSX/` 的話，使用者裝完會看到一行
+    // 「目錄 __MACOSX 沒有在 pack.json 宣告」。
+    let loaded = try #require(SpritePackRepository.load(at: installed))
+    let report = PackValidator.validate(manifest: loaded.manifest,
+                                        directoryName: loaded.directoryName,
+                                        listing: loaded.listing)
+    #expect(!report.warnings.contains {
+        if case .undeclaredDirectory = $0 { return true } else { return false }
+    }, "裝完不該帶著未宣告的目錄：\(report.warnings)")
 }
 
 /// **已知邊界，刻意釘住。** 同一個佈局下，被 ditto 攤平的 `../escaped.txt` 與
