@@ -814,6 +814,76 @@ OUT="$("${FM}" login-item on --json 2>&1)"; CODE=$?
 expect "${CODE}" "1" "login-item on 在不合格的位置回 exit 1"
 expect "$(errcode "${OUT}")" "LOGIN_ITEM_INELIGIBLE" "錯誤碼是 LOGIN_ITEM_INELIGIBLE"
 
+# --- 15 ----------------------------------------------------------------------
+step "15. pack install／remove 的整條路（分發 C）"
+
+# 用產生器現做一套，再**搬出使用者目錄**——不搬的話「安裝」等於原地複製，
+# 什麼都驗不到。id 帶 e2e- 前綴（make_pack 的慣例），cleanup 只刪自己造的。
+make_pack e2e-installable 96 120
+STAGE_DIR="$(mktemp -d)"
+mv "${USER_PACKS}/e2e-installable" "${STAGE_DIR}/e2e-installable"
+STAGE_SRC="${STAGE_DIR}/e2e-installable"
+
+"${FM}" pack install "${STAGE_SRC}" >/dev/null 2>&1
+expect "$?" "0" "pack install 一個目錄來源回 exit 0"
+expect "$(packentry "'e2e-installable' in ps")" "True" "裝好的那套出現在 pack list 裡"
+expect "$(packentry "ps['e2e-installable']['usable']")" "True" "而且是可用的"
+
+# 同 id 再裝一次要被擋，錯誤碼要對
+OUT="$("${FM}" pack install "${STAGE_SRC}" --json 2>&1)"; CODE=$?
+expect "${CODE}" "1" "同 id 再裝一次 exit 1"
+expect "$(echo "${OUT}" | /usr/bin/python3 -c 'import json,sys; print(json.load(sys.stdin)["error"]["code"])' 2>/dev/null)" \
+       "PACK_ALREADY_INSTALLED" "錯誤碼是 PACK_ALREADY_INSTALLED"
+
+# --force 過得去
+"${FM}" pack install "${STAGE_SRC}" --force >/dev/null 2>&1
+expect "$?" "0" "--force 覆蓋同 id"
+
+# 撞內建 id：連 --force 都不給過，而且錯誤碼與「移除內建」不同
+BUILTIN_DIR="$(mktemp -d)"
+cp -R "${STAGE_SRC}" "${BUILTIN_DIR}/test-blocks"
+/usr/bin/python3 - "${BUILTIN_DIR}/test-blocks" <<'PYEOF'
+import json, sys
+path = f"{sys.argv[1]}/pack.json"
+m = json.load(open(path)); m["id"] = "test-blocks"
+json.dump(m, open(path, "w"))
+PYEOF
+OUT="$("${FM}" pack install "${BUILTIN_DIR}/test-blocks" --force --json 2>&1)"; CODE=$?
+expect "${CODE}" "1" "撞內建 id 即使加 --force 也是 exit 1"
+expect "$(echo "${OUT}" | /usr/bin/python3 -c 'import json,sys; print(json.load(sys.stdin)["error"]["code"])' 2>/dev/null)" \
+       "PACK_ID_RESERVED" "錯誤碼是 PACK_ID_RESERVED（不是 PACK_BUILT_IN——處方不同）"
+
+# 移除當前使用中的那套要被擋，而且不能被偷偷切走
+"${FM}" pack use e2e-installable >/dev/null 2>&1
+for _ in $(seq 1 20); do
+    [[ "$(field 'd["pack"]["id"]')" == "e2e-installable" ]] && break
+    sleep 0.25
+done
+expect "$(field 'd["pack"]["id"]')" "e2e-installable" "切到剛裝的那套"
+OUT="$("${FM}" pack remove e2e-installable --json 2>&1)"; CODE=$?
+expect "${CODE}" "1" "移除當前使用中的那套 exit 1"
+expect "$(echo "${OUT}" | /usr/bin/python3 -c 'import json,sys; print("pack use" in json.load(sys.stdin)["error"]["message"])' 2>/dev/null)" \
+       "True" "訊息講出下一步（先 pack use 換成別的）"
+expect "$(field 'd["pack"]["id"]')" "e2e-installable" "被擋下之後仍在用那一套"
+
+# 切走之後才移除得掉
+"${FM}" pack use test-blocks >/dev/null 2>&1
+for _ in $(seq 1 20); do
+    [[ "$(field 'd["pack"]["id"]')" == "test-blocks" ]] && break
+    sleep 0.25
+done
+"${FM}" pack remove e2e-installable >/dev/null 2>&1
+expect "$?" "0" "切走之後 pack remove 回 exit 0"
+expect "$(packentry "'e2e-installable' in ps")" "False" "移除後不在 pack list 裡"
+
+# 內建拿不掉
+OUT="$("${FM}" pack remove test-blocks --json 2>&1)"; CODE=$?
+expect "${CODE}" "1" "移除內建 exit 1"
+expect "$(echo "${OUT}" | /usr/bin/python3 -c 'import json,sys; print(json.load(sys.stdin)["error"]["code"])' 2>/dev/null)" \
+       "PACK_BUILT_IN" "錯誤碼是 PACK_BUILT_IN"
+
+rm -rf "${STAGE_DIR}" "${BUILTIN_DIR}"
+
 step "結果"
 printf '  通過 %d、失敗 %d、無法判定 %d\n' "${PASS}" "${FAIL}" "${SKIP}"
 if [[ "${SKIP}" -gt 0 ]]; then

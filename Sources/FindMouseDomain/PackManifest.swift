@@ -35,6 +35,13 @@ public struct PackManifest: Sendable, Equatable, Codable {
     public var name: String
     public var author: String?
     public var license: String?
+    /// pack 自己的版本，作者填的。**optional 且不驗格式**——spec 第 6.2 節只規範
+    /// `id`，這個欄位可能是 `2.0`、`2026.08`、`v3`，也可能根本沒有。
+    /// 匯入時只用它組確認訊息（`PackVersion.replacementPrompt`）。
+    ///
+    /// 加它不用動 `schemaVersion`：`JSONDecoder` 忽略未知欄位、而缺少 optional
+    /// 欄位不是錯誤，所以既有三套 pack 的 `pack.json` 一個字都不用改。
+    public var version: String?
     public var logicalHeight: CGFloat
     public var anchor: Anchor
     public var facing: Facing
@@ -43,6 +50,7 @@ public struct PackManifest: Sendable, Equatable, Codable {
 
     public init(schemaVersion: Int, id: String, name: String,
                 author: String? = nil, license: String? = nil,
+                version: String? = nil,
                 logicalHeight: CGFloat, anchor: Anchor, facing: Facing,
                 mirrorForOpposite: Bool, actions: [String: ActionSpec]) {
         self.schemaVersion = schemaVersion
@@ -50,6 +58,7 @@ public struct PackManifest: Sendable, Equatable, Codable {
         self.name = name
         self.author = author
         self.license = license
+        self.version = version
         self.logicalHeight = logicalHeight
         self.anchor = anchor
         self.facing = facing

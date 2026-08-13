@@ -17,6 +17,20 @@ public enum WireErrorCode: String, Codable, Sendable, CaseIterable {
     case invalidArgument = "INVALID_ARGUMENT"
     case packNotFound = "PACK_NOT_FOUND"
     case packInvalid = "PACK_INVALID"
+    /// 同 id 的使用者 pack 已經在了。CLI 要 `--force` 才覆蓋——覆蓋是匯入這條路上
+    /// 唯一不可逆的一段，而默默改掉使用者的東西比明確失敗更難查（與 spec 第 9 節
+    /// 「超範圍的設定值拒絕、不 clamp」同一個取向）。
+    case packAlreadyInstalled = "PACK_ALREADY_INSTALLED"
+    /// 要移除的是內建 pack。它在 app bundle 裡，拿不掉。
+    case packBuiltIn = "PACK_BUILT_IN"
+    /// 要安裝的 id 被內建佔了。**與 `packBuiltIn` 分開**：這條的處方是「改一個 id」，
+    /// 因為裝進去會成功但永遠被遮蔽（完整理由在 `PackInstallDecision.decide`）。
+    /// 共用一個碼會讓腳本無法分辨，訊息也只能講其中一種處方。
+    case packIDReserved = "PACK_ID_RESERVED"
+    /// 來源不是一套 pack：沒有 `pack.json`、有兩套、或含非 regular file。
+    case packSourceInvalid = "PACK_SOURCE_INVALID"
+    /// 解壓後超過上限。
+    case packTooLarge = "PACK_TOO_LARGE"
     case teaserUnavailable = "TEASER_UNAVAILABLE"
     case configKeyUnknown = "CONFIG_KEY_UNKNOWN"
     case configValueOutOfRange = "CONFIG_VALUE_OUT_OF_RANGE"

@@ -157,3 +157,46 @@ private func request(_ line: String) throws -> WireRequest {
         try Arguments.parse(["login-item", "on", "please"])
     }
 }
+
+// MARK: - pack install／remove（分發 C）
+
+@Test func packInstallTakesAPathAndOptionalForce() throws {
+    let a = try request("pack install /tmp/cat.fmpack")
+    #expect(a.command == "pack.install")
+    #expect(a.args["path"] == "/tmp/cat.fmpack")
+    #expect(a.args["force"] == nil)
+
+    #expect(try request("pack install /tmp/cat.fmpack --force").args["force"] == "true")
+    // 旗標在路徑之前也要吃——使用者不該記順序。
+    #expect(try request("pack install --force /tmp/cat.fmpack").args["path"]
+            == "/tmp/cat.fmpack")
+}
+
+/// 少了路徑就在 CLI 這裡停。送出去的話 App 會回 INVALID_ARGUMENT，
+/// 於是「你少打一個路徑」變成 App 端的抱怨，要查的地方差很遠。
+@Test func packInstallWithoutAPathFailsLocally() {
+    #expect(throws: Arguments.ParseError.self) { try parse("pack install") }
+    #expect(throws: Arguments.ParseError.self) { try parse("pack install --force") }
+    #expect(throws: Arguments.ParseError.self) { try parse("pack install a b") }
+}
+
+@Test func packInstallRejectsUnknownFlags() {
+    #expect(throws: Arguments.ParseError.self) { try parse("pack install /tmp/a --yes") }
+}
+
+@Test func packRemoveTakesAnID() throws {
+    let a = try request("pack remove orange-cat")
+    #expect(a.command == "pack.remove")
+    #expect(a.args["id"] == "orange-cat")
+}
+
+@Test func packRemoveRejectsExtraArguments() {
+    #expect(throws: Arguments.ParseError.self) { try parse("pack remove") }
+    #expect(throws: Arguments.ParseError.self) { try parse("pack remove a b") }
+}
+
+/// `--force` 只對 install 有意義。對 remove 給它要明確擋下——靜默忽略會讓人
+/// 以為「加了 --force 就能刪內建」，而內建是拿不掉的。
+@Test func forceIsNotAcceptedByRemove() {
+    #expect(throws: Arguments.ParseError.self) { try parse("pack remove orange-cat --force") }
+}

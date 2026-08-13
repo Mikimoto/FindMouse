@@ -47,3 +47,28 @@ import Testing
     ])
     #expect(listing.directories["run"]?.count == 2)
 }
+
+// MARK: - version 欄位（分發 C 加的）
+
+/// 加 `version` 是純加法：`JSONDecoder` 忽略未知欄位、而缺少 optional 欄位不是
+/// 錯誤。既有三套 pack（mycat／test-blocks／test-blocks-tall）的 pack.json
+/// 都沒有它，所以這條同時是「不用動它們」的證據。
+@Test func aManifestWithoutAVersionStillDecodes() throws {
+    let json = """
+    {"schemaVersion":1,"id":"cat","name":"貓","logicalHeight":96,
+     "anchor":{"x":0.5,"y":0.94},"facing":"right","mirrorForOpposite":true,
+     "actions":{"run":{"frames":2,"fps":14,"loop":true}}}
+    """
+    let m = try JSONDecoder().decode(PackManifest.self, from: Data(json.utf8))
+    #expect(m.version == nil)
+}
+
+@Test func aManifestWithAVersionKeepsItVerbatim() throws {
+    let json = """
+    {"schemaVersion":1,"id":"cat","name":"貓","version":"2026.08","logicalHeight":96,
+     "anchor":{"x":0.5,"y":0.94},"facing":"right","mirrorForOpposite":true,
+     "actions":{"run":{"frames":2,"fps":14,"loop":true}}}
+    """
+    let m = try JSONDecoder().decode(PackManifest.self, from: Data(json.utf8))
+    #expect(m.version == "2026.08", "原樣保留，不正規化——正規化就是在猜語意")
+}
