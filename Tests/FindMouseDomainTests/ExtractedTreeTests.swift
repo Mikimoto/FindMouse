@@ -84,7 +84,7 @@ private func entry(_ path: String, _ kind: ExtractedTree.Entry.Kind = .file,
     let tree = ExtractedTree(entries: [entry("escaped.txt"),
                                        entry("cat/pack.json"),
                                        entry("cat/run/000.png")])
-    #expect(tree.entries(under: "cat").map(\.relativePath)
+    #expect(tree.installableEntries(under: "cat").map(\.relativePath)
             == ["cat/pack.json", "cat/run/000.png"])
 }
 
@@ -92,5 +92,27 @@ private func entry(_ path: String, _ kind: ExtractedTree.Entry.Kind = .file,
 @Test func siblingWithTheSamePrefixIsNotUnderIt() {
     let tree = ExtractedTree(entries: [entry("cat/pack.json"),
                                        entry("catalog/pack.json")])
-    #expect(tree.entries(under: "cat").map(\.relativePath) == ["cat/pack.json"])
+    #expect(tree.installableEntries(under: "cat").map(\.relativePath) == ["cat/pack.json"])
+}
+
+/// cruft 不會被裝進去。`__MACOSX` 這個**目錄本身**要一起濾掉：只濾它底下的話，
+/// 目的地會多一個空目錄，而那會讓 `PackValidator` 報 undeclaredDirectory。
+@Test func cruftIsNotInstalledIncludingTheMacOSXDirectoryItself() {
+    let tree = ExtractedTree(entries: [entry("__MACOSX", .directory, bytes: 0),
+                                       entry("__MACOSX/._pack.json"),
+                                       entry(".DS_Store"),
+                                       entry("pack.json"),
+                                       entry("run", .directory, bytes: 0),
+                                       entry("run/000.png")])
+    #expect(tree.installableEntries(under: "").map(\.relativePath)
+            == ["pack.json", "run", "run/000.png"])
+}
+
+/// **根是空字串時，夾帶的檔案擋不掉。** ditto 把 `../escaped.txt` 攤平到解壓根
+/// 之後，它與作者真的放在 pack 根的檔案長得一模一樣。這條釘住那個已知邊界，
+/// 免得註解與程式碼各說各話——守住的是「不會跑到 Packs 外面」而不是「裡面乾淨」。
+@Test func aFlattenedStrayIsIndistinguishableWhenTheManifestSitsAtTheRoot() {
+    let tree = ExtractedTree(entries: [entry("escaped.txt"), entry("pack.json")])
+    #expect(tree.installableEntries(under: "").map(\.relativePath)
+            == ["escaped.txt", "pack.json"])
 }

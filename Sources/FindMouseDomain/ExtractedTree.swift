@@ -66,22 +66,34 @@ public struct ExtractedTree: Sendable, Equatable {
         entries.filter { $0.kind == .file }.reduce(0) { $0 + $1.bytes }
     }
 
-    /// pack 根底下的每一筆。**這是整個安全論述的唯一守衛**：`ditto` 會把
-    /// zip 裡的 `../escaped.txt` 攤平到解壓根（2026-08-12 實測），搬移時只取
-    /// 這個範圍就與那些意外檔案無關。
+    /// 會**真的被裝進去**的那些：pack 根底下、扣掉 macOS cruft。大小也照這個
+    /// 範圍算——不會被裝進去的東西拿去擋一次合法的安裝就是錯的理由。
+    ///
+    /// **這是整個安全論述的唯一守衛**：`ditto` 會把 zip 裡的 `../escaped.txt`
+    /// 攤平到解壓根（2026-08-12 實測），根不空時只取這個範圍就與它們無關。
+    ///
+    /// **根是空字串時擋不掉夾帶的檔案**，而那是 Finder「壓縮所選項目的內容」
+    /// 的常見佈局（`pack.json` 直接在 zip 根）：那時「pack 根底下」就是全部，
+    /// 而一個被攤平的 `../escaped.txt` 與一個作者真的放在 pack 根的檔案
+    /// **無法區分**——ditto 解完之後兩者長得一模一樣。所以這種佈局下它會被裝進
+    /// `Packs/<id>/`。守住的仍然是「不會跑到 `Packs` 外面」，不是「裡面很乾淨」。
     ///
     /// 前綴以 `/` 為界比對，否則 `cat` 會吃到 `catalog/`。
-    public func entries(under root: String) -> [Entry] {
-        guard !root.isEmpty else { return entries }
-        let prefix = root + "/"
-        return entries.filter { $0.relativePath.hasPrefix(prefix) }
+    public func installableEntries(under root: String) -> [Entry] {
+        let underRoot = root.isEmpty ? entries
+            : entries.filter { $0.relativePath.hasPrefix(root + "/") }
+        return underRoot.filter { !isCruft($0.relativePath) }
     }
 
     /// macOS 打 zip 常夾 `__MACOSX/._x` 與 `.DS_Store`。它們不是 pack 的一部分，
     /// 也不該讓「恰好一個 manifest」的判定失敗。
+    ///
+    /// `__MACOSX` 這個**目錄本身**要單獨列：它的 `relativePath` 沒有結尾斜線，
+    /// 只寫 `hasPrefix("__MACOSX/")` 的話裡面的檔案都被濾掉、空目錄卻照樣建出來，
+    /// 而 `PackValidator` 會為那個空目錄報一筆 `undeclaredDirectory`。
     private func isCruft(_ path: String) -> Bool {
-        path.hasPrefix("__MACOSX/") || basename(path) == ".DS_Store"
-            || basename(path).hasPrefix("._")
+        path == "__MACOSX" || path.hasPrefix("__MACOSX/")
+            || basename(path) == ".DS_Store" || basename(path).hasPrefix("._")
     }
 
     private func basename(_ path: String) -> String {

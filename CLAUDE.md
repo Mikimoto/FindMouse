@@ -58,9 +58,15 @@ SciPy 裝在它上面，讓 mise 換一個 python 進來會讓素材管線立刻
 - **`ditto -x -k` 會把 zip 裡的 `../x` 攤平到目標根目錄，不是拒絕它**
   （2026-08-12 實測：`../escaped.txt` 與 `../../escaped2.txt` 都落在目標目錄底下、
   exit 0）。所以匯入 pack 的安全性**不靠它**——靠「解到空暫存目錄之後只搬 pack 根
-  底下的東西」（`ExtractedTree.entries(under:)`）。那個守衛的測試是
+  底下的東西」（`ExtractedTree.installableEntries(under:)`）。那個守衛的測試是
   `onlyThePackRootIsInstalledNotTheStrayFiles`，**不是**釘 ditto 行為的那條：
   後者在「整個暫存目錄搬過去」這個突變下仍然通過（檔案確實沒逃出暫存目錄）。
+  **但 pack 根是空字串時（`pack.json` 直接在 zip 根，也就是 Finder「壓縮所選項目
+  的內容」的佈局）擋不掉夾帶的檔案**：那時「根底下」就是全部，而攤平後的
+  `../escaped.txt` 與作者真的放在 pack 根的檔案無法區分，於是它會被裝進
+  `Packs/<id>/`。守住的是「不會跑到 `Packs` 外面」，不是「裡面很乾淨」——邊界
+  釘在 `aFlattenedStrayLandsInsideThePackWhenTheManifestSitsAtTheZipRoot`。
+  macOS cruft（`__MACOSX/`、`.DS_Store`、`._*`）是另一回事，逐筆複製時濾掉了。
   順帶：`ditto` 也不驗證 zip 自報的未壓縮大小（改成 1 照樣解出真正的 1000 bytes），
   所以大小上限只能解壓後複查。
 - **裝一套與內建同 id 的 pack 會「成功但永遠看不到」。** `PackCatalogRepository.scan`

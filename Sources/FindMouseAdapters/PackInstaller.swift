@@ -188,17 +188,40 @@ public enum PackInstaller {
         let root = try full.packRoot()
         try full.rejectIrregularEntries()
 
-        // 只量 pack 根底下的，不量整個解壓結果：夾帶的檔案不會被裝進去，
-        // 拿它們的大小去擋一次合法的安裝就是錯的理由。
-        let bytes = ExtractedTree(entries: full.entries(under: root)).totalBytes
+        // 只量會被裝進去的那些，不量整個解壓結果：夾帶的檔案與 cruft 不會被
+        // 裝進去，拿它們的大小去擋一次合法的安裝就是錯的理由。
+        let items = full.installableEntries(under: root)
+        let bytes = ExtractedTree(entries: items).totalBytes
         guard bytes <= byteLimit else {
             throw Failure.tooLarge(bytes: bytes, limit: byteLimit)
         }
 
-        let packRoot = root.isEmpty ? payload : payload.appendingPathComponent(root)
         let incoming = packsDirectory.appendingPathComponent("\(id).incoming")
         try? FileManager.default.removeItem(at: incoming)
-        try FileManager.default.copyItem(at: packRoot, to: incoming)
+        // **逐筆複製，不是 `copyItem` 整個 pack 根。** 整個目錄搬過去的話，
+        // 根為空字串（manifest 在 zip 根）時連 `__MACOSX/` 與 `.DS_Store` 都會
+        // 一起進去，而 `__MACOSX/` 會讓 `PackValidator` 報一筆 undeclaredDirectory
+        // ——Finder 的「壓縮所選項目的內容」正是這個佈局。逐筆走才讓「根空」與
+        // 「根不空」兩種佈局裝出同樣的東西。
+        try FileManager.default.createDirectory(at: incoming, withIntermediateDirectories: true)
+        for e in items {
+            let rel = root.isEmpty ? e.relativePath
+                                   : String(e.relativePath.dropFirst(root.count + 1))
+            let destination = incoming.appendingPathComponent(rel)
+            if e.kind == .directory {
+                try FileManager.default.createDirectory(
+                    at: destination, withIntermediateDirectories: true)
+            } else {
+                // 父目錄可能是被 cruft 過濾掉的、也可能還沒被走訪到，所以每個
+                // 檔案都自己確保一次。`.other` 在上面的 rejectIrregularEntries
+                // 已經全部擋掉，走到這裡只剩 file 與 directory。
+                try FileManager.default.createDirectory(
+                    at: destination.deletingLastPathComponent(),
+                    withIntermediateDirectories: true)
+                try FileManager.default.copyItem(
+                    at: payload.appendingPathComponent(e.relativePath), to: destination)
+            }
+        }
 
         let final = packsDirectory.appendingPathComponent(id)
         try? FileManager.default.removeItem(at: final)

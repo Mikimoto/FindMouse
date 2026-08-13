@@ -96,6 +96,52 @@ private let minimalManifest = """
         atPath: packs.appendingPathComponent("stray.txt").path))
 }
 
+/// Finder 的「壓縮所選項目的內容」會把 `pack.json` 放在 zip 根，於是 pack 根是
+/// 空字串、「只搬根底下」等於搬全部——cruft 會跟著進去，而 `__MACOSX/` 會讓
+/// `PackValidator` 報一筆 undeclaredDirectory。這條釘住逐筆複製有把它們濾掉。
+@Test func macOSCruftIsNotInstalledWhenTheManifestSitsAtTheZipRoot() throws {
+    let root = try tempDir()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let zip = root.appendingPathComponent("finder.zip")
+    try makeZip(at: zip, entries: [("pack.json", minimalManifest),
+                                   (".DS_Store", "x"),
+                                   ("__MACOSX/junk.txt", "y"),
+                                   ("run/000.png", "z")])
+    let packs = root.appendingPathComponent("Packs")
+    try FileManager.default.createDirectory(at: packs, withIntermediateDirectories: true)
+
+    try PackInstaller.install(source: zip, id: "cat", into: packs)
+
+    let names = try FileManager.default
+        .contentsOfDirectory(atPath: packs.appendingPathComponent("cat").path).sorted()
+    #expect(names == ["pack.json", "run"], "cruft 不該被裝進去：\(names)")
+}
+
+/// **已知邊界，刻意釘住。** 同一個佈局下，被 ditto 攤平的 `../escaped.txt` 與
+/// 作者真的放在 pack 根的檔案無法區分，所以它會被裝進 `Packs/<id>/`。
+/// 守住的是「不會跑到 `Packs` 外面」——這條同時證明那件事仍然成立。
+@Test func aFlattenedStrayLandsInsideThePackWhenTheManifestSitsAtTheZipRoot() throws {
+    let root = try tempDir()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let zip = root.appendingPathComponent("evil.zip")
+    try makeZip(at: zip, entries: [("../escaped.txt", "pwned"),
+                                   ("pack.json", minimalManifest)])
+    let packs = root.appendingPathComponent("Packs")
+    try FileManager.default.createDirectory(at: packs, withIntermediateDirectories: true)
+
+    try PackInstaller.install(source: zip, id: "cat", into: packs)
+
+    #expect(FileManager.default.fileExists(
+        atPath: packs.appendingPathComponent("cat/escaped.txt").path),
+        "根是空字串時擋不掉——註解與 CLAUDE.md 都是這樣寫的")
+    #expect(!FileManager.default.fileExists(
+        atPath: packs.appendingPathComponent("escaped.txt").path),
+        "但它不該落在 Packs 底下、pack 目錄之外")
+    #expect(!FileManager.default.fileExists(
+        atPath: root.appendingPathComponent("escaped.txt").path),
+        "更不該逃到 Packs 之外")
+}
+
 @Test func aSymlinkInTheSourceIsRejected() throws {
     let root = try tempDir()
     defer { try? FileManager.default.removeItem(at: root) }
