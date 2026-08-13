@@ -108,6 +108,19 @@ private func entry(_ path: String, _ kind: ExtractedTree.Entry.Kind = .file,
             == ["pack.json", "run", "run/000.png"])
 }
 
+/// **巢狀的那份也要濾掉。** zip 打的是資料夾時 cruft 落在 `cat/__MACOSX/`，
+/// 只比對開頭的話它整個逃過去，而後果與根層那份一模一樣：空目錄被建出來、
+/// `PackValidator` 報一筆 undeclaredDirectory。比對路徑組件才兩種都罩得住。
+@Test func nestedMacOSXIsCruftToo() {
+    let tree = ExtractedTree(entries: [entry("cat/pack.json"),
+                                       entry("cat/__MACOSX", .directory, bytes: 0),
+                                       entry("cat/__MACOSX/._pack.json"),
+                                       entry("cat/my__MACOSX.png")])
+    #expect(tree.installableEntries(under: "cat").map(\.relativePath)
+            == ["cat/pack.json", "cat/my__MACOSX.png"],
+            "比對的是路徑組件，不是子字串——my__MACOSX.png 是正常檔名")
+}
+
 /// **根是空字串時，夾帶的檔案擋不掉。** ditto 把 `../escaped.txt` 攤平到解壓根
 /// 之後，它與作者真的放在 pack 根的檔案長得一模一樣。這條釘住那個已知邊界，
 /// 免得註解與程式碼各說各話——守住的是「不會跑到 Packs 外面」而不是「裡面乾淨」。

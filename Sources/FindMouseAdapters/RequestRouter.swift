@@ -413,6 +413,10 @@ public final class RequestRouter {
         // 這裡不重驗 id 的值域：組出來的路徑只餵給唯讀的 `fileExists`，而真正
         // 會刪東西的 `PackInstaller.remove` 自己 `requireSafeID`。多驗一次沒有
         // 任何可觀測的差別——那種擋不出東西的守衛不留。
+        //
+        // 判定用的是「目錄名 == id」，而 `scan` 去重用的是 **manifest 的 id**，
+        // 兩者只在目錄名與 id 一致時等價。不一致的那種遮蔽目錄仍然移除不了，
+        // 但 `install` 一律以 id 命名目錄，所以那種目錄只可能是手動放進去的。
         let shadowsABuiltIn = summary.isBuiltIn && FileManager.default.fileExists(
             atPath: packsDirectory().appendingPathComponent(id).path)
         if !shadowsABuiltIn {

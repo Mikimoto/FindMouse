@@ -75,8 +75,14 @@ public struct ExtractedTree: Sendable, Equatable {
     /// **根是空字串時擋不掉夾帶的檔案**，而那是 Finder「壓縮所選項目的內容」
     /// 的常見佈局（`pack.json` 直接在 zip 根）：那時「pack 根底下」就是全部，
     /// 而一個被攤平的 `../escaped.txt` 與一個作者真的放在 pack 根的檔案
-    /// **無法區分**——ditto 解完之後兩者長得一模一樣。所以這種佈局下它會被裝進
-    /// `Packs/<id>/`。守住的仍然是「不會跑到 `Packs` 外面」，不是「裡面很乾淨」。
+    /// **解壓之後無法區分**——ditto 攤平時就把那個 `../` 丟掉了。所以這種佈局下
+    /// 它會被裝進 `Packs/<id>/`。守住的仍然是「不會跑到 `Packs` 外面」，
+    /// 不是「裡面很乾淨」。
+    ///
+    /// 分得出來的地方只有一處：zip 的 entry name 本身還帶著 `../`
+    /// （`unzip -Z1` 看得到）。不去讀它是因為那等於自己開一條解析 zip 中央目錄
+    /// 的路，而那條路要處理的編碼與畸形輸入比它擋下的東西多——ditto 是這裡
+    /// 唯一的解壓實作，正是為了不要有第二份 zip 解析。
     ///
     /// 前綴以 `/` 為界比對，否則 `cat` 會吃到 `catalog/`。
     public func installableEntries(under root: String) -> [Entry] {
@@ -88,11 +94,13 @@ public struct ExtractedTree: Sendable, Equatable {
     /// macOS 打 zip 常夾 `__MACOSX/._x` 與 `.DS_Store`。它們不是 pack 的一部分，
     /// 也不該讓「恰好一個 manifest」的判定失敗。
     ///
-    /// `__MACOSX` 這個**目錄本身**要單獨列：它的 `relativePath` 沒有結尾斜線，
-    /// 只寫 `hasPrefix("__MACOSX/")` 的話裡面的檔案都被濾掉、空目錄卻照樣建出來，
-    /// 而 `PackValidator` 會為那個空目錄報一筆 `undeclaredDirectory`。
+    /// `__MACOSX` 比對的是**路徑組件**，與 `.DS_Store` 比對 basename 同一個層級。
+    /// 寫成 `hasPrefix("__MACOSX/")` 會漏掉兩種：那個目錄**本身**（`relativePath`
+    /// 沒有結尾斜線）與**巢狀**的那份（zip 裡是 `cat/__MACOSX/._pack.json` 時
+    /// `__MACOSX` 在第二層）。兩種漏法的後果一樣——裡面的檔案被濾掉、空目錄卻
+    /// 照樣建出來，而 `PackValidator` 會為它報一筆 `undeclaredDirectory`。
     private func isCruft(_ path: String) -> Bool {
-        path == "__MACOSX" || path.hasPrefix("__MACOSX/")
+        path.split(separator: "/").contains("__MACOSX")
             || basename(path) == ".DS_Store" || basename(path).hasPrefix("._")
     }
 

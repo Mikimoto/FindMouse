@@ -118,7 +118,7 @@ private let minimalManifest = """
     #expect(names == ["pack.json", "run"], "cruft 不該被裝進去：\(names)")
 
     // 那個 cruft 目錄**實際的後果**，不是只斷言檔名：`SpritePackRepository.listing`
-    // 收的是 pack 底下的每一個子目錄，而 `PackValidator` 對沒宣告的每一個報一筆
+    // 收的是 pack 底下每一個**直接**子目錄，而 `PackValidator` 對沒宣告的每一個報一筆
     // undeclaredDirectory——所以留著 `__MACOSX/` 的話，使用者裝完會看到一行
     // 「目錄 __MACOSX 沒有在 pack.json 宣告」。
     let loaded = try #require(SpritePackRepository.load(at: installed))
@@ -259,6 +259,51 @@ private let minimalManifest = """
     }
     let leftovers = try FileManager.default.contentsOfDirectory(atPath: packs.path)
     #expect(leftovers.isEmpty, "留下的殘骸：\(leftovers)")
+}
+
+/// 早期失敗那條走的是「`.incoming` 還沒建」。這條走**建好之後才失敗**：
+/// 來源裡有一個讀不到的檔案，複製到一半炸掉。沒有那個 catch 的話 `Packs` 裡
+/// 會留下 `<id>.incoming`，而它的目錄名與 manifest id 不符，於是 `pack list`
+/// 會多出一筆 idDirectoryMismatch——使用者看到的是「我裝的 pack 壞了」。
+@Test func aFailureHalfwayThroughTheCopyLeavesNoIncomingDirectory() throws {
+    let root = try tempDir()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let pack = root.appendingPathComponent("cat")
+    try FileManager.default.createDirectory(
+        at: pack.appendingPathComponent("run"), withIntermediateDirectories: true)
+    try Data(minimalManifest.utf8).write(to: pack.appendingPathComponent("pack.json"))
+    let unreadable = pack.appendingPathComponent("run/000.png")
+    try Data("x".utf8).write(to: unreadable)
+    // 擁有者一樣受 mode 約束，所以 000 的檔案連自己都讀不到 → copyItem 失敗。
+    try FileManager.default.setAttributes([.posixPermissions: 0], ofItemAtPath: unreadable.path)
+    defer { try? FileManager.default.setAttributes([.posixPermissions: 0o644],
+                                                   ofItemAtPath: unreadable.path) }
+    let packs = root.appendingPathComponent("Packs")
+    try FileManager.default.createDirectory(at: packs, withIntermediateDirectories: true)
+
+    #expect(throws: (any Error).self) {
+        try PackInstaller.install(source: pack, id: "cat", into: packs)
+    }
+    let leftovers = try FileManager.default.contentsOfDirectory(atPath: packs.path)
+    #expect(leftovers.isEmpty, "留下的殘骸：\(leftovers)")
+}
+
+/// **全新安裝的機器上 `Packs` 不存在**，而沒有別的地方會建它。舊的整個目錄
+/// `copyItem` 在父目錄缺席時會失敗，訊息指著來源檔——第一次匯入必定失敗且
+/// 看不出原因。逐筆複製的 `withIntermediateDirectories` 順帶修掉了它，所以
+/// 釘一條，免得日後有人「順手」把它改回 false。
+@Test func aMissingPacksDirectoryIsCreated() throws {
+    let root = try tempDir()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let pack = root.appendingPathComponent("cat")
+    try FileManager.default.createDirectory(at: pack, withIntermediateDirectories: true)
+    try Data(minimalManifest.utf8).write(to: pack.appendingPathComponent("pack.json"))
+    // 刻意不建：連中間那層都不存在，就像全新安裝的機器
+    let packs = root.appendingPathComponent("FindMouse/Packs")
+
+    try PackInstaller.install(source: pack, id: "cat", into: packs)
+    #expect(FileManager.default.fileExists(
+        atPath: packs.appendingPathComponent("cat/pack.json").path))
 }
 
 /// id 取自 manifest 而不是檔名：檔名可以是任何東西（下載時被瀏覽器改名是常態）。

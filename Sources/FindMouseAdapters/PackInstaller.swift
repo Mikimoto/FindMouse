@@ -183,8 +183,8 @@ public enum PackInstaller {
     /// 「我裝的 pack 壞了」而不是「安裝沒完成」。
     /// - Parameter byteLimit: 解壓後的大小上限。**開成參數只為了測得到**——
     ///   200MB 的預設值要用真的 200MB 素材才踩得到，那種測試會慢到沒人跑，
-    ///   於是這個守衛實際上等於零覆蓋（實測：把它改成 `Int.max` 全綠）。
-    ///   呼叫端一律不傳。
+    ///   於是這個守衛在加上這個參數之前等於零覆蓋（當時實測：把它改成
+    ///   `Int.max` 全綠）。呼叫端一律不傳。
     public static func install(source: URL, id: String, into packsDirectory: URL,
                                byteLimit: Int = PackInstaller.byteLimit) throws {
         // 先驗 id，在動任何檔案之前。理由見 requireSafeID。
@@ -217,24 +217,40 @@ public enum PackInstaller {
         // 一起進去，而 `__MACOSX/` 會讓 `PackValidator` 報一筆 undeclaredDirectory
         // ——Finder 的「壓縮所選項目的內容」正是這個佈局。逐筆走才讓「根空」與
         // 「根不空」兩種佈局裝出同樣的東西。
+        // `withIntermediateDirectories` 順帶把 `Packs` 自己建出來。**那不是順手**：
+        // 全新安裝的機器上那個目錄不存在（沒有別的地方會建它），而舊的
+        // `copyItem` 在父目錄缺席時會失敗，訊息還指著來源檔——第一次匯入
+        // 必定失敗且看不出原因。`aMissingPacksDirectoryIsCreated` 釘住這件事。
         try FileManager.default.createDirectory(at: incoming, withIntermediateDirectories: true)
-        for e in items {
-            let rel = root.isEmpty ? e.relativePath
-                                   : String(e.relativePath.dropFirst(root.count + 1))
-            let destination = incoming.appendingPathComponent(rel)
-            if e.kind == .directory {
-                try FileManager.default.createDirectory(
-                    at: destination, withIntermediateDirectories: true)
-            } else {
-                // 父目錄可能是被 cruft 過濾掉的、也可能還沒被走訪到，所以每個
-                // 檔案都自己確保一次。`.other` 在上面的 rejectIrregularEntries
-                // 已經全部擋掉，走到這裡只剩 file 與 directory。
-                try FileManager.default.createDirectory(
-                    at: destination.deletingLastPathComponent(),
-                    withIntermediateDirectories: true)
-                try FileManager.default.copyItem(
-                    at: payload.appendingPathComponent(e.relativePath), to: destination)
+        do {
+            for e in items {
+                let rel = root.isEmpty ? e.relativePath
+                                       : String(e.relativePath.dropFirst(root.count + 1))
+                let destination = incoming.appendingPathComponent(rel)
+                if e.kind == .directory {
+                    // 目錄的 mode 與 xattr 不跟著複製（舊的整個目錄 `copyItem` 會）。
+                    // 這是刻意的：pack 裡只該有 PNG 與 JSON，而作者打包時的目錄
+                    // 權限跟到使用者機器上只會製造「裝好了卻讀不到」。
+                    try FileManager.default.createDirectory(
+                        at: destination, withIntermediateDirectories: true)
+                } else {
+                    // 父目錄可能是被 cruft 過濾掉的，所以每個檔案都自己確保一次。
+                    // 走訪實測是 pre-order（父必先於子），但那不是 `enumerator` 的
+                    // 契約，不倚賴它。`.other` 在上面的 rejectIrregularEntries 已經
+                    // 全部擋掉，走到這裡只剩 file 與 directory。
+                    try FileManager.default.createDirectory(
+                        at: destination.deletingLastPathComponent(),
+                        withIntermediateDirectories: true)
+                    try FileManager.default.copyItem(
+                        at: payload.appendingPathComponent(e.relativePath), to: destination)
+                }
             }
+        } catch {
+            // 複製到一半失敗（來源某個檔案讀不到、磁碟滿）同樣不能留下 `.incoming`，
+            // 理由與下面 rename 失敗那條相同：殘留的目錄名與 manifest id 不符，
+            // 會以 idDirectoryMismatch 的形式出現在 `pack list` 裡。
+            try? FileManager.default.removeItem(at: incoming)
+            throw error
         }
 
         let final = packsDirectory.appendingPathComponent(id)
