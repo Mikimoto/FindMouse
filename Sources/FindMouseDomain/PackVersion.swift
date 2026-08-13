@@ -25,13 +25,21 @@ public struct PackVersion: Sendable, Equatable, Comparable {
     /// 字面上它與 `2.0` 無法區分，而判斷作者的意圖只能靠猜。這樣做是安全的——
     /// 方向只在**兩邊都**解析得出時才講，而兩個日期互比出來的方向恰好也是對的。
     public static func parse(_ raw: String?) -> PackVersion? {
-        guard let raw, !raw.isEmpty else { return nil }
+        guard let raw else { return nil }
         let parts = raw.split(separator: ".", omittingEmptySubsequences: false)
         guard (1...3).contains(parts.count) else { return nil }
         var nums: [Int] = []
         for p in parts {
-            guard !p.isEmpty, p.allSatisfy({ $0.isASCII && $0.isNumber }),
-                  let n = Int(p) else { return nil }
+            // **空段落靠 `Int("")` 回 nil 擋，不用另外檢查 isEmpty。** 兩個
+            // isEmpty 守衛（一個在函式開頭、一個在這裡）本來都在，突變證明它們
+            // 都是死條件：`""` 會 split 成 `[""]`（count 1，過得了範圍檢查），
+            // 然後在這裡被 `Int("")` 擋下。留著它們只是多兩個沒人守的分支。
+            //
+            // 注意 `allSatisfy` 對空字串回 **true**（vacuous truth），所以擋住
+            // 空段落的是 `Int(p)` 而不是它——這也是為什麼順序不能顛倒。
+            guard p.allSatisfy({ $0.isASCII && $0.isNumber }), let n = Int(p) else {
+                return nil
+            }
             nums.append(n)
         }
         return PackVersion(major: nums[0],
