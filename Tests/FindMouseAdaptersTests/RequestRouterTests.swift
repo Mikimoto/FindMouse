@@ -141,7 +141,13 @@ private struct Fixture {
                     errors: ["缺少必要動作：sit"], warnings: [], teaserAvailable: true),
     ]
 
-    init(teaser: Bool = true, loginItemState: LoginItem.State = .notRegistered) {
+    /// - Parameter currentPackID: `status().pack.id`。`pack.remove` 靠它判斷
+    ///   「這套正在用嗎」，所以測那條路要能換掉它。
+    /// - Parameter packsDirectory: `pack.install` / `pack.remove` 會**真的寫檔案**，
+    ///   所以測試一律指到暫存目錄。給 nil 就用一個不存在的路徑——那讓任何意外
+    ///   走到寫入的測試明確失敗，而不是靜默寫進使用者真正的 pack 目錄。
+    init(teaser: Bool = true, loginItemState: LoginItem.State = .notRegistered,
+         currentPackID: String = "test-blocks", packsDirectory: URL? = nil) {
         // 先接成區域變數再交給 closure：struct 的所有屬性都填完之前碰不到 self
         let live = Box(Wiring(teaser: teaser))
         self.live = live
@@ -151,16 +157,19 @@ private struct Fixture {
         self.settingsChanges = settingsChanges
         let loginItem = FakeLoginItem(state: loginItemState)
         self.loginItem = loginItem
+        let packsDir = packsDirectory
+            ?? URL(fileURLWithPath: "/nonexistent-findmouse-test-packs")
         router = RequestRouter(control: { live.value.control },
                                settings: { live.value.settings },
-                               status: Fixture.status,
+                               status: { Fixture.status(packID: currentPackID) },
                                packs: { Fixture.packs },
                                usePack: { id in swapped.value = id },
                                onSettingsChanged: { settingsChanges.value += 1 },
+                               packsDirectory: { packsDir },
                                loginItem: loginItem)
     }
 
-    static func status() -> StatusPayload {
+    static func status(packID: String = "test-blocks") -> StatusPayload {
         StatusPayload(
             appVersion: "1.2.3", visible: true, phase: "resting", phaseElapsed: 1,
             teaser: .init(enabled: false, available: true),
@@ -169,7 +178,7 @@ private struct Fixture {
             cursor: .init(x: 3, y: 4), distance: 5,
             spotlight: .init(active: false, radius: 0, opacity: 0),
             timers: .init(rest: 0, sleep: 0),
-            pack: .init(id: "test-blocks", logicalHeight: 96),
+            pack: .init(id: packID, logicalHeight: 96),
             display: .init(screenIndex: 0, scale: 2),
             loginItem: .init(state: "notRegistered"))
     }
@@ -753,4 +762,109 @@ private func settingValue(_ f: Fixture, _ key: String) throws -> String {
     // 這個 code 與「呼叫丟例外」那條共用，只驗 code 分不出是哪一條路徑觸發的
     #expect(error.message.contains("仍然沒有生效"),
             "應該是守衛觸發而不是 catch：\(error.message)")
+}
+
+// MARK: - pack install／remove（分發 C）
+
+/// 造一個最小的合法來源目錄，回傳它的路徑。
+private func makeSource(id: String) throws -> URL {
+    let root = URL(fileURLWithPath: NSTemporaryDirectory())
+        .appendingPathComponent("router-src-\(UUID().uuidString)")
+    let pack = root.appendingPathComponent(id)
+    try FileManager.default.createDirectory(at: pack, withIntermediateDirectories: true)
+    let manifest = """
+    {"schemaVersion":1,"id":"\(id)","name":"測試","logicalHeight":96,
+     "anchor":{"x":0.5,"y":0.94},"facing":"right","mirrorForOpposite":true,
+     "actions":{"run":{"frames":1,"fps":14,"loop":true}}}
+    """
+    try Data(manifest.utf8).write(to: pack.appendingPathComponent("pack.json"))
+    return pack
+}
+
+private func makePacksDirectory() throws -> URL {
+    let d = URL(fileURLWithPath: NSTemporaryDirectory())
+        .appendingPathComponent("router-packs-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: d, withIntermediateDirectories: true)
+    return d
+}
+
+@Test func installPutsThePackIntoTheUserDirectory() throws {
+    let packs = try makePacksDirectory()
+    defer { try? FileManager.default.removeItem(at: packs) }
+    let source = try makeSource(id: "brand-new")
+    defer { try? FileManager.default.removeItem(at: source.deletingLastPathComponent()) }
+
+    let f = Fixture(packsDirectory: packs)
+    let response = try decode(f.send("pack.install", ["path": source.path]),
+                              as: AckPayload.self)
+    #expect(response.ok == true)
+    #expect(FileManager.default.fileExists(
+        atPath: packs.appendingPathComponent("brand-new/pack.json").path))
+}
+
+/// **斷言錯誤碼而不只是「失敗」**：守衛拿掉之後安裝會**成功**，症狀是清單裡
+/// 看不到它（內建優先），而「成功」與「看不到」之間沒有任何訊號。
+@Test func installRejectsAnIDThatCollidesWithABuiltInPack() throws {
+    let packs = try makePacksDirectory()
+    defer { try? FileManager.default.removeItem(at: packs) }
+    // Fixture.packs 裡 test-blocks 是內建那套
+    let source = try makeSource(id: "test-blocks")
+    defer { try? FileManager.default.removeItem(at: source.deletingLastPathComponent()) }
+
+    let f = Fixture(packsDirectory: packs)
+    let error = try decodeError(f.send("pack.install", ["path": source.path]))
+    #expect(error.code == .packIDReserved)
+    #expect(!FileManager.default.fileExists(
+        atPath: packs.appendingPathComponent("test-blocks").path),
+        "被拒絕就不該留下任何東西")
+}
+
+/// `--force` 對撞內建 id 無效：語意是 remove ＋ install，而內建移除不了。
+@Test func forceDoesNotLetYouInstallOntoABuiltInID() throws {
+    let packs = try makePacksDirectory()
+    defer { try? FileManager.default.removeItem(at: packs) }
+    let source = try makeSource(id: "test-blocks")
+    defer { try? FileManager.default.removeItem(at: source.deletingLastPathComponent()) }
+
+    let f = Fixture(packsDirectory: packs)
+    let error = try decodeError(
+        f.send("pack.install", ["path": source.path, "force": "true"]))
+    #expect(error.code == .packIDReserved)
+}
+
+@Test func installTellsYouWhenTheSameIDIsAlreadyThere() throws {
+    let packs = try makePacksDirectory()
+    defer { try? FileManager.default.removeItem(at: packs) }
+    let source = try makeSource(id: "test-blocks-tall")   // 清單裡是使用者那套
+    defer { try? FileManager.default.removeItem(at: source.deletingLastPathComponent()) }
+
+    let f = Fixture(packsDirectory: packs)
+    let error = try decodeError(f.send("pack.install", ["path": source.path]))
+    #expect(error.code == .packAlreadyInstalled)
+    #expect(error.message.contains("--force"), "訊息要講出下一步")
+}
+
+@Test func removeRefusesBuiltInPacks() throws {
+    let f = Fixture()
+    let error = try decodeError(f.send("pack.remove", ["id": "test-blocks"]))
+    #expect(error.code == .packBuiltIn)
+}
+
+@Test func removeReportsAnUnknownID() throws {
+    let f = Fixture()
+    let error = try decodeError(f.send("pack.remove", ["id": "no-such-pack"]))
+    #expect(error.code == .packNotFound)
+}
+
+/// 移除**當前使用中**的那套一律拒絕：`pack.use` 是排隊的，自動切走會在
+/// 「切換還沒發生」時就把目錄刪掉，掉進 spec 第 6.5 節那條靜默退回的路。
+@Test func removeRefusesThePackThatIsCurrentlyInUse() throws {
+    let packs = try makePacksDirectory()
+    defer { try? FileManager.default.removeItem(at: packs) }
+    // test-blocks-tall 在清單裡是使用者那套，這裡讓它同時是「當前」
+    let f = Fixture(currentPackID: "test-blocks-tall", packsDirectory: packs)
+    let error = try decodeError(f.send("pack.remove", ["id": "test-blocks-tall"]))
+    #expect(error.code == .packInvalid)
+    #expect(error.message.contains("pack use"), "訊息要講出下一步")
+    #expect(f.swapped.value == nil, "不該偷偷幫使用者切走")
 }

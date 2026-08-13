@@ -23,6 +23,7 @@ public final class RequestRouter {
     private let packs: () -> [PackSummary]
     private let usePack: (String) -> Void
     private let onSettingsChanged: () -> Void
+    private let packsDirectory: () -> URL
     private let loginItem: LoginItemGateway
 
     /// - Parameter control: 當下的命令佇列。**每次呼叫都重取，不在 init 綁死**——
@@ -45,12 +46,17 @@ public final class RequestRouter {
     ///   App 白白重新註冊一次快捷鍵（那期間快捷鍵是不存在的）。
     /// - Parameter loginItem: 開機啟動的系統面。**注入而不是自己 new**——
     ///   `SystemLoginItem` 會去問 `SMAppService`，而 router 的測試不該碰系統。
+    /// - Parameter packsDirectory: 使用者 pack 的落腳處。**注入而不是直接用
+    ///   `PackCatalogRepository.userPacksDirectory`**——`pack.install` 會真的寫檔案，
+    ///   而單元測試不該寫進使用者真正的 pack 目錄。給了預設值，所以既有呼叫點
+    ///   一個字都不用改。
     public init(control: @escaping () -> ControlUseCase,
                 settings: @escaping () -> SettingsUseCase,
                 status: @escaping () -> StatusPayload,
                 packs: @escaping () -> [PackSummary],
                 usePack: @escaping (String) -> Void,
                 onSettingsChanged: @escaping () -> Void,
+                packsDirectory: @escaping () -> URL = { PackCatalogRepository.userPacksDirectory },
                 loginItem: LoginItemGateway) {
         self.control = control
         self.settings = settings
@@ -58,6 +64,7 @@ public final class RequestRouter {
         self.packs = packs
         self.usePack = usePack
         self.onSettingsChanged = onSettingsChanged
+        self.packsDirectory = packsDirectory
         self.loginItem = loginItem
     }
 
@@ -85,6 +92,8 @@ public final class RequestRouter {
         case "pack.validate": return packValidate(request.args)
         case "pack.list":     return packList()
         case "pack.use":      return packUse(request.args)
+        case "pack.install":  return packInstall(request.args)
+        case "pack.remove":   return packRemove(request.args)
         case "login-item.status": return loginItemCommand(.query)
         case "login-item.on":     return loginItemCommand(.on)
         case "login-item.off":    return loginItemCommand(.off)
@@ -293,6 +302,117 @@ public final class RequestRouter {
         // 而 id 本來就是呼叫端自己送來的，回給它沒有新資訊。想知道換成功沒有
         // 就打一次 `status`——換 pack 跟其他命令一樣要等到下一帧才發生。
         return encode(WireResponse(data: AckPayload(queued: "pack.use")))
+    }
+
+    // MARK: - 匯入與移除（分發 C）
+
+    private func fail(_ code: WireErrorCode, _ message: String) -> Data {
+        encode(WireResponse<AckPayload>(error: WireError(code: code, message: message)))
+    }
+
+    /// 裝一套 pack。**檔案 I/O 同步做**：它不碰 UI 也不需要 main actor，
+    /// 與 `pack.use` 那條排隊路徑不同（那個要換掉 App 的七個持有者）。
+    private func packInstall(_ args: [String: String]) -> Data {
+        guard let path = args["path"] else {
+            return fail(.invalidArgument, "pack install 要一個路徑")
+        }
+        let source = URL(fileURLWithPath: path)
+        guard FileManager.default.fileExists(atPath: source.path) else {
+            return fail(.packSourceInvalid, "找不到 \(path)。")
+        }
+
+        // id 取自 manifest 而不是檔名：spec 第 6.2 節要求 id 與目錄名一致，
+        // 而檔名可以是任何東西（下載時被瀏覽器改名是常態）。
+        let incomingID: String
+        do {
+            incomingID = try PackInstaller.manifestID(of: source)
+        } catch let e as ExtractedTree.Failure {
+            return fail(.packSourceInvalid, describe(e))
+        } catch {
+            return fail(.packSourceInvalid,
+                        "讀不出這個來源的 pack.json：\(error.localizedDescription)")
+        }
+
+        let existing = packs().map {
+            PackInstallDecision.Existing(id: $0.id, isBuiltIn: $0.isBuiltIn)
+        }
+        switch PackInstallDecision.decide(incomingID: incomingID,
+                                          existing: existing,
+                                          force: args["force"] == "true") {
+        case .rejectedIDReserved:
+            return fail(.packIDReserved,
+                "「\(incomingID)」是內建圖組的 id，裝進去的那套永遠不會被載入"
+                + "（內建的優先）。請改一個 id——pack.json 的 id 要與目錄名一致。")
+
+        case .needsConfirmation:
+            // 訊息帶上兩邊的版本。這是 `PackVersion.replacementPrompt` 的消費者。
+            // 讀不到版本不是錯誤（欄位是 optional），所以兩邊都用 `try?`。
+            let installedVersion = PackCatalogRepository.currentDirectory(for: incomingID)
+                .flatMap { try? PackInstaller.manifestVersion(atPackDirectory: $0) } ?? nil
+            let incomingVersion = (try? PackInstaller.manifestVersion(of: source)) ?? nil
+            let prompt = PackVersion.replacementPrompt(packName: incomingID,
+                                                       installed: installedVersion,
+                                                       incoming: incomingVersion)
+            return fail(.packAlreadyInstalled, prompt + "要覆蓋請加 --force。")
+
+        case .install, .replace:
+            do {
+                try PackInstaller.install(source: source, id: incomingID,
+                                          into: packsDirectory())
+            } catch let PackInstaller.Failure.tooLarge(bytes, limit) {
+                return fail(.packTooLarge,
+                    "解開之後有 \(bytes / 1_048_576) MB，超過上限 \(limit / 1_048_576) MB。")
+            } catch let e as ExtractedTree.Failure {
+                return fail(.packSourceInvalid, describe(e))
+            } catch {
+                return fail(.packSourceInvalid, error.localizedDescription)
+            }
+            return encode(WireResponse(data: AckPayload(queued: "pack.install")))
+        }
+    }
+
+    /// 移除一套使用者 pack。
+    ///
+    /// **當前使用中的那套一律拒絕**，不自動切走。`pack.use` 是排隊由 App 處理的
+    /// （回 `queued`），所以「切回內建」在這支回應時還沒發生——刪了目錄而 App 還在
+    /// 用它，就掉進 spec 第 6.5 節那條「執行期失效 → 靜默退回」的路。要正確等待就得
+    /// 把佇列完成的訊號接出來，那是為了省使用者一步而引入非同步協調。
+    private func packRemove(_ args: [String: String]) -> Data {
+        guard let id = args["id"] else {
+            return fail(.invalidArgument, "pack remove 要一個 id")
+        }
+        guard let summary = packs().first(where: { $0.id == id }) else {
+            return fail(.packNotFound, "沒有叫「\(id)」的圖組（用 pack list 看有哪些）。")
+        }
+        guard !summary.isBuiltIn else {
+            return fail(.packBuiltIn, "「\(id)」是內建圖組，拿不掉。")
+        }
+        // 用 `status().pack.id`——`packList` 判斷 `current` 也是這個來源，
+        // 兩處共用同一個才不會出現「status 說在用 A、remove 說 A 不是當前」。
+        guard status().pack.id != id else {
+            return fail(.packInvalid,
+                "「\(id)」正在使用中。請先 pack use 換成別的圖組，再移除它。")
+        }
+        do {
+            try PackInstaller.remove(id: id, from: packsDirectory())
+        } catch {
+            return fail(.packInvalid, "刪不掉：\(error.localizedDescription)")
+        }
+        return encode(WireResponse(data: AckPayload(queued: "pack.remove")))
+    }
+
+    /// `ExtractedTree.Failure` → 繁中句子。訊息要講出「有幾套」這種數字，
+    /// 「格式不對」讓人無從下手。
+    private func describe(_ failure: ExtractedTree.Failure) -> String {
+        switch failure {
+        case .noManifest:
+            return "這個來源裡沒有 pack.json，不是一套 sprite pack。"
+        case .multiplePacks(let roots):
+            return "這個來源裡有 \(roots.count) 套 pack（\(roots.joined(separator: "、"))），"
+                 + "一次只能裝一套。"
+        case .notARegularFile(let path):
+            return "「\(path)」不是普通檔案（可能是連結）。pack 只該有 PNG 與 pack.json。"
+        }
     }
 
     // MARK: - 錯誤對應
