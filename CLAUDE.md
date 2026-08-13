@@ -55,6 +55,21 @@ SciPy 裝在它上面，讓 mise 換一個 python 進來會讓素材管線立刻
   `build/FindMouse.app`，連另一個 session 的實例一起殺，正是這條要避免的事。
 - **`findmouse pack validate` 走 socket，App 必須在跑。** CLI 是薄用戶端，
   App 沒跑會回 `APP_NOT_RUNNING`（exit 3），那不是 pack 有問題。
+- **`ditto -x -k` 會把 zip 裡的 `../x` 攤平到目標根目錄，不是拒絕它**
+  （2026-08-12 實測：`../escaped.txt` 與 `../../escaped2.txt` 都落在目標目錄底下、
+  exit 0）。所以匯入 pack 的安全性**不靠它**——靠「解到空暫存目錄之後只搬 pack 根
+  底下的東西」（`ExtractedTree.entries(under:)`）。那個守衛的測試是
+  `onlyThePackRootIsInstalledNotTheStrayFiles`，**不是**釘 ditto 行為的那條：
+  後者在「整個暫存目錄搬過去」這個突變下仍然通過（檔案確實沒逃出暫存目錄）。
+  順帶：`ditto` 也不驗證 zip 自報的未壓縮大小（改成 1 照樣解出真正的 1000 bytes），
+  所以大小上限只能解壓後複查。
+- **裝一套與內建同 id 的 pack 會「成功但永遠看不到」。** `PackCatalogRepository.scan`
+  用 seen set 去重且內建目錄排在前面，所以 `pack.install` 對內建 id 一律回
+  `PACK_ID_RESERVED`（與「移除內建」的 `PACK_BUILT_IN` 分開，處方不同），
+  連 `--force` 都不給過。
+- **`URL.hasDirectoryPath` 只看路徑字串有沒有結尾斜線，不問檔案系統。**
+  `URL(fileURLWithPath:)` 建出來的目錄 URL 通常沒有斜線，於是目錄會被當成 zip
+  丟給 `ditto`（訊息是「Is a directory」）。要問就用 `isDirectoryKey`。
 - **`toggle` 不是幂等的。** 腳本裡一律用 `summon` / `dismiss`。
 - SwiftUI **只給設定視窗**。Overlay 維持純 AppKit ＋ CALayer——那裡有 spec 第 7.4 節
   的每帧預算，設定視窗一秒鐘畫不到一次。
