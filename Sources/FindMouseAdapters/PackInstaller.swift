@@ -172,7 +172,12 @@ public enum PackInstaller {
     /// `.incoming` 那一步讓失敗不留半套：直接寫進 `<id>` 的話，中途失敗會留下一個
     /// 「像是裝好了」的殘缺目錄，而 `PackValidator` 只會說它不合格——使用者看到的是
     /// 「我裝的 pack 壞了」而不是「安裝沒完成」。
-    public static func install(source: URL, id: String, into packsDirectory: URL) throws {
+    /// - Parameter byteLimit: 解壓後的大小上限。**開成參數只為了測得到**——
+    ///   200MB 的預設值要用真的 200MB 素材才踩得到，那種測試會慢到沒人跑，
+    ///   於是這個守衛實際上等於零覆蓋（實測：把它改成 `Int.max` 全綠）。
+    ///   呼叫端一律不傳。
+    public static func install(source: URL, id: String, into packsDirectory: URL,
+                               byteLimit: Int = PackInstaller.byteLimit) throws {
         // 先驗 id，在動任何檔案之前。理由見 requireSafeID。
         try requireSafeID(id)
         let staging = URL(fileURLWithPath: NSTemporaryDirectory())

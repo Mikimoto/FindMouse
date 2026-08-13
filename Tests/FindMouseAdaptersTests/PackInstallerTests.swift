@@ -142,6 +142,46 @@ private let minimalManifest = """
         "更不該逃到 Packs 之外")
 }
 
+// MARK: - 大小上限
+
+/// 超過上限就拒絕，而且**什麼都不留**——半套 pack 比裝不起來更難查。
+@Test func aSourceOverTheLimitIsRejectedAndLeavesNothing() throws {
+    let root = try tempDir()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let pack = root.appendingPathComponent("cat")
+    try FileManager.default.createDirectory(at: pack, withIntermediateDirectories: true)
+    try Data(minimalManifest.utf8).write(to: pack.appendingPathComponent("pack.json"))
+    try Data(repeating: 0, count: 300).write(to: pack.appendingPathComponent("big.png"))
+    let packs = root.appendingPathComponent("Packs")
+    try FileManager.default.createDirectory(at: packs, withIntermediateDirectories: true)
+
+    // 斷言的是**確切的 bytes** 不只是「有丟例外」：量錯範圍時例外照丟，
+    // 而使用者看到的那個數字會是錯的。
+    #expect(throws: PackInstaller.Failure.tooLarge(
+        bytes: 300 + minimalManifest.utf8.count, limit: 100)) {
+        try PackInstaller.install(source: pack, id: "cat", into: packs, byteLimit: 100)
+    }
+    let leftovers = try FileManager.default.contentsOfDirectory(atPath: packs.path)
+    #expect(leftovers.isEmpty, "被拒絕就不該留下任何東西：\(leftovers)")
+}
+
+/// **夾帶的大檔案不計入。** 它不會被裝進去，拿它的大小去擋一次合法的安裝
+/// 就是錯的理由。這條在「量整個解壓結果」這個突變下會紅。
+@Test func aStrayOutsideThePackRootDoesNotCountTowardTheLimit() throws {
+    let root = try tempDir()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let zip = root.appendingPathComponent("s.zip")
+    try makeZip(at: zip, entries: [("huge.bin", String(repeating: "x", count: 5_000)),
+                                   ("cat/pack.json", minimalManifest)])
+    let packs = root.appendingPathComponent("Packs")
+    try FileManager.default.createDirectory(at: packs, withIntermediateDirectories: true)
+
+    // 上限只容得下 manifest，容不下那個 5000 bytes 的夾帶檔。
+    try PackInstaller.install(source: zip, id: "cat", into: packs, byteLimit: 1_000)
+    #expect(FileManager.default.fileExists(
+        atPath: packs.appendingPathComponent("cat/pack.json").path))
+}
+
 @Test func aSymlinkInTheSourceIsRejected() throws {
     let root = try tempDir()
     defer { try? FileManager.default.removeItem(at: root) }
