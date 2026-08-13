@@ -70,8 +70,17 @@ public enum PackInstaller {
 
     /// 走訪一個目錄，產出 Domain 看得懂的樹。
     ///
-    /// **明確問 `isSymbolicLinkKey`**：`FileManager` 的走訪預設會**跟隨** symlink，
-    /// 於是一個指向 `/` 的連結會讓走訪炸開，而症狀看起來只是「很慢」。
+    /// **明確問 `isSymbolicLinkKey`**，雖然拿掉它結果不變（實測）。
+    ///
+    /// 2026-08-13 量過的三件事：`enumerator(at:options: [])` **不**跟隨 symlink
+    /// （指向另一個目錄的連結只算一筆訪問，那個目錄裡的檔案從未被走到）；
+    /// `isDirectoryKey` 與 `isRegularFileKey` 對 symlink 也都回 false，所以少了
+    /// 這一段仍然落到 `.other`；但**相鄰的 `FileManager.fileExists(atPath:isDirectory:)`
+    /// 會跟隨**，對指向目錄的連結回 `isDirectory=true`——兩支 API 行為相反。
+    ///
+    /// 留著是因為「拒絕 symlink」是安全規則，而它不該靠「那兩個 key 恰好不跟隨」
+    /// 這個隱含性質成立：哪天分類換成問會跟隨的那一支，指向目錄的 symlink 就會
+    /// 被判成 `.directory` 而通過 `rejectIrregularEntries`。
     ///
     /// 不跳過隱藏檔（`options: []`）：`.DS_Store` 要被收進來才能被 `isCruft` 過濾，
     /// 而 `__MACOSX/._x` 這種也要看得到。

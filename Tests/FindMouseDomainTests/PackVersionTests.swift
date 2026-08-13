@@ -19,8 +19,13 @@ import Testing
     #expect(PackVersion.parse("1.0-beta") == nil)
     #expect(PackVersion.parse("") == nil)
     #expect(PackVersion.parse(nil) == nil)
-    #expect(PackVersion.parse("１.０") == nil, "全角數字：Int() 會成功，但那不是這裡的語意")
+    #expect(PackVersion.parse("１.０") == nil, "全角數字（Int 自己就回 nil，實測）")
     #expect(PackVersion.parse("1..2") == nil)
+    // `allSatisfy` 唯一擋得到而 `Int` 擋不到的形狀。`Int("+1")` 回 1、
+    // `Int("-1")` 回 -1（2026-08-13 實測），少了那個判準這三條全部會解析成功。
+    #expect(PackVersion.parse("+1") == nil, "Int(\"+1\") 是 1，但 +1 不是版本 1")
+    #expect(PackVersion.parse("-1") == nil)
+    #expect(PackVersion.parse("1.-2") == nil)
     #expect(PackVersion.parse("1.2.3.4") == nil, "四段不是 semver")
 }
 

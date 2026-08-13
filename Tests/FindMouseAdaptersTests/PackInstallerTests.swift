@@ -199,6 +199,34 @@ private let minimalManifest = """
     }
 }
 
+/// 指向**目錄**的 symlink 也要被拒絕，而且走訪不能跟著進去。
+///
+/// 兩件事分開講：走訪不跟隨是 `enumerator` 自己的行為（2026-08-13 實測），
+/// 分類成 `.other` 則是 `tree(of:)` 的三元。**這條在「拿掉那個 isSymbolicLink
+/// 判斷」的突變下仍然綠**（`isDirectoryKey` 對 symlink 同樣回 false），所以它
+/// 釘的是 `rejectIrregularEntries` 這條規則本身，不是那一段三元。
+@Test func aSymlinkPointingAtADirectoryIsRejectedAndNotDescendedInto() throws {
+    let root = try tempDir()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let outside = root.appendingPathComponent("outside")
+    try FileManager.default.createDirectory(at: outside, withIntermediateDirectories: true)
+    try Data("機密".utf8).write(to: outside.appendingPathComponent("secret.txt"))
+
+    let pack = root.appendingPathComponent("cat")
+    try FileManager.default.createDirectory(at: pack, withIntermediateDirectories: true)
+    try Data("{}".utf8).write(to: pack.appendingPathComponent("pack.json"))
+    try FileManager.default.createSymbolicLink(
+        atPath: pack.appendingPathComponent("dirlink").path,
+        withDestinationPath: outside.path)
+
+    let tree = try PackInstaller.tree(of: pack)
+    #expect(!tree.entries.contains { $0.relativePath.hasSuffix("secret.txt") },
+            "走訪不該跟著連結進去：\(tree.entries.map(\.relativePath))")
+    #expect(throws: ExtractedTree.Failure.notARegularFile("dirlink")) {
+        try tree.rejectIrregularEntries()
+    }
+}
+
 /// 安裝失敗不能留下 `.incoming` 殘骸——下一次安裝會撞到它。
 ///
 /// 這條走的是**早期失敗**（沒有 pack.json，`.incoming` 還沒被建立）。
