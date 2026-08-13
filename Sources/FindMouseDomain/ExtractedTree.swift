@@ -99,6 +99,12 @@ public struct ExtractedTree: Sendable, Equatable {
     /// 沒有結尾斜線）與**巢狀**的那份（zip 裡是 `cat/__MACOSX/._pack.json` 時
     /// `__MACOSX` 在第二層）。兩種漏法的後果一樣——裡面的檔案被濾掉、空目錄卻
     /// 照樣建出來，而 `PackValidator` 會為它報一筆 `undeclaredDirectory`。
+    ///
+    /// **`packRoot()` 也吃這條規則**，所以放寬它連帶說死一件事：一個真的叫
+    /// `__MACOSX` 的目錄不能拿來裝 pack。代價實測有兩處——`a/__MACOSX/pack.json`
+    /// 是唯一 manifest 時從「裝得起來」變成 `noManifest`；`a/pack.json` 加
+    /// `b/__MACOSX/pack.json` 從 `multiplePacks` 變成安靜地選 `a`。兩者都要有人
+    /// 刻意用這個保留名當目錄名，換來的是 macOS 自己夾帶的那份一定被濾掉。
     private func isCruft(_ path: String) -> Bool {
         path.split(separator: "/").contains("__MACOSX")
             || basename(path) == ".DS_Store" || basename(path).hasPrefix("._")

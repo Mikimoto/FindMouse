@@ -130,6 +130,37 @@ private let minimalManifest = """
     }, "裝完不該帶著未宣告的目錄：\(report.warnings)")
 }
 
+/// 壓縮**資料夾**（而不是它的內容）時 cruft 落在 `cat/__MACOSX/`，是另一個佈局。
+/// 上一條的斷言在這裡罩不到——只比對開頭的 `isCruft` 對根層有效、對這裡無效，
+/// 而後果一樣是使用者裝完看到一行「目錄 __MACOSX 沒有在 pack.json 宣告」。
+@Test func nestedMacOSCruftIsNotInstalledEither() throws {
+    let root = try tempDir()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let zip = root.appendingPathComponent("folder.zip")
+    // ditto 會把 `._pack.json` 當 AppleDouble 吃掉，留下一個**空的** cat/__MACOSX
+    // ——正是要濾掉的那個東西（2026-08-13 實測）。
+    try makeZip(at: zip, entries: [("cat/pack.json", minimalManifest),
+                                   ("cat/__MACOSX/._pack.json", "junk"),
+                                   ("cat/run/000.png", "z")])
+    let packs = root.appendingPathComponent("Packs")
+    try FileManager.default.createDirectory(at: packs, withIntermediateDirectories: true)
+
+    try PackInstaller.install(source: zip, id: "cat", into: packs)
+
+    let installed = packs.appendingPathComponent("cat")
+    let names = try FileManager.default
+        .contentsOfDirectory(atPath: installed.path).sorted()
+    #expect(names == ["pack.json", "run"], "巢狀 cruft 不該被裝進去：\(names)")
+
+    let loaded = try #require(SpritePackRepository.load(at: installed))
+    let report = PackValidator.validate(manifest: loaded.manifest,
+                                        directoryName: loaded.directoryName,
+                                        listing: loaded.listing)
+    #expect(!report.warnings.contains {
+        if case .undeclaredDirectory = $0 { return true } else { return false }
+    }, "裝完不該帶著未宣告的目錄：\(report.warnings)")
+}
+
 /// **已知邊界，刻意釘住。** 同一個佈局下，被 ditto 攤平的 `../escaped.txt` 與
 /// 作者真的放在 pack 根的檔案無法區分，所以它會被裝進 `Packs/<id>/`。
 /// 守住的是「不會跑到 `Packs` 外面」——這條同時證明那件事仍然成立。
@@ -264,7 +295,8 @@ private let minimalManifest = """
 /// 早期失敗那條走的是「`.incoming` 還沒建」。這條走**建好之後才失敗**：
 /// 來源裡有一個讀不到的檔案，複製到一半炸掉。沒有那個 catch 的話 `Packs` 裡
 /// 會留下 `<id>.incoming`，而它的目錄名與 manifest id 不符，於是 `pack list`
-/// 會多出一筆 idDirectoryMismatch——使用者看到的是「我裝的 pack 壞了」。
+/// 會多出一筆 idDirectoryMismatch（或者在 `pack.json` 還沒複製到時被靜默略過）
+/// ——兩種使用者都只看得到「我裝的 pack 壞了」。
 @Test func aFailureHalfwayThroughTheCopyLeavesNoIncomingDirectory() throws {
     let root = try tempDir()
     defer { try? FileManager.default.removeItem(at: root) }
@@ -275,9 +307,9 @@ private let minimalManifest = """
     let unreadable = pack.appendingPathComponent("run/000.png")
     try Data("x".utf8).write(to: unreadable)
     // 擁有者一樣受 mode 約束，所以 000 的檔案連自己都讀不到 → copyItem 失敗。
+    // 不必在收工時改回來：刪一棵樹只看父目錄的寫入位，實測 mode 000 的檔案
+    // 照樣刪得掉——那種擋不出東西的 defer 不留。
     try FileManager.default.setAttributes([.posixPermissions: 0], ofItemAtPath: unreadable.path)
-    defer { try? FileManager.default.setAttributes([.posixPermissions: 0o644],
-                                                   ofItemAtPath: unreadable.path) }
     let packs = root.appendingPathComponent("Packs")
     try FileManager.default.createDirectory(at: packs, withIntermediateDirectories: true)
 

@@ -228,9 +228,12 @@ public enum PackInstaller {
                                        : String(e.relativePath.dropFirst(root.count + 1))
                 let destination = incoming.appendingPathComponent(rel)
                 if e.kind == .directory {
-                    // 目錄的 mode 與 xattr 不跟著複製（舊的整個目錄 `copyItem` 會）。
-                    // 這是刻意的：pack 裡只該有 PNG 與 JSON，而作者打包時的目錄
-                    // 權限跟到使用者機器上只會製造「裝好了卻讀不到」。
+                    // 目錄走 `createDirectory` 而不是 `copyItem`，於是目錄的 mode
+                    // 與 xattr 不跟著來源走（改用 umask，實測來源 0777 裝出 0755）；
+                    // **檔案的 mode 照樣原封不動**（實測來源 0400 裝出 0400），
+                    // 這個不對稱是兩支 API 的差別，不是政策。兩邊都不必修：目錄
+                    // 拿 umask 只會比來源更保守，而檔案沒有 owner-read 的話在上面
+                    // 那行 `copyItem` 就先失敗了，裝不進來。
                     try FileManager.default.createDirectory(
                         at: destination, withIntermediateDirectories: true)
                 } else {
@@ -246,9 +249,11 @@ public enum PackInstaller {
                 }
             }
         } catch {
-            // 複製到一半失敗（來源某個檔案讀不到、磁碟滿）同樣不能留下 `.incoming`，
-            // 理由與下面 rename 失敗那條相同：殘留的目錄名與 manifest id 不符，
-            // 會以 idDirectoryMismatch 的形式出現在 `pack list` 裡。
+            // 複製到一半失敗（來源某個檔案讀不到、磁碟滿）同樣不能留下 `.incoming`。
+            // 理由與下面 rename 失敗那條相同，只是症狀分兩種：`pack.json` 已經
+            // 複製過去的話，殘留目錄會以 idDirectoryMismatch 出現在 `pack list`
+            // 裡；還沒複製到的話 `SpritePackRepository.load` 回 nil，那個目錄被
+            // 靜默略過、更沒人告訴使用者它是什麼。哪一種取決於失敗落在哪一筆。
             try? FileManager.default.removeItem(at: incoming)
             throw error
         }
