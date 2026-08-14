@@ -8,6 +8,28 @@ macOS 選單列常駐程式。貓抵達之後會待一陣子、伸懶腰、打�
 - 預設快捷鍵：**⌥⌘F** 召喚／收回、**⌥⌘T** 逗貓棒（皆可改）
 - 需求：macOS 14 以上、Swift 6
 
+## 安裝
+
+```sh
+brew tap mikimoto/findmouse
+brew install --cask findmouse
+```
+
+或到 [Releases](https://github.com/Mikimoto/FindMouse/releases) 抓 `.dmg`，掛載後
+拖進「應用程式」。兩條路拿到的是同一個檔案：簽好章、notarize 過、票也釘上了，
+所以 Gatekeeper 不會擋，也不必右鍵開啟。
+
+命令列工具是**分開的**，要用腳本控制才需要。它從原始碼建（約 6 秒），所以你的
+機器上要有 Xcode：
+
+```sh
+brew install findmouse-cli
+```
+
+移除：`brew uninstall --cask --zap findmouse` 會連設定與你自己裝的 pack 一起清掉。
+**開機啟動的註冊清不掉**——那筆紀錄在系統手上，`brew` 碰不到。先在設定視窗把那個
+勾關掉，或到「系統設定 → 一般 → 登入項目」移除。
+
 ## 建置與執行
 
 ```sh
@@ -56,22 +78,25 @@ mise run mutate -- <批次.json>    # 突變測試
 「無法判定」——某些斷言需要獨占游標，你在同一台機器上動滑鼠時它會如實說「沒證明」
 而不是誤報通過。
 
-## 安裝已簽章的版本
+## 自己發一份
 
-`build/FindMouse-<版本>-<sha>.dmg` 是簽好章、notarize 過、釘上票的產物：
-掛載、拖進「應用程式」、雙擊，Gatekeeper 不會擋，也不必右鍵開啟。
-
-自己做一份（需要 Developer ID 憑證與一組存好的 notarytool profile）：
+需要 Developer ID 憑證與一組存好的 notarytool profile：
 
 ```sh
 xcrun notarytool store-credentials findmouse-release   # 一次性
-mise run release -- 0.2.0 --profile findmouse-release
+mise run release -- <版本> --profile findmouse-release
 ```
 
 它跑完會自己驗自己的產出——包含加上隔離屬性再驗一次，那是唯一測得到
 「使用者從網路下載會不會被擋」的方式。任一條紅，整個發布視為失敗。
+最後會打一個指向**被建置的那個 commit**（不是當下的 HEAD）的本機 tag，
+並印出 Homebrew tap 要換的值。
 
 只驗一個既有的 dmg：`Scripts/release.sh --verify-only <某個.dmg>`
+
+tap 在另一個 repo：[Mikimoto/homebrew-findmouse](https://github.com/Mikimoto/homebrew-findmouse)。
+發完版要把 cask 的 `version`／`sha256` 與 formula 的 tag 一起更新，
+兩者的值 `release.sh` 都會印出來。
 
 ## Sprite pack
 
