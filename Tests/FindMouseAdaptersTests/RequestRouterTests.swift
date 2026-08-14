@@ -945,3 +945,120 @@ private func makePacksDirectory() throws -> URL {
     #expect(!FileManager.default.fileExists(atPath: shadowed.path),
             "遮蔽住內建的那個目錄要真的被刪掉")
 }
+
+// MARK: - pack validate 吃 .fmpack
+
+/// 把一個 pack 目錄壓成 `.fmpack`（`--keepParent` ＝ zip 裡有一層資料夾，
+/// 就是 `pack-fmpack.py` 產出的那個形狀）。
+private func makeFmpack(from pack: URL, keepParent: Bool) throws -> URL {
+    let out = URL(fileURLWithPath: NSTemporaryDirectory())
+        .appendingPathComponent("router-\(UUID().uuidString).fmpack")
+    let p = Process()
+    p.executableURL = URL(fileURLWithPath: "/usr/bin/ditto")
+    p.arguments = keepParent ? ["-c", "-k", "--keepParent", pack.path, out.path]
+                             : ["-c", "-k", pack.path, out.path]
+    try p.run(); p.waitUntilExit()
+    #expect(p.terminationStatus == 0)
+    return out
+}
+
+/// 一套**真的合格**的 pack 目錄。用 `bad-missing-teaser`（缺的是 teaser 動作，
+/// 那是 warning 不是 error，所以它 `valid == true`）——手搓一個只有 `pack.json`
+/// 的假來源會因為缺 core 動作而不合格，那樣就分不出「zip 讀不進來」與
+/// 「pack 本來就不合格」。
+private func validFixturePack() throws -> URL {
+    try #require(Bundle.module.url(forResource: "Fixtures", withExtension: nil))
+        .appendingPathComponent("bad-missing-teaser")
+}
+
+/// **`.fmpack` 驗得動。** 只吃目錄的話，使用者從網站下載一個 `.fmpack` 想先驗
+/// 再裝，拿到的是 `PACK_NOT_FOUND`「讀不到 pack」——而檔案明明在。
+@Test func validatingAnFmpackFileWorks() throws {
+    let fmpack = try makeFmpack(from: validFixturePack(), keepParent: true)
+    defer { try? FileManager.default.removeItem(at: fmpack) }
+
+    let response = try decode(Fixture().send("pack.validate", ["path": fmpack.path]),
+                              as: PackValidatePayload.self)
+    #expect(response.ok == true)
+    let data = try #require(response.data)
+    #expect(data.id == "bad-missing-teaser")
+    #expect(data.valid == true, "errors=\(data.errors)")
+}
+
+/// **manifest 落在 zip 根時也要驗得動，而且不能生出假的 idDirectoryMismatch。**
+/// 那是 Finder「壓縮所選項目的內容」的佈局；解到暫存目錄之後「目錄名」是一串
+/// UUID，拿它去比對 `manifest.id` 必然不符——但 `install` 會把內容搬進以 id
+/// 命名的目錄，所以那個不符在裝完之後並不存在。
+@Test func validatingAnFmpackWhoseManifestSitsAtTheZipRootDoesNotReportAMismatch() throws {
+    let fmpack = try makeFmpack(from: validFixturePack(), keepParent: false)
+    defer { try? FileManager.default.removeItem(at: fmpack) }
+
+    let response = try decode(Fixture().send("pack.validate", ["path": fmpack.path]),
+                              as: PackValidatePayload.self)
+    let data = try #require(response.data)
+    #expect(data.id == "bad-missing-teaser")
+    // 斷言那一句而不是 `contains("目錄")`：後者連「宣告了 run 但沒有對應目錄」
+    // 都會中，於是這條測試會為了錯的理由紅。
+    #expect(!data.errors.contains { $0.contains("與目錄名") }, "errors=\(data.errors)")
+    #expect(data.valid == true, "errors=\(data.errors)")
+}
+
+/// **目錄型來源仍然比對真正的目錄名。** 上面那條讓 zip 改用 manifest id 比對，
+/// 若連目錄也一起改掉，`idDirectoryMismatch` 這個檢查就整個消失了——而對目錄
+/// 來源它是真的（`install` 不會幫既有目錄改名）。
+@Test func validatingADirectoryStillChecksTheDirectoryName() throws {
+    let root = URL(fileURLWithPath: NSTemporaryDirectory())
+        .appendingPathComponent("router-mismatch-\(UUID().uuidString)")
+    let pack = root.appendingPathComponent("wrong-name")
+    try FileManager.default.createDirectory(at: pack, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    try Data("""
+    {"schemaVersion":1,"id":"declared-id","name":"測試","logicalHeight":96,
+     "anchor":{"x":0.5,"y":0.94},"facing":"right","mirrorForOpposite":true,
+     "actions":{"run":{"frames":1,"fps":14,"loop":true}}}
+    """.utf8).write(to: pack.appendingPathComponent("pack.json"))
+
+    let response = try decode(Fixture().send("pack.validate", ["path": pack.path]),
+                              as: PackValidatePayload.self)
+    let data = try #require(response.data)
+    // 斷言**那一則錯誤**而不是 `valid == false`：這個 fixture 只有 pack.json、
+    // 缺 core 動作，所以它不管有沒有 mismatch 都不合格——只看 valid 的話，
+    // 把目錄型也改成拿 manifest id 比對（＝這個檢查整個消失）照樣是綠的。
+    // 實測過那個突變，就是這樣漏掉的。
+    #expect(data.errors.contains { $0.contains("與目錄名") },
+            "目錄名 wrong-name 與 id declared-id 不符，要報出來：\(data.errors)")
+}
+
+/// **解不開與「不是一套 pack」是兩件事，錯誤碼都不是 PACK_NOT_FOUND。**
+///
+/// 這條走的是 `ExtractedTree.Failure` 那條 catch（zip 解得開、但裡面沒有
+/// `pack.json`）；上面那條走的是泛用 catch（`ditto` 自己失敗）。兩條分支各自
+/// 要有測試——實測過只有下面那條時，把 `ExtractedTree.Failure` 改回
+/// `packNotFound` 的突變是綠的。
+@Test func validatingAZipWithoutAManifestReportsSourceInvalid() throws {
+    let root = URL(fileURLWithPath: NSTemporaryDirectory())
+        .appendingPathComponent("router-nomanifest-\(UUID().uuidString)")
+    let content = root.appendingPathComponent("stuff")
+    try FileManager.default.createDirectory(at: content, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    try Data("不是 manifest".utf8).write(to: content.appendingPathComponent("readme.txt"))
+
+    let fmpack = try makeFmpack(from: content, keepParent: true)
+    defer { try? FileManager.default.removeItem(at: fmpack) }
+
+    let error = try decodeError(Fixture().send("pack.validate", ["path": fmpack.path]))
+    #expect(error.code == .packSourceInvalid, "實際：\(error.code)")
+    #expect(error.message.contains("沒有 pack.json"), "要講出為什麼：\(error.message)")
+}
+
+/// 解不開的檔案是**來源的問題**，不是「找不到 pack」——處方不同（換一個檔案
+/// vs 檢查路徑），所以錯誤碼要分開。
+@Test func validatingAFileThatIsNotAZipReportsSourceInvalid() throws {
+    let junk = URL(fileURLWithPath: NSTemporaryDirectory())
+        .appendingPathComponent("router-junk-\(UUID().uuidString).fmpack")
+    try Data("這不是 zip".utf8).write(to: junk)
+    defer { try? FileManager.default.removeItem(at: junk) }
+
+    let error = try decodeError(Fixture().send("pack.validate", ["path": junk.path]))
+    #expect(error.code == .packSourceInvalid, "實際：\(error.code) \(error.message)")
+}
