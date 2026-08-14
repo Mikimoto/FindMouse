@@ -81,7 +81,7 @@ mise run release -- 0.2.0 --profile findmouse-release
 ```sh
 findmouse pack list
 findmouse pack use <id>
-findmouse pack validate <目錄>
+findmouse pack validate <路徑>    # 與 install 吃一樣的東西
 findmouse pack install <路徑>     # .fmpack、.zip 或一個目錄
 findmouse pack remove <id>
 ```

@@ -122,6 +122,29 @@ public enum PackInstaller {
         return ExtractedTree(entries: entries)
     }
 
+    /// 把來源解析成**pack 根目錄**：目錄原樣回傳，`.fmpack`／zip 解到 `staging`
+    /// 底下再回傳裡面那一層。
+    ///
+    /// **`staging` 由呼叫端擁有**，因為回傳的 URL 可能指進去——這一支自己刪的話，
+    /// 呼叫端拿到的會是一個剛被刪掉的路徑。目錄型來源不會用到 `staging`。
+    ///
+    /// 順序與 `install` 前半段相同（解 → 認根 → 拒絕非 regular file），而且是同一份
+    /// 程式碼：`manifest(of:)` 與 `pack validate` 都走這裡，三條路才不會對「什麼算
+    /// 一套 pack」各有一套答案。
+    public static func packRoot(of source: URL, extractingInto staging: URL) throws -> URL {
+        let payload: URL
+        if isDirectory(source) { payload = source }
+        else { try extract(source, into: staging); payload = staging }
+
+        let tree = try tree(of: payload)
+        let root = try tree.packRoot()
+        try tree.rejectIrregularEntries()
+        return root.isEmpty ? payload : payload.appendingPathComponent(root)
+    }
+
+    /// 來源是不是目錄。`pack validate` 要靠它決定「目錄名該拿哪一個去比對」。
+    public static func sourceIsDirectory(_ url: URL) -> Bool { isDirectory(url) }
+
     /// 讀來源的 manifest（zip 會先解到暫存目錄）。
     ///
     /// **與 `install` 各自解壓一次**，那是刻意的取捨：多一次解壓換「決策發生在動
@@ -132,15 +155,7 @@ public enum PackInstaller {
         try FileManager.default.createDirectory(at: staging, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: staging) }
 
-        let payload: URL
-        if isDirectory(source) { payload = source }
-        else { try extract(source, into: staging); payload = staging }
-
-        let tree = try tree(of: payload)
-        let root = try tree.packRoot()
-        try tree.rejectIrregularEntries()
-        return try manifest(atPackDirectory: root.isEmpty
-                            ? payload : payload.appendingPathComponent(root))
+        return try manifest(atPackDirectory: packRoot(of: source, extractingInto: staging))
     }
 
     /// 讀一個**已經是 pack 根**的目錄裡的 manifest。

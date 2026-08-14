@@ -35,7 +35,7 @@ public enum Arguments {
           config reset <key> | --all       還原設定
           pack list                        列出所有 pack（* 是正在用的那套）
           pack use <id>                    換成另一套 pack
-          pack validate <path>             驗證一套 sprite pack
+          pack validate <path>             驗證一套 sprite pack（.fmpack、.zip 或目錄）
           login-item [on|off]              開機時是否啟動（不帶動詞就是查詢）
 
         全域旗標：

@@ -259,12 +259,47 @@ public final class RequestRouter {
             return encode(WireResponse<PackValidatePayload>(error: WireError(
                 code: .invalidArgument, message: "pack.validate 需要 path")))
         }
-        guard let loaded = SpritePackRepository.load(at: URL(fileURLWithPath: path)) else {
+        // **`.fmpack` 也要驗得動。** 只吃目錄的話，使用者從網站下載一個 `.fmpack`
+        // 想先驗再裝，拿到的是 `PACK_NOT_FOUND`「讀不到 pack」——而檔案明明在。
+        // 解壓走與 `install` 同一份 `packRoot(of:extractingInto:)`，於是「驗過的」
+        // 與「裝進去的」是同一個判定。
+        let source = URL(fileURLWithPath: path)
+        // **存在性要先問，順序有意義。** 不存在的路徑既不是目錄、也解壓不開，
+        // 少了這一道就會被當成 zip 丟給 `ditto`、拿到 `extractionFailed`，於是
+        // 「路徑打錯」會回報成「這個檔案不是一套 pack」——處方完全不同
+        //（檢查路徑 vs 換一個檔案）。`validatingAMissingPathReportsPackNotFound`
+        // 釘住它，而它正是改成吃 `.fmpack` 時第一個轉紅的東西。
+        guard FileManager.default.fileExists(atPath: source.path) else {
             return encode(WireResponse<PackValidatePayload>(error: WireError(
                 code: .packNotFound, message: "讀不到 pack：\(path)")))
         }
+        let staging = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("fm-validate-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: staging) }
+
+        let packDirectory: URL
+        do {
+            try FileManager.default.createDirectory(at: staging, withIntermediateDirectories: true)
+            packDirectory = try PackInstaller.packRoot(of: source, extractingInto: staging)
+        } catch let e as ExtractedTree.Failure {
+            return encode(WireResponse<PackValidatePayload>(error: WireError(
+                code: .packSourceInvalid, message: PackLibraryUseCase.describe(e))))
+        } catch {
+            return encode(WireResponse<PackValidatePayload>(error: WireError(
+                code: .packSourceInvalid, message: error.localizedDescription)))
+        }
+        guard let loaded = SpritePackRepository.load(at: packDirectory) else {
+            return encode(WireResponse<PackValidatePayload>(error: WireError(
+                code: .packNotFound, message: "讀不到 pack：\(path)")))
+        }
+        // 目錄型來源比對真正的目錄名；zip 比對 **manifest 的 id**，因為 `install`
+        // 把內容搬進以 id 命名的目錄——zip 裡那層資料夾名（或 manifest 落在 zip 根時
+        // 的暫存目錄 UUID）在安裝時就被丟掉了，拿它去比對只會生出一個假的
+        // idDirectoryMismatch。驗的是「裝進去之後長什麼樣」。
+        let directoryName = PackInstaller.sourceIsDirectory(source)
+            ? loaded.directoryName : loaded.manifest.id
         let report = PackValidator.validate(manifest: loaded.manifest,
-                                            directoryName: loaded.directoryName,
+                                            directoryName: directoryName,
                                             listing: loaded.listing)
         return encode(WireResponse(data: PackValidatePayload(
             id: loaded.manifest.id,
