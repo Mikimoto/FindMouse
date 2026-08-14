@@ -379,3 +379,25 @@ printf '\n\033[32m✓\033[0m %s\n' "${DMG}"
 printf '  版本 %s（build %s）@ %s\n' "${VERSION}" "${BUILD_NUMBER}" "${SHA}"
 printf '  推 tag：git push origin %s\n' "${TAG}"
 printf '  最後一關本機測不到：傳給一台沒有這些憑證的機器（或另一個使用者帳號）雙擊一次。\n'
+
+# Homebrew tap 的值。**印出來而不是自動去改那個 repo**：tap 是另一個獨立的 public
+# repo，發布流程對它沒有寫入權的必要——多一支能推別人 repo 的腳本，換到的只是省下
+# 一次貼上。
+#
+# cask 的 version 是兩段式（`0.4.0,7647757`）而不是單純的版本號，因為 dmg 檔名帶
+# short sha，光靠版本號組不出下載連結。Homebrew 的 `version.csv.first/second`
+# 就是為這種檔名設計的。
+#
+# formula 的 sha256 算的是 **GitHub 產生的 tag tarball**，那份要等 tag 推上去才
+# 存在，所以這裡只能給命令不能給值。
+#
+# `|| true`：這幾行在**驗收全過、tag 也打完之後**才跑，是純粹的便利輸出。讓它在
+# set -e 底下殺掉整支，等於把一次成功的發布回報成失敗——而那筆 notarize 已經送出
+# 去了，重跑的成本不對稱。算不出來就講算不出來，貼上去 brew 會當場吵。
+DMG_SHA256="$(shasum -a 256 "${DMG}" | awk '{print $1}' || true)"
+printf '\n\033[1mHomebrew tap（Mikimoto/homebrew-findmouse）要換的值\033[0m\n'
+printf '  Casks/findmouse.rb\n'
+printf '    version "%s,%s"\n' "${VERSION}" "${SHA}"
+printf '    sha256 "%s"\n' "${DMG_SHA256:-算不出來，自己跑 shasum -a 256 上面那個檔}"
+printf '  Formula/findmouse-cli.rb（tag 推上去之後跑這行拿 sha256）\n'
+printf '    curl -sL https://github.com/Mikimoto/FindMouse/archive/refs/tags/%s.tar.gz | shasum -a 256\n' "${TAG}"
