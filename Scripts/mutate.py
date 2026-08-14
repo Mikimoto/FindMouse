@@ -129,6 +129,24 @@ def _bump_mtime(path):
     os.utime(path, (future, future))
 
 
+def _comment(path, text):
+    """依副檔名包出一句該檔案語法合法的註解。
+
+    **對照組原本寫死 `//`。** 那在 Swift 檔沒事，插進 `Scripts/Info.plist` 就讓
+    整份 XML 解析不了，於是對照組轉紅、整批被判為不可採信——而那一批的三個突變
+    其實全都正確地紅了。壞的是對照組，不是被測的東西，但兩者的輸出長得一模一樣
+    （都是「對照組不是全綠」）。2026-08-13 踩到。
+
+    不認得的副檔名走 `#`：這個 repo 剩下的可突變檔案是 shell 與 python，兩者都吃它。
+    """
+    suffix = Path(path).suffix.lower()
+    if suffix in {".swift", ".c", ".h", ".m", ".js", ".ts"}:
+        return f"// {text}"
+    if suffix in {".plist", ".xml", ".html"}:
+        return f"<!-- {text} -->"
+    return f"# {text}"
+
+
 def main():
     spec_path = Path(sys.argv[1])
     as_json = "--json" in sys.argv
@@ -144,7 +162,7 @@ def main():
         "label": "（對照組）no-op",
         "file": control_file,
         "find": first_line,
-        "replace": first_line + "\n// mutation runner 對照組",
+        "replace": first_line + "\n" + _comment(control_file, "mutation runner 對照組"),
         "expect": [],
         "control": True,
     })
