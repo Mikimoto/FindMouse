@@ -25,8 +25,17 @@ public enum PackInstaller {
     public enum Failure: Error, Equatable, LocalizedError {
         case tooLarge(bytes: Int, limit: Int)
         case extractionFailed(String)
-        /// id 不符 `[a-z0-9-]+`。**這是路徑注入的守衛**，不只是格式檢查——見 `requireSafeID`。
+        /// 這個名字不能拿去當路徑組件。**這是路徑注入的守衛**，不只是格式檢查。
+        /// 兩支的標準不同：`install` 走 `requireSafeID`（`[a-z0-9-]+`，因為它在
+        /// **造**目錄名），`remove` 走比較寬的路徑組件檢查（因為它要刪的名字是
+        /// 從磁碟上列舉來的，見它的 doc）。
         case invalidID(String)
+
+        /// 決定 id 的那一次讀取與真正裝進去的那一次讀到不同的 pack。
+        case sourceChanged(expected: String, actual: String)
+
+        /// `pack.json` 讀不出來——不存在，或不是合法的 JSON。
+        case manifestUnreadable
 
         public var errorDescription: String? {
             switch self {
@@ -37,6 +46,12 @@ public enum PackInstaller {
             case let .invalidID(id):
                 return "pack.json 的 id「\(id)」不合法。只能用小寫英數與連字號"
                      + "（`[a-z0-9-]+`），因為它會被當成資料夾名稱。"
+            case let .sourceChanged(expected, actual):
+                return "來源在安裝途中被換掉了：一開始讀到的 id 是「\(expected)」，"
+                     + "真正要裝的是「\(actual)」。沒有裝進去任何東西，再試一次。"
+            case .manifestUnreadable:
+                return "pack.json 讀不出來——它不存在，或不是合法的 JSON。"
+                     + "這個檔案可能不完整，跟提供的人要一份新的。"
             }
         }
     }
@@ -49,7 +64,7 @@ public enum PackInstaller {
     /// 就是刪家目錄。
     ///
     /// 整份安全論述原本只管**來源側**（zip 裡的 `../x`），目的地側被漏掉了——
-    /// 而目的地側才是攻擊者真正控制的東西。`PackCatalogRepository.swift:80`
+    /// 而目的地側才是攻擊者真正控制的東西。`PackCatalogRepository.swift` 的 `directory(for:)`
     /// 掃描那條路早就有一模一樣的守衛，匯入這條路補上它。
     ///
     /// 在 Adapters 這一層 throw 而不只在 `RequestRouter` guard：這兩支是 public，
@@ -129,10 +144,18 @@ public enum PackInstaller {
     }
 
     /// 讀一個**已經是 pack 根**的目錄裡的 manifest。
+    ///
+    /// 讀不出來一律轉成自己的 `Failure`：`DecodingError` 與 `NSError` 都不是
+    /// `LocalizedError`，`localizedDescription` 會吐「The data couldn't be read…」
+    /// 那串英文樣板，而這支的兩個呼叫端（決定 id 的那次讀取、裝進去之前的複驗）
+    /// 都會把它一路顯示給使用者。原因不再帶出去——`Failure` 的訊息要講「接下來
+    /// 能做什麼」，而 JSON 解析器的抱怨對拿到壞 pack 的人沒有用。
     public static func manifest(atPackDirectory directory: URL) throws -> PackManifest {
-        let data = try Data(contentsOf: directory
-            .appendingPathComponent(ExtractedTree.manifestName))
-        return try JSONDecoder().decode(PackManifest.self, from: data)
+        guard let data = try? Data(contentsOf: directory
+                .appendingPathComponent(ExtractedTree.manifestName)),
+              let manifest = try? JSONDecoder().decode(PackManifest.self, from: data)
+        else { throw Failure.manifestUnreadable }
+        return manifest
     }
 
     public static func manifestID(of source: URL) throws -> String {
@@ -258,6 +281,33 @@ public enum PackInstaller {
             throw error
         }
 
+        // **驗的是已經複製過去的那一份，不是來源。**
+        //
+        // `id` 是呼叫端從**上一次**讀取決定的（`PackLibraryUseCase.install` 先
+        // `manifestID(of:)` 再走 `PackInstallDecision`），而複製迴圈是**又一次**讀取
+        // ——來源在這幾次之間可以被抽換（那個窗口見 `PackLibraryUseCase.swift:132-141`；
+        // 2026-08-14 用目錄型來源實測構造成功三次）。所以驗來源沒有用：驗完到複製完
+        // 之間還有一段。改成驗 `incoming`，驗的位元組就是要裝進去的那些，中間沒有縫。
+        //
+        // 不驗的話，目錄名來自舊的 id、內容來自新的 manifest，裝出一個目錄名與
+        // manifest id 不符的 pack。那種目錄 `remove` 要靠 `sourceDirectoryName` 才認得
+        // 出來，而且如果新的 id 撞到內建，`PACK_ID_RESERVED` 那道閘門完全繞過去了
+        // ——它擋的是**第一次**讀到的 id。
+        // **這個「讀哪裡」沒有決定性的測試釘得住**：把 `incoming` 換回來源，非競態
+        // 的測試兩邊讀到一樣的位元組，突變是綠的。釘得住的是「不符就不裝」那一半
+        //（`installRefusesWhenTheSourceNoLongerDeclaresTheExpectedID`）。位置的理由
+        // 只能靠上面那段推論，所以刪它之前先讀完那段。
+        do {
+            let actualID = try manifest(atPackDirectory: incoming).id
+            guard actualID == id else {
+                throw Failure.sourceChanged(expected: id, actual: actualID)
+            }
+        } catch {
+            // 與上面兩條一樣：不能留下 `.incoming`。
+            try? FileManager.default.removeItem(at: incoming)
+            throw error
+        }
+
         let final = packsDirectory.appendingPathComponent(id)
         try? FileManager.default.removeItem(at: final)
         do {
@@ -278,9 +328,26 @@ public enum PackInstaller {
     ///
     /// **呼叫端要先確認它不是內建、也不是當前使用中的那套**
     /// （分別在 `PackInstallDecision` 與 `RequestRouter.packRemove`）。
-    public static func remove(id: String, from packsDirectory: URL) throws {
-        // remove 同樣拿 id 當路徑組件，同樣要驗——這支的後果是直接刪目錄。
-        try requireSafeID(id)
-        try FileManager.default.removeItem(at: packsDirectory.appendingPathComponent(id))
+    /// - Parameter directoryName: 要刪的**目錄名**，不是 id。兩者只在一致時等價，
+    ///   而清單是依 manifest 的 id 列的——拿 id 當目錄名刪會刪到別人（見 CLAUDE.md）。
+    ///   呼叫端要先用 `PackCatalogRepository.sourceDirectoryName(forID:in:)` 問出來。
+    public static func remove(directoryName: String, from packsDirectory: URL) throws {
+        // 這支的後果是直接刪目錄，所以名稱同樣要驗——但驗的是**路徑組件**而不是
+        // `isValidID`。名稱有兩種來源：`Packs/` 的列舉（必然是單一組件）與退回時
+        // 用的 manifest id（不受信任），所以照最壞的驗。
+        //
+        // 擋掉的其實是兩件事：`..` 與含 `/` 的會跑到 `Packs` **之外**，而 `""` 與
+        // `"."` 會讓 `appendingPathComponent` 指回 `Packs` **自己**——那不是逃逸，
+        // 是一次刪掉全部（2026-08-14 實測）。後者從錯誤碼看不出差別，所以寫在這裡。
+        //
+        // 比 `isValidID` 寬是刻意的：列舉得到的合法目錄名可以含 `.`，
+        // 半途失敗留下的 `<id>.incoming` 就是——照 `[a-z0-9-]+` 驗會讓那種殘留
+        // 目錄從 GUI 與 CLI 都永遠拿不掉（實測過，見 CLAUDE.md）。
+        guard !directoryName.isEmpty, !directoryName.contains("/"),
+              directoryName != ".", directoryName != ".." else {
+            throw Failure.invalidID(directoryName)
+        }
+        try FileManager.default.removeItem(
+            at: packsDirectory.appendingPathComponent(directoryName))
     }
 }

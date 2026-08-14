@@ -17,12 +17,16 @@ description = "單元測試（五個 target）"
 run = "swift test"
 
 [tasks.pipeline]
-description = "素材管線的測試（34 條，零真實素材依賴）"
+description = "素材管線的測試（37 條，零真實素材依賴）"
 run = "python3 tools/test_pipeline.py"
 
+[tasks.fmpack-tool]
+description = "pack-fmpack.py 的測試（11 條，不需要 App 在跑）"
+run = "python3 tools/test_pack_fmpack.py"
+
 [tasks.check]
-description = "跑得快的那兩層：unit + 素材管線"
-depends = ["test", "pipeline"]
+description = "跑得快的那三層：unit + 素材管線 + 打包工具"
+depends = ["test", "pipeline", "fmpack-tool"]
 
 [tasks.e2e]
 description = "端對端：真的啟動 .app、真的跑 CLI。第三種結果是「無法判定」"

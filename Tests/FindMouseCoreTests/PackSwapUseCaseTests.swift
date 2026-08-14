@@ -80,3 +80,30 @@ import Testing
 
     #expect(swap.request("wide", isVisible: false) == .swap(id: "wide", resummon: false))
 }
+
+/// `pendingID` 要**與空窗同生同滅**：`AppDelegate` 拿它當「這一套正在換過去、
+/// 還不能移除」的唯一依據（`PackLibraryUseCase.remove` 的 `swapTarget`），
+/// 而那個判斷沒有任何測試 target 碰得到（`FindMouseApp` 沒有測試）。
+///
+/// 兩個方向都要釘：晚一步變成非 nil，移除守衛在空窗前段是關的；晚一步清掉，
+/// 那套 pack 從此不能移除，而且沒有任何訊號。
+@Test func pendingIDIsSetForExactlyAsLongAsTheSwapIsPending() {
+    let swap = PackSwapUseCase()
+    #expect(swap.pendingID == nil, "什麼都沒發生時不該有待換的")
+
+    #expect(swap.request("tall", isVisible: true) == .dismissFirst)
+    #expect(swap.pendingID == "tall", "貓還在場，這正是空窗的起點")
+    #expect(swap.step(isVisible: true) == .wait)
+    #expect(swap.pendingID == "tall", "還在淡出，空窗還沒結束")
+
+    #expect(swap.step(isVisible: false) == .swap(id: "tall", resummon: true))
+    #expect(swap.pendingID == nil, "換出去了就要放手")
+}
+
+/// 貓不在場時 `request` 當場就回 `.swap`，中間沒有空窗——`pendingID` 不可以
+/// 在那條路上留下殘影，否則那套 pack 會變成永遠不能移除的那一個。
+@Test func anImmediateSwapLeavesNoPendingID() {
+    let swap = PackSwapUseCase()
+    #expect(swap.request("wide", isVisible: false) == .swap(id: "wide", resummon: false))
+    #expect(swap.pendingID == nil)
+}

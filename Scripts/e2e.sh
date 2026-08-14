@@ -89,6 +89,9 @@ defaults write "${DEFAULTS_DOMAIN}" pack.id -string "test-blocks"
 # 這裡面可能有使用者自己的東西，所以只記下**自己造的 id**，收工只刪這些。
 USER_PACKS="${HOME}/Library/Application Support/FindMouse/Packs"
 CREATED_PACK_IDS=""
+# 要在收工時刪掉的暫存目錄。**掛在 trap 上而不是各段自己 rm**：中途失敗
+# （任何一條 expect 讓腳本提早結束）時，段落結尾那行 rm 根本走不到。
+TEMP_DIRS=""
 
 # 只收拾自己啟動的那些 pid。使用者自己的 FindMouse 不關我們的事。
 STARTED_PIDS=""
@@ -114,6 +117,7 @@ cleanup() {
     # 只刪自己造的那幾套。`rm -rf` 整個 Packs 目錄會刪掉使用者自己放的 pack，
     # 而那是不可逆的。
     for id in ${CREATED_PACK_IDS}; do rm -rf "${USER_PACKS:?}/${id}"; done
+    for d in ${TEMP_DIRS}; do rm -rf "${d:?}"; done
     # 還原設定。刻意不走 `findmouse config set`：cleanup 掛在 trap EXIT 上，
     # 失敗路徑上 App 可能早就不在了（那時 CLI 只會回 exit 3）。
     if [[ -n "${SAVED_PACK_ID}" ]]; then
@@ -820,7 +824,7 @@ step "15. pack install／remove 的整條路（分發 C）"
 # 用產生器現做一套，再**搬出使用者目錄**——不搬的話「安裝」等於原地複製，
 # 什麼都驗不到。id 帶 e2e- 前綴（make_pack 的慣例），cleanup 只刪自己造的。
 make_pack e2e-installable 96 120
-STAGE_DIR="$(mktemp -d)"
+STAGE_DIR="$(mktemp -d)"; TEMP_DIRS="${TEMP_DIRS} ${STAGE_DIR}"
 mv "${USER_PACKS}/e2e-installable" "${STAGE_DIR}/e2e-installable"
 STAGE_SRC="${STAGE_DIR}/e2e-installable"
 
@@ -840,7 +844,7 @@ expect "$(echo "${OUT}" | /usr/bin/python3 -c 'import json,sys; print(json.load(
 expect "$?" "0" "--force 覆蓋同 id"
 
 # 撞內建 id：連 --force 都不給過，而且錯誤碼與「移除內建」不同
-BUILTIN_DIR="$(mktemp -d)"
+BUILTIN_DIR="$(mktemp -d)"; TEMP_DIRS="${TEMP_DIRS} ${BUILTIN_DIR}"
 cp -R "${STAGE_SRC}" "${BUILTIN_DIR}/test-blocks"
 /usr/bin/python3 - "${BUILTIN_DIR}/test-blocks" <<'PYEOF'
 import json, sys
@@ -862,8 +866,8 @@ done
 expect "$(field 'd["pack"]["id"]')" "e2e-installable" "切到剛裝的那套"
 OUT="$("${FM}" pack remove e2e-installable --json 2>&1)"; CODE=$?
 expect "${CODE}" "1" "移除當前使用中的那套 exit 1"
-expect "$(echo "${OUT}" | /usr/bin/python3 -c 'import json,sys; print("pack use" in json.load(sys.stdin)["error"]["message"])' 2>/dev/null)" \
-       "True" "訊息講出下一步（先 pack use 換成別的）"
+expect "$(echo "${OUT}" | /usr/bin/python3 -c 'import json,sys; print("換成別的圖組" in json.load(sys.stdin)["error"]["message"])' 2>/dev/null)" \
+       "True" "訊息講出下一步（先換成別的圖組）"
 expect "$(field 'd["pack"]["id"]')" "e2e-installable" "被擋下之後仍在用那一套"
 
 # 切走之後才移除得掉
@@ -882,7 +886,38 @@ expect "${CODE}" "1" "移除內建 exit 1"
 expect "$(echo "${OUT}" | /usr/bin/python3 -c 'import json,sys; print(json.load(sys.stdin)["error"]["code"])' 2>/dev/null)" \
        "PACK_BUILT_IN" "錯誤碼是 PACK_BUILT_IN"
 
-rm -rf "${STAGE_DIR}" "${BUILTIN_DIR}"
+
+# --- 16 ----------------------------------------------------------------------
+step "16. .fmpack 打包與匯入（分發 C-2）"
+
+# 這一段同時驗兩件單元測試碰不到的事：`tools/pack-fmpack.py` 打出來的東西
+# 真的裝得進去（它的測試全部用假 CLI），以及 **zip 來源**這條匯入路徑
+# ——step 15 用的是目錄來源，而 zip 那條在 C-1 只有單元測試。
+make_pack e2e-fmpack 96 120
+FMPACK_DIR="$(mktemp -d)"; TEMP_DIRS="${TEMP_DIRS} ${FMPACK_DIR}"
+mv "${USER_PACKS}/e2e-fmpack" "${FMPACK_DIR}/e2e-fmpack"
+
+/usr/bin/python3 "${ROOT}/tools/pack-fmpack.py" "${FMPACK_DIR}/e2e-fmpack" \
+    --output "${FMPACK_DIR}/e2e-fmpack.fmpack" --findmouse "${FM}" >/dev/null 2>&1
+expect "$?" "0" "pack-fmpack.py 對一套合格的 pack 回 exit 0"
+if [[ -f "${FMPACK_DIR}/e2e-fmpack.fmpack" ]]; then FOUND=yes; else FOUND=no; fi
+expect "${FOUND}" "yes" "而且真的產出 .fmpack"
+
+"${FM}" pack install "${FMPACK_DIR}/e2e-fmpack.fmpack" >/dev/null 2>&1
+expect "$?" "0" "從 .fmpack 匯入回 exit 0"
+expect "$(packentry "'e2e-fmpack' in ps")" "True" "裝好的那套出現在 pack list 裡"
+expect "$(packentry "ps['e2e-fmpack']['usable']")" "True" "而且是可用的"
+
+# 反向：弄壞它，打包這一端就該擋下來——不擋的話作者會拿一個裝不起來的檔案去發布
+rm -rf "${FMPACK_DIR}/e2e-fmpack/run"
+rm -f "${FMPACK_DIR}/bad.fmpack"
+/usr/bin/python3 "${ROOT}/tools/pack-fmpack.py" "${FMPACK_DIR}/e2e-fmpack" \
+    --output "${FMPACK_DIR}/bad.fmpack" --findmouse "${FM}" >/dev/null 2>&1
+expect "$?" "1" "不合格的 pack 打包回 exit 1"
+if [[ -f "${FMPACK_DIR}/bad.fmpack" ]]; then LEFT=yes; else LEFT=no; fi
+expect "${LEFT}" "no" "而且沒有留下半個檔案"
+
+"${FM}" pack remove e2e-fmpack >/dev/null 2>&1
 
 step "結果"
 printf '  通過 %d、失敗 %d、無法判定 %d\n' "${PASS}" "${FAIL}" "${SKIP}"

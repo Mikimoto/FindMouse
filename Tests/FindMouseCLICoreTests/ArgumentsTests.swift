@@ -172,6 +172,26 @@ private func request(_ line: String) throws -> WireRequest {
             == "/tmp/cat.fmpack")
 }
 
+/// **相對路徑要在 CLI 這一端絕對化。** 這條路徑是 App 在解析的，而 App 的 cwd 是
+/// `/`（實測 `lsof -a -p <pid> -d cwd -Fn` 回 `n/`），所以送相對路徑等於叫它去找
+/// `/cat.fmpack`——`pack install` 的相對路徑從 C-1 落地起就沒有效過。e2e 抓不到，
+/// 因為它全程傳絕對路徑。
+///
+/// 斷言以 cwd 為基準而不只是「開頭是斜線」：後者用一個寫死的 `/` 前綴也能過。
+/// `pack validate` 與 `pack install` 是同一個 bug 的兩個出口。修了一邊沒修另一邊
+/// 更糟：README 叫作者「打包前先 validate」，而他會在 pack 目錄旁邊打相對路徑。
+@Test func packValidateAbsolutizesARelativePath() throws {
+    let path = try request("pack validate some-pack").args["path"]
+    #expect(path == FileManager.default.currentDirectoryPath + "/some-pack",
+            "要以呼叫者的 cwd 為基準：\(path ?? "nil")")
+}
+
+@Test func packInstallAbsolutizesARelativePath() throws {
+    let path = try request("pack install cat.fmpack").args["path"]
+    #expect(path == FileManager.default.currentDirectoryPath + "/cat.fmpack",
+            "要以呼叫者的 cwd 為基準：\(path ?? "nil")")
+}
+
 /// 少了路徑就在 CLI 這裡停。送出去的話 App 會回 INVALID_ARGUMENT，
 /// 於是「你少打一個路徑」變成 App 端的抱怨，要查的地方差很遠。
 @Test func packInstallWithoutAPathFailsLocally() {

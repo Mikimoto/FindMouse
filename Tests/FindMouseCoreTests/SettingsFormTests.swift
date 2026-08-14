@@ -36,12 +36,34 @@ private final class FormHarness {
     private(set) var swapRequests: [String] = []
     private(set) var changeNotifications = 0
 
+    // 分發 C-2 的三個注入點。記下**每一次呼叫的參數**而不只是次數：force 那一路
+    // 與非 force 那一路走的是同一個 closure，只記次數的話「確認之後忘了帶 force」
+    // 不會有任何訊號。
+    var installResult: PackActionResult = .failed(message: "測試沒設定 installResult")
+    var removeResult: PackActionResult = .failed(message: "測試沒設定 removeResult")
+    private(set) var installedSources: [String] = []
+    private(set) var forcedSources: [String] = []
+    private(set) var removedIDs: [String] = []
+    private(set) var revealCount = 0
+    /// `reload()` 被呼叫幾次——它一定會呼叫 `packs`，所以掛在那裡數。
+    private(set) var reloadCount = 0
+
     lazy var store = SettingsFormStore(
         settings: { [unowned self] in self.settings },
-        packs: { [unowned self] in self.packs },
+        packs: { [unowned self] in self.reloadCount += 1; return self.packs },
         currentPackID: { [unowned self] in self.currentPackID },
         usePack: { [unowned self] id in self.swapRequests.append(id) },
-        onChanged: { [unowned self] in self.changeNotifications += 1 })
+        onChanged: { [unowned self] in self.changeNotifications += 1 },
+        installPack: { [unowned self] url, force in
+            if force { self.forcedSources.append(url.path) }
+            else { self.installedSources.append(url.path) }
+            return self.installResult
+        },
+        removePack: { [unowned self] id in
+            self.removedIDs.append(id)
+            return self.removeResult
+        },
+        revealPacksDirectory: { [unowned self] in self.revealCount += 1 })
 }
 
 private func summary(_ id: String, builtIn: Bool = true, errors: [String] = []) -> PackSummary {
@@ -664,4 +686,199 @@ private let specWindowKeys = [
 
     harness.store.choosePack("test-blocks")
     #expect(harness.swapRequests.isEmpty)
+}
+
+// MARK: - pack 匯入與移除（分發 C-2）
+
+/// 移除按鈕只出現在**拿得掉**的那幾列：內建拿不掉，正在用的那套也拿不掉
+/// （`PackLibraryUseCase.remove` 會拒絕）。按鈕照顯示的話，使用者按下去只會拿到
+/// 一句本來可以用「不顯示按鈕」避免的錯誤。
+@Test func onlyRemovablePacksOfferARemoveButton() {
+    let rows = PackChoice.choices(packs: [
+        summary("mycat"),
+        summary("current-one", builtIn: false),
+        summary("spare", builtIn: false),
+        summary("broken", builtIn: false, errors: ["缺少必要動作：sit"]),
+    ], current: "current-one")
+
+    func row(_ id: String) -> PackChoice { rows.first { $0.id == id }! }
+    #expect(!row("mycat").isRemovable, "內建拿不掉")
+    #expect(!row("current-one").isRemovable, "正在用的拿不掉")
+    #expect(row("spare").isRemovable)
+    #expect(row("broken").isRemovable, "壞掉的更該讓人拿掉——它就是使用者要清的東西")
+}
+
+/// 匯入成功之後要**重讀清單**，否則新裝的那套要等下一次 reload 才看得到，
+/// 而使用者的感受是「拖進去沒反應」。
+@Test @MainActor func aSuccessfulImportRefreshesTheListAndSaysSo() {
+    let harness = FormHarness()
+    harness.installResult = .succeeded(id: "brand-new")
+    harness.store.importPack(from: URL(fileURLWithPath: "/tmp/brand-new.fmpack"))
+
+    #expect(harness.installedSources == ["/tmp/brand-new.fmpack"])
+    #expect(harness.reloadCount == 1, "裝完要重讀，否則清單看不到新的那套")
+    #expect(harness.store.snapshot.packNotice?.contains("brand-new") == true,
+            "要講出裝了哪一套：\(String(describing: harness.store.snapshot.packNotice))")
+    #expect(harness.store.snapshot.packConfirmation == nil)
+}
+
+/// 同 id 已存在時**不自己決定**：把問句交給呼叫端去問，不重試也不覆蓋。
+@Test @MainActor func aCollisionSurfacesAConfirmationInsteadOfOverwriting() {
+    let harness = FormHarness()
+    harness.installResult = .needsConfirmation(id: "cat", prompt: "「cat」已安裝 1.0，要更新成 2.0 嗎？")
+    harness.store.importPack(from: URL(fileURLWithPath: "/tmp/cat.fmpack"))
+
+    let pending = harness.store.snapshot.packConfirmation
+    #expect(pending?.prompt.contains("2.0") == true)
+    #expect(pending?.source.path == "/tmp/cat.fmpack", "確認之後要用同一個來源重試")
+    #expect(harness.reloadCount == 0, "什麼都還沒發生，不必重讀")
+}
+
+/// 使用者按下「取代」：用同一個來源、force 重試一次，然後把問句收掉。
+@Test @MainActor func confirmingRetriesTheSameSourceWithForce() {
+    let harness = FormHarness()
+    harness.installResult = .needsConfirmation(id: "cat", prompt: "問句")
+    harness.store.importPack(from: URL(fileURLWithPath: "/tmp/cat.fmpack"))
+
+    harness.installResult = .succeeded(id: "cat")
+    harness.store.confirmPendingImport()
+
+    #expect(harness.forcedSources == ["/tmp/cat.fmpack"])
+    #expect(harness.store.snapshot.packConfirmation == nil, "問完就收掉")
+    #expect(harness.reloadCount == 1)
+}
+
+/// 取消就是什麼都不做——**特別是不能留著那個問句**，否則下一次拖放會看到舊的。
+@Test @MainActor func cancellingLeavesNothingBehind() {
+    let harness = FormHarness()
+    harness.installResult = .needsConfirmation(id: "cat", prompt: "問句")
+    harness.store.importPack(from: URL(fileURLWithPath: "/tmp/cat.fmpack"))
+    harness.store.cancelPendingImport()
+
+    #expect(harness.store.snapshot.packConfirmation == nil)
+    #expect(harness.forcedSources.isEmpty)
+    #expect(harness.installedSources.count == 1, "取消不重試")
+}
+
+@Test @MainActor func aFailedImportShowsTheReasonAndDoesNotReload() {
+    let harness = FormHarness()
+    harness.installResult = .failed(message: "這個來源裡沒有 pack.json，不是一套 sprite pack。")
+    harness.store.importPack(from: URL(fileURLWithPath: "/tmp/junk.zip"))
+
+    #expect(harness.store.snapshot.packNotice?.contains("pack.json") == true)
+    #expect(harness.reloadCount == 0)
+}
+
+/// 一次拖進多個檔案：只收第一個，並且明說。逐一匯入會連續彈好幾個確認框，
+/// 而「裝了哪些、哪些失敗」在一行提示裡講不清楚。
+@Test @MainActor func droppingSeveralFilesTakesTheFirstAndSaysSo() {
+    let harness = FormHarness()
+    harness.installResult = .succeeded(id: "a")
+    harness.store.importPacks(from: [URL(fileURLWithPath: "/tmp/a.fmpack"),
+                                     URL(fileURLWithPath: "/tmp/b.fmpack")])
+
+    #expect(harness.installedSources == ["/tmp/a.fmpack"])
+    #expect(harness.store.snapshot.packNotice?.contains("一次只能") == true,
+            "多檔要明說只收了一個：\(String(describing: harness.store.snapshot.packNotice))")
+}
+
+@Test @MainActor func droppingNothingIsNotAnError() {
+    let harness = FormHarness()
+    harness.store.importPacks(from: [])
+    #expect(harness.installedSources.isEmpty)
+    #expect(harness.store.snapshot.packNotice == nil)
+}
+
+@Test @MainActor func removingAPackReloadsAndReportsIt() {
+    let harness = FormHarness()
+    harness.removeResult = .succeeded(id: "spare")
+    harness.store.removePack("spare")
+
+    #expect(harness.removedIDs == ["spare"])
+    #expect(harness.reloadCount == 1)
+    #expect(harness.store.snapshot.packNotice?.contains("spare") == true)
+}
+
+@Test @MainActor func aFailedRemovalShowsTheReason() {
+    let harness = FormHarness()
+    harness.removeResult = .failed(message: "「spare」正在使用中。請先換成別的圖組，再移除它。")
+    harness.store.removePack("spare")
+
+    #expect(harness.store.snapshot.packNotice?.contains("正在使用中") == true)
+    #expect(harness.reloadCount == 0)
+}
+
+/// 提示是**一次性的**：下一個動作開始時就清掉，否則使用者會看到上一次的結果
+/// 掛在那裡，分不出「這是剛剛那次的」還是「這次也失敗了」。
+///
+/// 第二個動作刻意落在 `needsConfirmation`——那條路**不寫** `packNotice`，
+/// 所以只有「動作開始時清掉」那一行能讓它變 nil。用一個會成功的動作當第二步
+/// 的話，`apply` 會順手覆蓋掉舊訊息，這條測試在守衛被拿掉時照樣綠。
+@Test @MainActor func aNewActionClearsThePreviousNotice() {
+    let harness = FormHarness()
+    harness.removeResult = .failed(message: "壞了")
+    harness.store.removePack("spare")
+    #expect(harness.store.snapshot.packNotice?.contains("壞了") == true)
+
+    harness.installResult = .needsConfirmation(id: "a", prompt: "問句")
+    harness.store.importPack(from: URL(fileURLWithPath: "/tmp/a.fmpack"))
+    #expect(harness.store.snapshot.packNotice == nil,
+            "上一次的結果還掛著：\(String(describing: harness.store.snapshot.packNotice))")
+    #expect(harness.store.snapshot.packConfirmation != nil)
+}
+
+/// **選下去的那一刻按鈕就要消失**，不必等換 pack 真的完成（spec 第 6.5 節，
+/// 貓在場時要先退場）。這一層守的是可用性；「真的擋下移除」在
+/// `PackLibraryUseCaseTests.theSwapTargetCannotBeRemoved` 與
+/// `RequestRouterTests.removeRefusesThePackThatIsBeingSwappedTo`。
+@Test @MainActor func choosingAPackHidesItsRemoveButton() {
+    let harness = FormHarness()
+    harness.packs = [summary("mycat"), summary("spare", builtIn: false)]
+    harness.currentPackID = "mycat"
+    harness.store.reload()
+    #expect(harness.store.snapshot.packs.first { $0.id == "spare" }?.isRemovable == true,
+            "還沒選它之前是拿得掉的")
+
+    harness.store.choosePack("spare")
+    #expect(harness.store.snapshot.packs.first { $0.id == "spare" }?.isRemovable == false,
+            "選下去之後那一列的按鈕就要消失")
+}
+
+/// **CLI 發起的換 pack 也要能標記。** `findmouse pack use` 走
+/// `RequestRouter` → `AppDelegate.requestPackSwap`，完全不經過 `choosePack`；
+/// 只標在 `choosePack` 裡的話，CLI 造出的空窗裡按鈕不會消失——而那個空窗
+/// 與視窗發起的一模一樣長。
+@Test @MainActor func aSwapRequestedElsewhereAlsoHidesTheRemoveButton() {
+    let harness = FormHarness()
+    harness.packs = [summary("mycat"), summary("spare", builtIn: false)]
+    harness.currentPackID = "mycat"
+    harness.store.reload()
+    #expect(harness.store.snapshot.packs.first { $0.id == "spare" }?.isRemovable == true)
+
+    // 注意：沒有經過 choosePack
+    harness.store.noteSwapRequested("spare")
+    #expect(harness.store.snapshot.packs.first { $0.id == "spare" }?.isRemovable == false)
+    #expect(harness.swapRequests.isEmpty, "標記不該順便發出換 pack 的請求")
+}
+
+/// `reload()` 會重掃磁碟重建整份 rows，所以它必須把 pending 帶進去——
+/// 不帶的話，換 pack 空窗裡任何一次 reload（選單列打開子選單就會觸發一次）
+/// 都會把剛藏起來的按鈕變回來。
+@Test @MainActor func reloadKeepsThePendingLabel() {
+    let harness = FormHarness()
+    harness.packs = [summary("mycat"), summary("spare", builtIn: false)]
+    harness.currentPackID = "mycat"
+    harness.store.reload()
+    harness.store.choosePack("spare")
+    harness.store.reload()
+    #expect(harness.store.snapshot.packs.first { $0.id == "spare" }?.isRemovable == false,
+            "reload 之後按鈕又冒出來了")
+}
+
+/// 「顯示資料夾」只是轉發，但**要真的轉發**——沒有這條的話，接線漏掉時
+/// 按鈕按下去沒反應，而那與「Finder 開了但你沒看到」外觀相同。
+@Test @MainActor func revealForwardsToTheInjectedAction() {
+    let harness = FormHarness()
+    harness.store.revealPacks()
+    #expect(harness.revealCount == 1)
 }

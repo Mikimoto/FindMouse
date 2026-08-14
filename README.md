@@ -90,14 +90,31 @@ findmouse pack remove <id>
 - 使用者的：`~/Library/Application Support/FindMouse/Packs/<id>/`
 - 缺 flourish 只會降級，缺任一 teaser 則逗貓棒不可用，缺 core 則整套無效
 
-裝別人做的一套：`pack install` 吃 `.fmpack`（就是 zip）、`.zip`、或已經解開的目錄。
+### 裝別人做的一套
+
+三個入口，做的是同一件事：
+
+- **拖進設定視窗**——打開設定，把 `.fmpack` 或 pack 資料夾拖到圖組區的虛線框裡
+- **雙擊 `.fmpack`**——FindMouse 會接手，設定視窗會打開並顯示結果
+- **命令列**——`findmouse pack install <路徑>`，吃 `.fmpack`（就是 zip）、`.zip`、
+  或已經解開的目錄
+
 id 取自 `pack.json` 而不是檔名，所以下載時被瀏覽器改過名也沒關係。三件會被擋下：
 
 - **同 id 已經裝過** → 要加 `--force` 才覆蓋
 - **id 與內建的撞名** → 一律拒絕，`--force` 也不例外。理由不是權限而是**裝了不會
   生效**：同 id 時內建那套優先，你裝進去的永遠不會被載入。改一個 id 就好
-- **正在使用中的那套要移除** → 先 `pack use` 換成別的再移除。不自動幫你切走：
+- **正在使用中的那套要移除** → 先換成別的再移除。不自動幫你切走：
   換 pack 是非同步的，切換還沒發生就把目錄刪掉會讓貓靜默變回內建那套
+
+移除：設定視窗裡每套自己裝的圖組旁邊有「移除」，或 `findmouse pack remove <id>`。
+設定視窗還有一個「顯示資料夾」，直接開到上面那個 Packs 目錄。
+
+### 做一套自己的圖組拿去給人
+
+`python3 tools/pack-fmpack.py <pack 目錄>` 打包成 `.fmpack`。它會**先跑一次
+`findmouse pack validate`**（所以 FindMouse 要在執行中），過了才打包——不合格的
+pack 打出來也沒有人裝得起來。沒有跳過驗證的旗標；真的只想壓縮就用 `ditto -c -k`。
 
 `tools/` 是把 AI 生圖的橫排多格圖變成一套 pack 的後處理管線
 （切格 → chroma key 去背 → 統一畫布 → 對齊腳底線 → 產 manifest），
