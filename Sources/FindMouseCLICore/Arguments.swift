@@ -156,7 +156,10 @@ public enum Arguments {
             guard rest.count == 2 else {
                 throw ParseError.usage("pack validate 要接一個路徑")
             }
-            return parsed("pack.validate", ["path": rest[1]])
+            // 絕對化，理由與下面 install 那條相同：解析這條路徑的是 App，而它的
+            // cwd 是 `/`。install 修了而這裡沒修的話，README 叫作者「打包前先
+            // validate」，他在 pack 目錄旁邊打相對路徑就會拿到 PACK_NOT_FOUND。
+            return parsed("pack.validate", ["path": URL(fileURLWithPath: rest[1]).path])
 
         case "install":
             // `--force` 可以在路徑前或後——使用者不該記順序。其餘旗標一律拒絕，
@@ -175,7 +178,12 @@ public enum Arguments {
                     "pack install 要接一個路徑（.fmpack、.zip 或一個目錄），"
                     + "可加 --force 覆蓋同 id 的")
             }
-            var installArgs = ["path": operands[0]]
+            // 絕對化再送。**這條路徑是 App 在解析的，而 App 的 cwd 是 `/`**
+            //（實測 `lsof -a -p <pid> -d cwd -Fn` 回 `n/`），所以送相對路徑等於叫
+            // 它去找 `/cat.fmpack`——`pack install` 的相對路徑從 C-1 落地起就沒有
+            // 效過，而 e2e 全程傳絕對路徑所以抓不到。在 CLI 這一端絕對化：只有這裡
+            // 知道使用者是在哪個目錄打的。
+            var installArgs = ["path": URL(fileURLWithPath: operands[0]).path]
             if force { installArgs["force"] = "true" }
             return parsed("pack.install", installArgs)
 

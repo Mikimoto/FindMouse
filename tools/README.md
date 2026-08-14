@@ -7,6 +7,11 @@ spec 第 11 節第 5 條的實作：**AI 生圖的橫排多格圖 → 一套 spr
 產出要能通過 `Sources/FindMouseDomain/PackValidator.swift`——那份判定是權威，
 這裡的每一條檢查都只是提早在同一個地方失敗而已。
 
+**這個目錄還裝了另一件事**：`pack-fmpack.py`——把一套已經做好的 pack 目錄打包成
+`.fmpack` 拿去給人。它在上面那條分界線的**之後**，與管線無關（零第三方依賴），
+所以下面整份講的都不是它。它自己那份說明在檔頭的 docstring 裡，重點只有一個：
+**打包前一定先跑 `findmouse pack validate`，過了才壓**，而且沒有跳過的旗標。
+
 ## 依賴
 
 **Pillow** 與 **SciPy**（`python3 -c "import PIL, scipy"` 驗一下）。這是本 repo
@@ -195,8 +200,12 @@ unpremultiply（不除回去邊緣會整圈偏暗）。`test_pipeline.py` 直接
 ## 測試
 
 ```sh
-python3 tools/test_pipeline.py
+python3 tools/test_pipeline.py        # 管線
+python3 tools/test_pack_fmpack.py     # 打包工具（另一件事，見檔頭那段）
 ```
+
+兩支都被 `mise run check` 帶著跑，所以平常不必自己記——指令的真實來源是
+`mise.toml`。
 
 沒有真實素材，但整條管線都測得起來——**合成的 fixture 我知道正確答案**。
 26 條，每一條的名字說的是它在防什麼。runner 開跑前會先自檢一次

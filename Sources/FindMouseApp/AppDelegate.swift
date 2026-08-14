@@ -38,6 +38,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// 「畫面與 status 讀同一份」在實作上就是這個欄位只有一個。
     private var lastState: CatFrameState?
 
+    /// 雙擊 `.fmpack` 送進來、但還沒能處理的來源。
+    ///
+    /// **冷啟動時 `application(_:open:)` 比 `applicationDidFinishLaunching` 先到**
+    ///（2026-08-13 實測，差 0.3ms）。那個時間點 `pack`、`settingsForm`、`settingsWindow`
+    /// 全都還是 nil，當場處理必然什麼都不會發生**而且沒有任何訊號**。所以先收在
+    /// 這裡，啟動完成後再排空。
+    private var pendingOpenURLs: [URL] = []
+
+    /// 啟動**走完**了沒有。不是「開始了」——`applicationDidFinishLaunching` 中途有
+    /// 兩條 `presentFatal` 提早 return 的路，那兩條上沒有設定視窗可以顯示結果。
+    private var didFinishLaunching = false
+
     /// 現在真的註冊著的那一組。`onSettingsChanged` 對**任何**設定變更都會來，
     /// 沒有這兩個欄位的話改 `cat.speed` 也會 unregister＋register 一輪：
     /// 期間快捷鍵短暫不存在，而且衝突警告會在選單列裡一次一次疊上去。
@@ -138,6 +150,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         // 先跑一帧產生 hidden 狀態的畫面，之後 display link 只在貓在場時跑
         frame(dt: 0)
+
+        // 排在最後：上面每一步都可能提早 return，而那些路徑上沒有設定視窗
+        // 可以顯示匯入結果。
+        didFinishLaunching = true
+        drainPendingOpenURLs()
+    }
+
+    /// 雙擊 `.fmpack`（或 `open x.fmpack`）。
+    ///
+    /// App 已經在跑的情況下系統**不會**起第二個 process，事件直接送到這裡
+    ///（2026-08-13 實測），所以這條路與 spec 第 8.1 節的單一實例守衛不衝突。
+    func application(_ application: NSApplication, open urls: [URL]) {
+        pendingOpenURLs.append(contentsOf: urls)
+        drainPendingOpenURLs()
+    }
+
+    /// 把待處理的來源交給設定視窗那條路。
+    ///
+    /// **不自己寫一條匯入流程**：確認框、結果提示與清單重讀都在那條路上，
+    /// 自己再寫一份就會有兩份「同 id 怎麼辦」。
+    private func drainPendingOpenURLs() {
+        guard didFinishLaunching, !pendingOpenURLs.isEmpty, let form = settingsForm else { return }
+        let urls = pendingOpenURLs
+        pendingOpenURLs = []
+        // 先開視窗再匯入：確認框與結果提示都掛在那個視窗上。不開的話使用者
+        // 雙擊之後看不到任何回應——包括「這套裝不起來，因為…」。
+        settingsWindow?.show()
+        form.importPacks(from: urls)
+        settingsWindow?.reload()
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -173,6 +214,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             },
             onSettingsChanged: { [weak self] in
                 MainActor.assumeIsolated { self?.settingsDidChange() }
+            },
+            // 問狀態機而不是影一份：見 `PackSwapUseCase.pendingID`。
+            packSwapTarget: { [weak self] in
+                MainActor.assumeIsolated { self?.swapper.pendingID }
             },
             // 與上面那些不同，這個不包 closure：`SystemLoginItem` 不會隨換 pack
             // 而被換掉，而且它每次被問都重新讀 `SMAppService`，本身就沒有陳舊問題。
@@ -257,7 +302,54 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // 換 pack 走與 CLI `pack use` 同一條路（spec 第 6.5 節的先淡出再換）。
             // 只寫 `pack.id` 不會換 pack，使用者會看到「選了新的、貓還是舊的」。
             usePack: { [weak self] id in self?.requestPackSwap(to: id) },
-            onChanged: { [weak self] in self?.settingsDidChange() })
+            onChanged: { [weak self] in self?.settingsDidChange() },
+            installPack: { [weak self] url, force in
+                guard let self else { return .failed(message: "App 正在關閉") }
+                return Self.translate(self.packLibrary.install(source: url, force: force))
+            },
+            removePack: { [weak self] id in
+                guard let self else { return .failed(message: "App 正在關閉") }
+                // `currentPackID` 收 closure，所以這裡不必先算好——被拒絕的移除
+                // 走不到它（見 `PackLibraryUseCase.remove`）。
+                return Self.translate(
+                    self.packLibrary.remove(id: id,
+                                            currentPackID: { self.pack?.id ?? "" },
+                                            swapTarget: { self.swapper.pendingID }))
+            },
+            revealPacksDirectory: {
+                let dir = PackCatalogRepository.userPacksDirectory
+                // 目錄可能還不存在（全新安裝，而且沒有別的地方會建它）。不建的話
+                // Finder 什麼都不會發生，而使用者的結論是「這個按鈕壞了」。
+                try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+                NSWorkspace.shared.activateFileViewerSelecting([dir])
+            })
+    }
+
+    /// 匯入／移除的決策鏈。與 `RequestRouter` 內部那一份是**同一個型別、同一組
+    /// 判斷**——設定視窗與 CLI 的行為分不開，正是 C-2 把它抽出來的理由。
+    private var packLibrary: PackLibraryUseCase {
+        PackLibraryUseCase(packsDirectory: { PackCatalogRepository.userPacksDirectory },
+                           installedPacks: { PackCatalogRepository.current() })
+    }
+
+    /// Adapters 的 outcome → Core 的結果型別。Core 碰不到 `WireErrorCode`
+    ///（import 允許清單），而設定視窗也只需要訊息。
+    ///
+    /// 兩個 outcome 型別各一支：拆成兩個就是為了讓每個 switch 都窮盡
+    /// 且沒有「這個 case 走不到」的死分支。
+    private static func translate(_ outcome: PackLibraryUseCase.InstallOutcome) -> PackActionResult {
+        switch outcome {
+        case let .installed(id):                 return .succeeded(id: id)
+        case let .needsConfirmation(id, prompt): return .needsConfirmation(id: id, prompt: prompt)
+        case let .failed(_, message):            return .failed(message: message)
+        }
+    }
+
+    private static func translate(_ outcome: PackLibraryUseCase.RemoveOutcome) -> PackActionResult {
+        switch outcome {
+        case let .removed(id):        return .succeeded(id: id)
+        case let .failed(_, message): return .failed(message: message)
+        }
     }
 
     /// 設定真的改了——不管是 CLI 還是設定視窗改的，兩條路都收在這裡。
@@ -406,8 +498,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// CLI／選單列請求換 pack。真正動手要等貓退場（spec 第 6.5 節），
     /// 所以這裡只是把請求交給 `PackSwapUseCase`，時序由它決定。
+    /// 換 pack 的**唯一入口**——CLI 的 `pack use` 與設定視窗的下拉選單都收在這裡。
+    ///
+    /// 通知設定視窗的動作放在這一層而不是只放 `SettingsFormStore.choosePack`：
+    /// CLI 那條根本不經過 store，只標在那裡的話，`findmouse pack use` 造出的空窗裡
+    /// 移除按鈕不會消失——而那個空窗與視窗發起的一模一樣長。
     private func requestPackSwap(to id: String) {
-        apply(swapper.request(id, isVisible: lastState?.isVisible ?? false))
+        let action = swapper.request(id, isVisible: lastState?.isVisible ?? false)
+        // 問「還有沒有待處理的」而不是列舉哪些 action 有空窗：後者要在這裡重述
+        // 一次狀態機的規則，而它多一個 case 時沒有任何東西會提醒這裡跟上。
+        if swapper.pendingID != nil {
+            settingsForm?.noteSwapRequested(id)
+            // 讓開著的視窗立刻重畫。不叫的話 SwiftUI 還握著舊 snapshot，
+            // 按鈕會留在畫面上——按下去仍會被守衛擋，但那是壞的可用性。
+            settingsWindow?.reload()
+        }
+        apply(action)
     }
 
     private func apply(_ action: PackSwapUseCase.Action) {

@@ -69,10 +69,59 @@ SciPy 裝在它上面，讓 mise 換一個 python 進來會讓素材管線立刻
   macOS cruft（`__MACOSX/`、`.DS_Store`、`._*`）是另一回事，逐筆複製時濾掉了。
   順帶：`ditto` 也不驗證 zip 自報的未壓縮大小（改成 1 照樣解出真正的 1000 bytes），
   所以大小上限只能解壓後複查。
+- **`.fmpack` 的型別宣告要兩個鍵，缺一不可。** `UTExportedTypeDeclarations` 只是
+  宣告「世上有這個型別」，認領要靠 `CFBundleDocumentTypes` 的 `LSItemContentTypes`。
+  2026-08-13 實測六個變體：只寫前者的話 `.fmpack` 會落到別的 app 手上；而
+  `LSItemContentTypes` 指到一個**沒宣告過**的識別字時，系統**連預設 handler 都
+  沒有**——不是退回別的 app，是查不到任何東西，比什麼都不寫更糟，且兩者在 plist
+  上看起來一模一樣。`InfoPlistTests.everyClaimedDocumentTypeIsDeclared` 釘住它。
+- **冷啟動時 `application(_:open:)` 比 `applicationDidFinishLaunching` 先到**
+  （2026-08-13 實測差 0.3ms）。那個時間點 `pack`、`settingsForm`、`settingsWindow`
+  全是 nil，當場處理必然什麼都不會發生**而且沒有任何訊號**。`AppDelegate` 因此把
+  URL 收進 `pendingOpenURLs`，啟動走完才排空。App 已在跑時不會起第二個 process，
+  事件直接送給既有實例——與單一實例守衛不衝突。
+- **匯入與移除的判斷只有一份**：`PackLibraryUseCase`（Adapters）。`RequestRouter`
+  與設定視窗都只是把它的 outcome 翻成自己的話。它**不回文字處方**——
+  `needsConfirmation` 的下一步 CLI 是「加 `--force`」、GUI 是彈確認框，揉進訊息裡
+  就沒有人能重用它。要加第四個入口就接這支，不要再抄一次那四步。
+- **`findmouse pack validate` 對不合格的 pack 是 exit 1，而 body 是 `ok:true` /
+  `valid:false`**（2026-08-13 實測）。兩件事同時成立，所以判「這套合不合格」要問
+  `data.valid` 而**不是**看 exit code——先看 exit code 的話會落到「未知錯誤」那條
+  退路，把整包原始 JSON 當訊息吐出去（`pack-fmpack.py` 實際踩過）。
+- **`mutate.py` 只跑 `swift test`。** python 與 shell 那些工具的突變要手動做：
+  先 commit，改，跑該工具自己的測試，`git checkout` 還原。
 - **裝一套與內建同 id 的 pack 會「成功但永遠看不到」。** `PackCatalogRepository.scan`
   用 seen set 去重且內建目錄排在前面，所以 `pack.install` 對內建 id 一律回
   `PACK_ID_RESERVED`（與「移除內建」的 `PACK_BUILT_IN` 分開，處方不同），
   連 `--force` 都不給過。
+- **目錄名與 `pack.json` 的 id 可以不一致，而清單是依 id 列的。**
+  `PackCatalogRepository.scan` 列 manifest 的 id、去重也依它，而哪一個目錄贏得
+  那一列由**目錄順序**（內建優先）與**同一個目錄內的名稱字典序**決定。
+  所以「清單上這一列住在哪個目錄」不是看得出來的——要問
+  `sourceDirectoryName(forID:in:)`，它刻意用同一個順序回答。移除走它，
+  問不到才退回「目錄名 == id」（`pack.json` 讀不出來的垃圾目錄說不出自己是誰，
+  而那正是使用者要清的）。**不要再寫「拿 id 當目錄名」的第二份**。
+  2026-08-14 修掉之前 `remove` 就是那樣做的，四種後果都實測過：刪掉使用者
+  **沒看到**的那一個而畫面說「已移除」／回「刪不掉」而該目錄從 GUI 與 CLI 都
+  永遠拿不掉／不符的那個變成看不見的孤兒／id 撞內建時回 `PACK_BUILT_IN`。
+  順帶：`PackInstaller.remove` 驗的是**單一路徑組件**而不是 `isValidID`，
+  因為 `<id>.incoming` 含 `.`，照 `[a-z0-9-]+` 驗會讓那種殘留目錄永遠拿不掉。
+
+  **`pack use` 沒有跟著改**（`directory(for:)` 仍拿 id 當目錄名）：那條路不刪
+  東西，而名稱不符的 pack 本來就不合格、不可選。
+
+  造得出名稱不符目錄的兩條路：手動放置（設定視窗那個「在 Finder 裡打開」按鈕的
+  用途正是手動放置），以及半途失敗留下的 `<id>.incoming`——`PackInstaller.install`
+  有三個清除點（下一次安裝同一個 id 的開頭、複製失敗、rename 失敗），**但 process
+  被殺一個都不會跑**，也沒有開機掃除。
+
+  第三條已經堵掉了，而**堵法值得記**：`install` 的目錄名來自呼叫端給的 id，那個 id
+  是**上一次**讀取決定的，而複製迴圈是**又一次**讀取——來源在這幾次之間可被抽換
+  （2026-08-14 用目錄型來源實測構造成功，3000 個檔案加一個 watcher，裝出目錄名
+  `cat`／manifest id `mycat`，連 `PACK_ID_RESERVED` 都繞過去）。所以驗來源沒有用，
+  驗完到複製完之間還有一段；現在驗的是**已經複製到 `.incoming` 的那一份**，
+  中間沒有縫。保證的是「裝進去那個目錄的名字 == 它自己 manifest 的 id」，
+  **不是**「內容來自同一次快照」——後者這個形狀的檔案複製給不了。
 - **`URL.hasDirectoryPath` 只看路徑字串有沒有結尾斜線，不問檔案系統。**
   `URL(fileURLWithPath:)` 建出來的目錄 URL 通常沒有斜線，於是目錄會被當成 zip
   丟給 `ditto`（訊息是「Is a directory」）。要問就用 `isDirectoryKey`。

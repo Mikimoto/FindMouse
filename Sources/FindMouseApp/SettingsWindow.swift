@@ -154,6 +154,12 @@ final class SettingsViewModel: ObservableObject {
     func toggle(_ key: String) { store.toggle(key); publish() }
     func choosePack(_ id: String) { store.choosePack(id); publish() }
     func packSwapConcluded() { store.packSwapConcluded(); publish() }
+    func importPacks(_ urls: [URL]) { store.importPacks(from: urls); publish() }
+    func confirmPendingImport() { store.confirmPendingImport(); publish() }
+    func cancelPendingImport() { store.cancelPendingImport(); publish() }
+    func removePack(_ id: String) { store.removePack(id); publish() }
+    // 沒有 publish()：它不改任何狀態，只是叫 Finder 開一個視窗。
+    func revealPacks() { store.revealPacks() }
 
     private func publish() { snapshot = store.snapshot }
 }
@@ -166,6 +172,8 @@ private struct SettingsRootView: View {
     @FocusState private var focused: String?
     /// 複製版本字串後的短暫回饋。1.5 秒後自己復原。
     @State private var copiedStamp = false
+    /// 拖放游標正懸在 pack 區上面。純視覺回饋，不參與任何判斷。
+    @State private var packDropTargeted = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -268,12 +276,59 @@ private struct SettingsRootView: View {
                 } label: {
                     Text(model.snapshot.selectedPackID)
                 }
+                Spacer()
+                Button("顯示資料夾") { model.revealPacks() }
             }
+
+            // 每套拿得掉的 pack 一列移除鈕。**清單而不是「移除當前選取」**：
+            // 下拉選單的選取值是「要用哪一套」，拿它兼差當「要刪哪一套」會讓
+            // 使用者為了刪 B 而先切到 B——而切到 B 之後它就變成當前、刪不掉了。
+            ForEach(model.snapshot.packs.filter(\.isRemovable), id: \.id) { pack in
+                HStack {
+                    Text(pack.id).font(.caption)
+                    Spacer()
+                    Button("移除") { model.removePack(pack.id) }
+                        .controlSize(.small)
+                }
+            }
+
             ForEach(model.snapshot.packs.filter { !$0.isUsable }, id: \.id) { pack in
                 Text("\(pack.id)：\(pack.problems.joined(separator: "、"))")
                     .font(.caption)
                     .foregroundStyle(.red)
             }
+
+            if let notice = model.snapshot.packNotice {
+                Text(notice).font(.caption).foregroundStyle(.secondary)
+            }
+
+            Text("把 .fmpack 或 pack 資料夾拖到這裡")
+                .font(.caption)
+                .foregroundStyle(packDropTargeted ? AnyShapeStyle(.primary)
+                                                  : AnyShapeStyle(.secondary))
+                .frame(maxWidth: .infinity)
+                .padding(8)
+                .overlay {
+                    RoundedRectangle(cornerRadius: 6)
+                        .strokeBorder(packDropTargeted ? Color.accentColor : Color.secondary,
+                                      style: StrokeStyle(lineWidth: 1, dash: [4]))
+                }
+        }
+        .dropDestination(for: URL.self) { urls, _ in
+            model.importPacks(urls)
+            // **一律回 true。** `false` 會讓 Finder 播「彈回去」的動畫，而我們
+            // 已經收下了它——失敗的原因寫在上面那一行提示，不是用動畫表達。
+            return true
+        } isTargeted: { packDropTargeted = $0 }
+        .alert("要取代嗎？", isPresented: Binding(
+            get: { model.snapshot.packConfirmation != nil },
+            // 使用者用 Esc 或點外面關掉時走這裡，與按「取消」同一條路。
+            set: { if !$0 { model.cancelPendingImport() } }
+        ), presenting: model.snapshot.packConfirmation) { _ in
+            Button("取代", role: .destructive) { model.confirmPendingImport() }
+            Button("取消", role: .cancel) { model.cancelPendingImport() }
+        } message: { pending in
+            Text(pending.prompt)
         }
     }
 

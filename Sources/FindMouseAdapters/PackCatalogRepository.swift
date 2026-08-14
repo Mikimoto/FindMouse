@@ -63,6 +63,33 @@ public enum PackCatalogRepository {
         return result
     }
 
+    /// 清單上那一列 id **是哪個目錄產生的**。移除要用它。
+    ///
+    /// `scan` 列的是 manifest 的 id，而目錄名不保證等於它。拿 id 當目錄名組路徑
+    /// 去刪，刪到的可能是另一個目錄（使用者沒看到的那一個），或是一個根本不存在
+    /// 的路徑（於是清單上那一列永遠拿不掉）。兩種都實測過，見 CLAUDE.md。
+    ///
+    /// **順序必須與 `scan` 的同一個目錄內迴圈一致**（依名稱字典序），否則同一個 id
+    /// 有兩個來源時，「清單顯示 A、刪掉 B」還是會發生，只是換一種形態。
+    ///
+    /// 回 `nil` 表示這個目錄底下沒有任何一個 pack 自報這個 id。呼叫端要退回
+    /// 「目錄名 == id」，而那條退路**不是**為了 `pack.json` 讀不出來的垃圾目錄
+    ///（`scan` 對那種直接 `continue`，它們根本不會出現在清單上，移除會先回
+    /// `PACK_NOT_FOUND`）。真正走得到的是**遮蔽內建**那條：id 來自內建那一筆，
+    /// 使用者目錄底下那個同名目錄自己說不出自己是誰，而它正是要被清掉的東西。
+    ///
+    /// 只看**一個**目錄（實務上是使用者的 pack 目錄）：刪除只動得到那裡，
+    /// 把內建也掃進來只會回一個刪不得的答案。
+    static func sourceDirectoryName(forID id: String, in directory: URL) -> String? {
+        let entries = (try? FileManager.default.contentsOfDirectory(
+            at: directory, includingPropertiesForKeys: [.isDirectoryKey])) ?? []
+        for entry in entries.sorted(by: { $0.lastPathComponent < $1.lastPathComponent }) {
+            guard let loaded = SpritePackRepository.load(at: entry) else { continue }
+            if loaded.manifest.id == id { return entry.lastPathComponent }
+        }
+        return nil
+    }
+
     /// 依 id 找出 pack 目錄。`pack use` 要用它。
     ///
     /// 直接拿 id 當目錄名組路徑，不重掃整個目錄：id 與目錄名不符是

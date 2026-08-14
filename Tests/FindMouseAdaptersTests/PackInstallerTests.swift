@@ -399,10 +399,30 @@ private let minimalManifest = """
     try FileManager.default.createDirectory(at: packs, withIntermediateDirectories: true)
     try FileManager.default.createDirectory(at: victim, withIntermediateDirectories: true)
 
-    #expect(throws: PackInstaller.Failure.invalidID("../victim")) {
-        try PackInstaller.remove(id: "../victim", from: packs)
+    // 逐一列出來而不是只測 `../victim`：`remove` 驗的是**路徑組件**（比 `install`
+    // 的 `isValidID` 寬，要讓 `<id>.incoming` 這種殘留目錄刪得掉），所以「哪些
+    // 還是要擋」變成一份獨立的清單，不能靠 install 那條測試代言。
+    for bad in ["../victim", "..", ".", "a/b", "/etc", ""] {
+        #expect(throws: PackInstaller.Failure.invalidID(bad)) {
+            try PackInstaller.remove(directoryName: bad, from: packs)
+        }
     }
     #expect(FileManager.default.fileExists(atPath: victim.path), "目錄不該被刪")
+}
+
+/// **`remove` 要能刪掉 `install` 不肯產生的名字。** 半途失敗留下的
+/// `<id>.incoming` 含 `.`，照 `isValidID` 驗會被擋——而那正是使用者要清的東西，
+/// 擋掉等於讓它從 GUI 與 CLI 都永遠拿不掉（2026-08-14 實測過那個狀態）。
+@Test func removeAcceptsADirectoryNameThatIsNotAValidID() throws {
+    let root = try tempDir()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let packs = root.appendingPathComponent("Packs")
+    let leftover = packs.appendingPathComponent("brand-new.incoming")
+    try FileManager.default.createDirectory(at: leftover, withIntermediateDirectories: true)
+
+    #expect(!PackValidator.isValidID("brand-new.incoming"), "前提：它不是合法 id")
+    try PackInstaller.remove(directoryName: "brand-new.incoming", from: packs)
+    #expect(!FileManager.default.fileExists(atPath: leftover.path))
 }
 
 /// 絕對路徑同樣是逃逸：`appendingPathComponent("/etc")` 會變成
@@ -431,4 +451,61 @@ private let minimalManifest = """
         .localizedDescription.contains("300 MB"))
     #expect(PackInstaller.Failure.extractionFailed("ditto: 不是 zip\n")
         .localizedDescription.contains("ditto: 不是 zip"), "ditto 的 stderr 不能遺失")
+}
+
+/// **裝進去之前要重讀一次 manifest 的 id。**
+///
+/// `id` 是呼叫端從**上一次**讀取決定的（`PackLibraryUseCase.install` 先
+/// `manifestID(of:)` 再走 `PackInstallDecision`），而 `install` 是第二次讀。
+/// 兩次之間來源可以被抽換，而目錄名一律取自傳進來的 `id`——不重驗就會裝出一個
+/// 目錄名與 manifest id 不符的 pack。更糟的是 `PACK_ID_RESERVED` 完全繞過去了：
+/// 那道閘門看的是第一次讀到的 id，所以第二次換成內建的 id 就裝得進去，
+/// 而裝出來的目錄遮蔽內建、又因為名稱不符而認不出來。
+///
+/// 這裡直接餵「id 與來源不符」——那正是那個窗口造出的狀態。
+@Test func installRefusesWhenTheSourceNoLongerDeclaresTheExpectedID() throws {
+    let root = try tempDir()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let packs = root.appendingPathComponent("Packs")
+    try FileManager.default.createDirectory(at: packs, withIntermediateDirectories: true)
+    let source = root.appendingPathComponent("src")
+    try FileManager.default.createDirectory(at: source, withIntermediateDirectories: true)
+    // 來源自稱 cat，呼叫端卻說要裝成 mycat（＝上一次讀到的 id）
+    try Data(minimalManifest.utf8).write(to: source.appendingPathComponent("pack.json"))
+
+    #expect(throws: PackInstaller.Failure.sourceChanged(expected: "mycat", actual: "cat")) {
+        try PackInstaller.install(source: source, id: "mycat", into: packs)
+    }
+    #expect(try FileManager.default.contentsOfDirectory(atPath: packs.path).isEmpty,
+            "被擋下就不該留下任何東西，連 .incoming 都不行")
+}
+
+/// **`pack.json` 壞掉時的訊息要是繁中。** `DecodingError` 與 `NSError` 都不是
+/// `LocalizedError`，直接讓它冒出去的話使用者看到的是
+/// 「The data couldn't be read because it isn't in the correct format.」
+/// ——而 `Failure` 存在的理由（`:21-24` 的 doc）正是不要那個。
+///
+/// 兩個呼叫端都要驗：決定 id 的那次讀取（`manifestID(of:)`）與裝進去之前的複驗。
+@Test func anUnreadableManifestFailsInTraditionalChinese() throws {
+    let root = try tempDir()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let source = root.appendingPathComponent("src")
+    try FileManager.default.createDirectory(at: source, withIntermediateDirectories: true)
+    try Data("{ 這不是 JSON".utf8).write(to: source.appendingPathComponent("pack.json"))
+
+    #expect(throws: PackInstaller.Failure.manifestUnreadable) {
+        _ = try PackInstaller.manifestID(of: source)
+    }
+
+    let packs = root.appendingPathComponent("Packs")
+    try FileManager.default.createDirectory(at: packs, withIntermediateDirectories: true)
+    #expect(throws: PackInstaller.Failure.manifestUnreadable) {
+        try PackInstaller.install(source: source, id: "cat", into: packs)
+    }
+    #expect(try FileManager.default.contentsOfDirectory(atPath: packs.path).isEmpty,
+            "失敗不該留下 .incoming")
+
+    let message = PackInstaller.Failure.manifestUnreadable.localizedDescription
+    #expect(message.contains("pack.json 讀不出來"), "實際訊息：\(message)")
+    #expect(!message.contains("couldn't be read"), "英文樣板漏出來了：\(message)")
 }

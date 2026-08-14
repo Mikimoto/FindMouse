@@ -74,6 +74,33 @@ public enum SettingsForm {
     }
 }
 
+/// 匯入／移除做完之後的結果。
+///
+/// **與 `PackLibraryUseCase` 的兩個 outcome 型別刻意不同。** 那兩個住 Adapters，
+/// 而 Core 的 import 允許清單只有 `Foundation`／`CoreGraphics`／`FindMouseDomain`
+/// （`ArchitectureBoundaryTests` 強制）；而且 Core 也不需要 wire 的錯誤碼——
+/// 設定視窗只顯示訊息。翻譯由 App 那一層做。
+public enum PackActionResult: Sendable, Equatable {
+    case succeeded(id: String)
+    /// 同 id 已存在。`prompt` 是給人看的問句，呼叫端要問過才重試。
+    case needsConfirmation(id: String, prompt: String)
+    case failed(message: String)
+}
+
+/// 等使用者回答的那個確認。**帶著來源**：按下「取代」時要用同一個來源重試，
+/// 而使用者按鈕的當下已經沒有別的地方記得它是哪個檔案了。
+public struct PendingPackImport: Sendable, Equatable {
+    public let source: URL
+    public let id: String
+    public let prompt: String
+
+    public init(source: URL, id: String, prompt: String) {
+        self.source = source
+        self.id = id
+        self.prompt = prompt
+    }
+}
+
 /// pack 下拉選單的一列。
 public struct PackChoice: Sendable, Equatable {
     public let id: String
@@ -84,23 +111,59 @@ public struct PackChoice: Sendable, Equatable {
     /// 已經翻成人話的錯誤（來自 `PackSummary.errors`）
     public let problems: [String]
 
+    /// 已經請求換過去、但還沒真的換成功的那一套。
+    ///
+    /// **它只決定按鈕顯不顯示。** 真正擋下移除的是 `PackLibraryUseCase.remove` 的
+    /// `swapTarget` 守衛——那一層問的是狀態機（`PackSwapUseCase.pendingID`），
+    /// 不是這份快照。這裡存在的理由是使用者不該看到一個按下去只會拿到錯誤的按鈕。
+    ///
+    /// 值由 `noteSwapRequested(_:)` 設定，而**兩條入口都要記得呼叫它**：GUI 走
+    /// `choosePack`（它自己標一次，這樣不接上 App 也測得到），CLI 走
+    /// `AppDelegate.requestPackSwap`——後者是兩條路的匯流點。漏掉它的話，
+    /// CLI 造出的空窗裡按鈕不會消失（按下去仍會被 use case 擋，但那是壞的可用性）。
+    public let isPendingSwap: Bool
+
+    /// 這一列該不該有移除按鈕。
+    ///
+    /// 內建拿不掉、正在用的拿不掉、已經請求換過去的也拿不掉。按鈕照顯示的話，
+    /// 使用者按下去只會拿到一句本來可以用「不顯示按鈕」避免的錯誤。不合格的
+    /// 那些**要**能拿掉——它們正是使用者要清的。
+    ///
+    /// 它由投影過的那三個欄位算出來，而「這個 id 到底能不能刪、刪掉的是哪一個
+    /// 目錄」由 `PackLibraryUseCase.remove` 決定。
+    ///
+    /// 兩邊在哪些輸入上不一致、不一致的後果是什麼，這裡**刻意不列**——列過三個
+    /// 版本，每一版都被一個新的反例推翻。最近一次是：目錄名與 manifest id 不符
+    /// 時兩層其實**一致**（都認 manifest 的 id），只是一起指向錯的目錄，於是
+    /// 「多給一個按鈕最多就是一句錯誤訊息」也跟著是假的。要知道某個情況會怎樣，
+    /// 去讀 `remove`，或者跑一次。
+    ///
+    /// 用計算屬性而不是 init 參數：它完全由既有三個欄位決定，多一個參數
+    /// 只是多一處可以填錯的地方。
+    public var isRemovable: Bool { !isBuiltIn && !isCurrent && !isPendingSwap }
+
     public init(id: String, isBuiltIn: Bool, isUsable: Bool,
-                isCurrent: Bool, problems: [String]) {
+                isCurrent: Bool, problems: [String], isPendingSwap: Bool = false) {
         self.id = id
         self.isBuiltIn = isBuiltIn
         self.isUsable = isUsable
         self.isCurrent = isCurrent
         self.problems = problems
+        self.isPendingSwap = isPendingSwap
     }
 
     /// - Parameter current: **實際跑著的** pack id，不是 `config get pack.id`。
     ///   兩者會不一致：啟動時想要的那套載不起來會退回內建（`AppDelegate`），
     ///   而設定裡那個壞掉的 id **不會被改寫**。拿設定當選取值的話，
     ///   下拉選單會顯示一套紅字、不可選、而且根本沒在跑的 pack。
-    public static func choices(packs: [PackSummary], current: String) -> [PackChoice] {
+    /// - Parameter pending: 已經請求換過去、但還沒換成功的那一套（`nil` 代表沒有）。
+    ///   只影響 `isRemovable`——見它的註解。
+    public static func choices(packs: [PackSummary], current: String,
+                               pending: String? = nil) -> [PackChoice] {
         var rows = packs.map {
             PackChoice(id: $0.id, isBuiltIn: $0.isBuiltIn, isUsable: $0.isUsable,
-                       isCurrent: $0.id == current, problems: $0.errors)
+                       isCurrent: $0.id == current, problems: $0.errors,
+                       isPendingSwap: $0.id == pending)
         }
         // 跑著的那套不在掃描結果裡（使用者把目錄整個刪掉、App 還握著已載入的圖）
         // 也要有一列：選取值對不到任何一列時下拉選單顯示空白，
@@ -177,6 +240,12 @@ public final class SettingsFormStore {
         public var currentPackID = ""
         /// 已經請求、但還沒真的換過去的那一套（換 pack 要等貓退場，spec 第 6.5 節）
         public var pendingPackID: String?
+        /// 上一次匯入／移除的結果，一句話。**一次性**：下一個動作開始時就清掉，
+        /// 否則使用者會看到上一次的結果掛在那裡，分不出「這是剛剛那次的」
+        /// 還是「這次也一樣」。
+        public var packNotice: String?
+        /// 非 nil 時設定視窗要彈確認框。
+        public var packConfirmation: PendingPackImport?
         public var advanced: [SettingsForm.AdvancedEntry] = []
 
         public init() {}
@@ -209,6 +278,14 @@ public final class SettingsFormStore {
     private let currentPackID: @MainActor () -> String
     private let usePack: @MainActor (String) -> Void
     private let onChanged: @MainActor () -> Void
+    /// 匯入一個來源。第二個參數是 force。
+    ///
+    /// **注入而不是自己呼叫 `PackLibraryUseCase`**：那個住 Adapters，而 Core
+    /// 的 import 允許清單只有 Domain。與 `usePack` 是同一個模式。
+    private let installPack: @MainActor (URL, Bool) -> PackActionResult
+    /// 與 `removePack(_:)` 這個方法同名會遮蔽，所以欄位另取名。
+    private let removePackAction: @MainActor (String) -> PackActionResult
+    private let revealPacksDirectory: @MainActor () -> Void
 
     public private(set) var snapshot = Snapshot()
 
@@ -219,12 +296,25 @@ public final class SettingsFormStore {
                 packs: @escaping @MainActor () -> [PackSummary],
                 currentPackID: @escaping @MainActor () -> String,
                 usePack: @escaping @MainActor (String) -> Void,
-                onChanged: @escaping @MainActor () -> Void) {
+                onChanged: @escaping @MainActor () -> Void,
+                // 前兩個的預設值是**明確的失敗**而不是 no-op：漏接線時使用者看得到
+                // 一句話，而不是按了沒反應。第三個做不到——它回 Void，沒有地方
+                // 講話；它漏接線的後果是「按了 Finder 沒開」，而那由
+                // `revealForwardsToTheInjectedAction` 釘住。
+                // 給預設值本身是為了讓既有呼叫點與既有測試一個字都不用改。
+                installPack: @escaping @MainActor (URL, Bool) -> PackActionResult
+                    = { _, _ in .failed(message: "這個建置沒有接上匯入") },
+                removePack: @escaping @MainActor (String) -> PackActionResult
+                    = { _ in .failed(message: "這個建置沒有接上移除") },
+                revealPacksDirectory: @escaping @MainActor () -> Void = {}) {
         self.settings = settings
         self.packs = packs
         self.currentPackID = currentPackID
         self.usePack = usePack
         self.onChanged = onChanged
+        self.installPack = installPack
+        self.removePackAction = removePack
+        self.revealPacksDirectory = revealPacksDirectory
     }
 
     /// 控制項的範圍取自這裡（slider 的 `in:`、兩選一的選項），
@@ -247,7 +337,8 @@ public final class SettingsFormStore {
             snapshot.advanced = SettingsForm.advancedEntries(settings)
         }
         snapshot.currentPackID = currentPackID()
-        snapshot.packs = PackChoice.choices(packs: packs(), current: snapshot.currentPackID)
+        snapshot.packs = PackChoice.choices(packs: packs(), current: snapshot.currentPackID,
+                                            pending: snapshot.pendingPackID)
     }
 
     /// 打字中：只記草稿，**不寫入也不驗**。
@@ -356,8 +447,29 @@ public final class SettingsFormStore {
         guard id != snapshot.currentPackID else { return }
         // 換 pack 可能要等貓退場（spec 第 6.5 節），那時 `currentPackID()` 還是舊的。
         // 不記下請求的話，下拉選單會在使用者眼前彈回他剛剛選掉的那一套。
-        snapshot.pendingPackID = id
+        noteSwapRequested(id)
         usePack(id)
+    }
+
+    /// 有人請求換 pack 了——**不一定是這個視窗**。
+    ///
+    /// CLI 的 `pack use` 走 `RequestRouter` → `AppDelegate.requestPackSwap`，
+    /// 完全不經過這裡。少了這支的話，**CLI 發起的空窗裡按鈕不會消失**——而那個
+    /// 空窗與 GUI 發起的一模一樣長。所以標記的入口要在兩條路的匯流點被呼叫一次。
+    ///
+    /// 幂等：GUI 那條會經過這裡兩次（`choosePack` 一次、`requestPackSwap` 一次）。
+    public func noteSwapRequested(_ id: String) {
+        snapshot.pendingPackID = id
+        // 重標 rows：`isPendingSwap` 變了，那一列的移除按鈕要當場消失。
+        //
+        // 就地映射而不是重跑 `choices(packs:...)`：那要一份 `[PackSummary]`，而這裡
+        // 只有已經投影過的 rows。重掃磁碟拿一份新的也不對——這一刻該變的只有
+        // 「哪一列在等待」。
+        snapshot.packs = snapshot.packs.map {
+            PackChoice(id: $0.id, isBuiltIn: $0.isBuiltIn, isUsable: $0.isUsable,
+                       isCurrent: $0.isCurrent, problems: $0.problems,
+                       isPendingSwap: $0.id == id)
+        }
     }
 
     /// 換 pack 這件事結束了——**成功與失敗都算**。
@@ -367,6 +479,75 @@ public final class SettingsFormStore {
     public func packSwapConcluded() {
         snapshot.pendingPackID = nil
         reload()
+    }
+
+    // MARK: - 匯入與移除（分發 C-2）
+
+    /// 拖進來的東西。
+    public func importPacks(from urls: [URL]) {
+        guard let first = urls.first else { return }
+        importPack(from: first)
+        guard urls.count > 1 else { return }
+        // 逐一匯入會連續彈好幾個確認框，而「裝了哪些、哪些失敗」在一行提示裡
+        // 講不清楚。所以只收第一個，而且**明說**——安靜地丟掉另外幾個的話，
+        // 使用者會以為它們都裝好了。
+        let outcome = snapshot.packNotice.map { "（\($0)）" } ?? ""
+        snapshot.packNotice = "一次只能裝一套，只收了 \(first.lastPathComponent)。" + outcome
+    }
+
+    public func importPack(from url: URL) {
+        snapshot.packNotice = nil
+        snapshot.packConfirmation = nil
+        apply(installPack(url, false), source: url)
+    }
+
+    /// 使用者按了「取代」。用**同一個來源**重試，帶 force。
+    public func confirmPendingImport() {
+        guard let pending = snapshot.packConfirmation else { return }
+        snapshot.packConfirmation = nil
+        apply(installPack(pending.source, true), source: pending.source)
+    }
+
+    /// 取消。**問句一定要收掉**，不然下一次拖放會看到上一次的。
+    public func cancelPendingImport() {
+        snapshot.packConfirmation = nil
+    }
+
+    public func removePack(_ id: String) {
+        snapshot.packNotice = nil
+        snapshot.packConfirmation = nil
+        // 這裡**不再**自己擋「正在切換過去」的那一套。曾經擋過，理由是
+        // 「use case 看到的 currentPackID 還是舊的」——那句話在 `remove` 收下
+        // `swapTarget` 之後就不成立了，而留著的話同一句話會有兩份、各自用一份
+        // 可能不同步的狀態（這裡是快照，那裡是狀態機）判斷。
+        switch removePackAction(id) {
+        case let .succeeded(id):
+            reload()
+            snapshot.packNotice = "已移除「\(id)」。"
+        case let .failed(message):
+            snapshot.packNotice = message
+        case .needsConfirmation:
+            // 型別上到得了、語意上到不了：移除沒有「要不要覆蓋」這回事。
+            // 不留一句捏造的訊息——什麼都不顯示比顯示一句假話好。
+            break
+        }
+    }
+
+    /// 在 Finder 裡打開使用者的 pack 目錄。
+    public func revealPacks() { revealPacksDirectory() }
+
+    private func apply(_ result: PackActionResult, source: URL) {
+        switch result {
+        case let .succeeded(id):
+            // 裝完要重讀，否則新的那套要等下一次 reload 才看得到，
+            // 而使用者的感受是「拖進去沒反應」。
+            reload()
+            snapshot.packNotice = "已裝好「\(id)」。"
+        case let .needsConfirmation(id, prompt):
+            snapshot.packConfirmation = PendingPackImport(source: source, id: id, prompt: prompt)
+        case let .failed(message):
+            snapshot.packNotice = message
+        }
     }
 
     static func message(for error: SettingsError) -> String {

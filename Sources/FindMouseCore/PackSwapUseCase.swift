@@ -37,6 +37,13 @@ public final class PackSwapUseCase {
     /// 「換完了」與「忘掉貓在場過」是同一個賦值。
     private var pending: (id: String, resummon: Bool)?
 
+    /// 等著被換上的那一套（`nil` ＝ 現在沒有在換）。
+    ///
+    /// 開這個讀口，是為了讓「空窗期不准移除目標」的守衛去問**狀態機本身**，
+    /// 而不是在呼叫端影一份。影本要自己找時機清掉，而清的那一行離這裡設 `nil`
+    /// 的那一行很遠——漏掉的症狀是那套 pack 從此不能移除，而且沒有任何訊號。
+    public var pendingID: String? { pending?.id }
+
     public init() {}
 
     /// 收到切換請求。回傳這一刻該做什麼。

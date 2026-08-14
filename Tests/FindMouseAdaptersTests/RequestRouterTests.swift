@@ -146,8 +146,13 @@ private struct Fixture {
     /// - Parameter packsDirectory: `pack.install` / `pack.remove` 會**真的寫檔案**，
     ///   所以測試一律指到暫存目錄。給 nil 就用一個不存在的路徑——那讓任何意外
     ///   走到寫入的測試明確失敗，而不是靜默寫進使用者真正的 pack 目錄。
+    /// - Parameter swapTarget: `AppDelegate` 那邊是 `PackSwapUseCase.pendingID`。
+    ///   `RequestRouter.init(packSwapTarget:)` **沒有預設值**（漏傳就編不過，
+    ///   見 `PackLibraryUseCase.remove` 的 doc），所以這裡一律往下傳；
+    ///   給 `nil` 的意思是「這條測試沒有換 pack 這回事」。
     init(teaser: Bool = true, loginItemState: LoginItem.State = .notRegistered,
-         currentPackID: String = "test-blocks", packsDirectory: URL? = nil) {
+         currentPackID: String = "test-blocks", packsDirectory: URL? = nil,
+         swapTarget: String? = nil) {
         // 先接成區域變數再交給 closure：struct 的所有屬性都填完之前碰不到 self
         let live = Box(Wiring(teaser: teaser))
         self.live = live
@@ -166,6 +171,7 @@ private struct Fixture {
                                usePack: { id in swapped.value = id },
                                onSettingsChanged: { settingsChanges.value += 1 },
                                packsDirectory: { packsDir },
+                               packSwapTarget: { swapTarget },
                                loginItem: loginItem)
     }
 
@@ -890,8 +896,32 @@ private func makePacksDirectory() throws -> URL {
     let f = Fixture(currentPackID: "test-blocks-tall", packsDirectory: packs)
     let error = try decodeError(f.send("pack.remove", ["id": "test-blocks-tall"]))
     #expect(error.code == .packInvalid)
-    #expect(error.message.contains("pack use"), "訊息要講出下一步")
+    #expect(error.message.contains("換成別的圖組"), "訊息要講出下一步")
     #expect(f.swapped.value == nil, "不該偷偷幫使用者切走")
+}
+
+/// **正在切換過去的那一套也拒絕，而這條線是 CLI 專有的**：設定視窗那層的按鈕
+/// 早就藏起來了（`PackChoice.isRemovable`），`findmouse pack remove` 沒有那道
+/// UI 守衛，只剩 use case 這一道。
+///
+/// 釘的是**這一道守衛從 wire 那頭進來也擋得住**——`Fixture` 自己建 router 並
+/// 顯式傳 `packSwapTarget`，所以它證明不了「產品碼記得接線」（那件事由
+/// `RequestRouter.init` 沒有預設值來保證，見 `theSwapTargetWiringHasNoDefaultValue`）。
+///
+/// 用 `test-blocks-tall`：它不是當前那套（預設 `test-blocks`），所以擋下它的
+/// 只可能是 swap 這一道，不會是「正在使用中」那一道。
+@Test func removeRefusesThePackThatIsBeingSwappedTo() throws {
+    let packs = try makePacksDirectory()
+    defer { try? FileManager.default.removeItem(at: packs) }
+    let target = packs.appendingPathComponent("test-blocks-tall")
+    try FileManager.default.createDirectory(at: target, withIntermediateDirectories: true)
+
+    let f = Fixture(packsDirectory: packs, swapTarget: "test-blocks-tall")
+    let error = try decodeError(f.send("pack.remove", ["id": "test-blocks-tall"]))
+    #expect(error.code == .packInvalid)
+    #expect(error.message.contains("正在切換過去"), "訊息要講出為什麼")
+    #expect(FileManager.default.fileExists(atPath: target.path),
+            "目錄要原封不動——擋下來的意思是沒有刪")
 }
 
 /// **被內建遮蔽的使用者目錄拿得掉。** `scan` 去重且內建排前面，所以 `packs()`
