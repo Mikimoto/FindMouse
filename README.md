@@ -84,7 +84,7 @@ mise run mutate -- <批次.json>    # 突變測試
 
 ```sh
 xcrun notarytool store-credentials findmouse-release   # 一次性
-mise run release -- 0.4.0 --profile findmouse-release
+mise run release -- <版本> --profile findmouse-release
 ```
 
 它跑完會自己驗自己的產出——包含加上隔離屬性再驗一次，那是唯一測得到

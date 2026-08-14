@@ -400,4 +400,17 @@ printf '  Casks/findmouse.rb\n'
 printf '    version "%s,%s"\n' "${VERSION}" "${SHA}"
 printf '    sha256 "%s"\n' "${DMG_SHA256:-算不出來，自己跑 shasum -a 256 上面那個檔}"
 printf '  Formula/findmouse-cli.rb（tag 推上去之後跑這行拿 sha256）\n'
-printf '    curl -sL https://github.com/Mikimoto/FindMouse/archive/refs/tags/%s.tar.gz | shasum -a 256\n' "${TAG}"
+# 這行的三個細節都是量出來的，不是慣例：
+#
+# `awk '{print $1}'`——`shasum` 讀 stdin 印的是 `<hash>  -`，那個 `-` 是檔名欄位。
+# 與上面算 dmg 那行同一個理由。
+#
+# `-f` 與 `-o` ＋ `&&`——**這是最重要的一個**。`curl -sL <不存在的 tag> | shasum`
+# 會把 GitHub 回的 14 bytes `404: Not Found` 當成內容雜湊掉，吐出一個外觀完全正常
+# 的 `d5558cd4…`（2026-08-14 實測）。而這行最可能被執行的時機正是「tag 還沒推上去」
+# ——也就是它最容易騙人的時候。只加 `-f` 不夠：管線仍會跑，印出空字串的雜湊
+# `e3b0c442…`，同樣像個正常答案。所以先落檔、`&&` 短路，失敗時**一個字都不印**。
+#
+# 錯的 sha256 貼進 formula 之後，brew 的抱怨看起來像「上游 tarball 變了」，
+# 而不是「你查的那個 tag 根本不存在」。
+printf "    curl -fsSL https://github.com/Mikimoto/FindMouse/archive/refs/tags/%s.tar.gz -o /tmp/%s.tar.gz && shasum -a 256 /tmp/%s.tar.gz | awk '{print \$1}'\n" "${TAG}" "${TAG}" "${TAG}"
