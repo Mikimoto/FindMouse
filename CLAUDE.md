@@ -53,6 +53,14 @@ SciPy 裝在它上面，讓 mise 換一個 python 進來會讓素材管線立刻
   所以「只殺自己的」在那個窗口內有別人啟動時不成立。）
   **不要用 `pkill -f <路徑片段>`**——路徑片段是相對的，它會匹配**任何** worktree 的
   `build/FindMouse.app`，連另一個 session 的實例一起殺，正是這條要避免的事。
+- **`/Applications/FindMouse.app` 現在由 Homebrew cask 管**（2026-08-14 起）。
+  兩個後果：驗 cask 時不要裝進 `/Applications`（用
+  `brew install --cask --appdir="$(mktemp -d)"`，否則「裝好了」與「本來就在」外觀相同，
+  而且會蓋掉使用者正在跑的那份）；以及**永遠不要跑 `brew uninstall --cask --zap`**
+  ——`zap` 的路徑是絕對路徑，會刪掉使用者真正的 `~/Library/Application Support/FindMouse/`
+  （他自己裝的 pack）與 `~/Library/Preferences/tw.com.deepthought.findmouse.plist`
+  （全部設定），而 `brew uninstall` **沒有 `--dry-run`** 可以先看（實測回
+  `Error: invalid option`）。要移除就用不帶 `--zap` 的版本。
 - **`findmouse pack validate` 走 socket，App 必須在跑。** CLI 是薄用戶端，
   App 沒跑會回 `APP_NOT_RUNNING`（exit 3），那不是 pack 有問題。
 - **`ditto -x -k` 會把 zip 裡的 `../x` 攤平到目標根目錄，不是拒絕它**
@@ -142,6 +150,11 @@ SciPy 裝在它上面，讓 mise 換一個 python 進來會讓素材管線立刻
   而 `--long` 的 `-N-` 是**可達 commit 數**不是線性距離（tag 打在 `HEAD~3`
   實測回 `-61-`，因為 merge commit 帶進整條 feature 分支）。`-dirty` 只反映
   tracked 檔案的修改，untracked 不算。
+
+  **而 `v0.2.0` 與 `v0.3.0` 不在任何分支上**（2026-08-11 那次連同歷史清掉
+  `docs/superpowers/` 的重寫留下的孤兒），所以 `git describe` 從現行歷史看不到它們，
+  `git branch --contains` 也回空的。要盤點「發過哪些版」只能用 `git tag -l`
+  加 `gh release list`，不要從分支歷史推。
 - **不要拿 `notarytool submit --wait` 的 exit code 當審查結果。** 它對「命令自己
   失敗」是有紀律的（實測：profile 不存在回 69、檔案不存在回 64、合約過期回 403 並
   非零），但「送出成功、而 Apple 判 `Invalid`」會不會也回非零，**本專案還沒實測過**。
@@ -149,6 +162,20 @@ SciPy 裝在它上面，讓 mise 換一個 python 進來會讓素材管線立刻
   不必賭一個沒驗過的前提。
 - **驗收命令不接管線。** `codesign ... | tail` 的 exit code 來自 `tail`，接了就
   每一條都通過。`release.sh` 的 `check()` 把輸出寫檔再讀，就是為了這個。
+- **票只釘在 `.dmg` 上，`.app` 裡沒有票。** 三份都驗過都沒有（2026-08-14）：dmg 裡
+  那份、從 dmg 拖進 `/Applications` 那份、brew cask 抽出來那份。`release.sh` 那 12 條
+  驗收全部只驗 dmg，所以**它們證明不了使用者實際執行的那個 `.app`**。
+  現況能過 Gatekeeper（帶著 `com.apple.quarantine` 實測 `spctl` 回
+  `accepted / Notarized Developer ID`），因為系統查得到線上紀錄——但**離線首次啟動
+  沒有測過**，而那正是 spec 說「漏 staple 的症狀很賤」時擔心的情境。要補的話是多送
+  一次 notarize：先送 `.app`、staple 它，再用那份打 dmg 再送審。兩次提交換一個離線
+  保證，值不值得沒量過。
+- **Homebrew tap 在另一個 repo**（`Mikimoto/homebrew-findmouse`），發版收尾要手動同步，
+  完整順序寫在 README 的〈自己發一份〉。動它之前先知道兩件事：
+  `depends_on macos:` 的字串比較格式（`">= :sonoma"`）在 **cask 只是 deprecation 警告、
+  在 formula 是硬失敗**（`unknown or unsupported macOS version`），兩邊都要寫裸符號
+  `:sonoma`（語意相同，`brew info` 都回 `Required: macOS >= 14`）；而 **`brew test`
+  斷言失敗時仍回 exit 0**，判讀只能看輸出裡有沒有 `Error:` 行。
 
 - **開機啟動只在 `/Applications` 或 `~/Applications` 底下可用。** 開發時跑的是
   `build/FindMouse.app`，那個勾**永遠是灰的**——那是刻意的，不是壞掉。同樣的閘門
