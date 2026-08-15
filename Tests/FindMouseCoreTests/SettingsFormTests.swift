@@ -882,3 +882,64 @@ private let specWindowKeys = [
     harness.store.revealPacks()
     #expect(harness.revealCount == 1)
 }
+
+// MARK: - 進階設定那一列要顯示什麼
+
+/// 完整性：`advancedKeys` 是推導的，所以有人加了新設定又沒填展示資料時，
+/// 這條會紅——不是靜默少畫一列。
+///
+/// **它不是獨立的覆蓋。** 同一個缺漏會讓 `sliderSpecExistsExactlyForNumberKinds`
+/// 的 `try #require` 一起紅。留著是為了**訊息**：這條說得出缺的是哪幾個 key，
+/// 那條只會說某個 required value 是 nil。
+@Test func everyAdvancedKeyHasPresentation() {
+    let useCase = SettingsUseCase(store: StubStore(),
+                                  catalog: StubCatalog(logicalHeight: 100))
+    let missing = SettingsForm.advancedKeys.filter { useCase.presentation(of: $0) == nil }
+    #expect(missing.isEmpty, "這些進階 key 沒有展示資料：\(missing)")
+
+    // 反方向：主視窗那 8 項的標題寫在 View 裡，registry 再放一份就是兩份
+    // 會漂掉的字串。多填的那一份不會有任何訊號，所以在這裡擋。
+    let extra = SettingsForm.windowKeys.filter { useCase.presentation(of: $0) != nil }
+    #expect(extra.isEmpty, "這些主視窗 key 不該有展示資料：\(extra)")
+}
+
+/// 數字 key 一定要有滑桿規格，choice 一定不能有——畫錯列型就是這裡分岔。
+@Test func sliderSpecExistsExactlyForNumberKinds() throws {
+    let useCase = SettingsUseCase(store: StubStore(),
+                                  catalog: StubCatalog(logicalHeight: 100))
+    for key in SettingsForm.advancedKeys {
+        let presentation = try #require(useCase.presentation(of: key))
+        if case .number = try useCase.kind(of: key) {
+            #expect(presentation.slider != nil, "\(key) 是數字卻沒有滑桿規格")
+        } else {
+            #expect(presentation.slider == nil, "\(key) 不是數字卻有滑桿規格")
+        }
+    }
+}
+
+/// 量化位數是從 `step` 推導出來的，這條釘住現行五個 step 值的對應。
+///
+/// 推導取代了「另外傳一個 digits」——那兩個旋鈕可以互相矛盾，而矛盾**沒有任何
+/// 測試看得見**（`step: 0.05` 配 0 位會把 0.95 量化成 1.0，超出宣告值域，
+/// 症狀只在軌道盡頭出現）。代價是推導本身成了單點，所以它要有自己的測試。
+@Test func sliderDigitsFollowFromTheStep() {
+    let expected: [Double: Int] = [10: 0, 5: 0, 50: 0, 0.5: 1, 0.05: 2]
+    for (step, digits) in expected {
+        #expect(AdvancedPresentation.SliderSpec(step: step).fractionDigits == digits,
+                "step \(step) 應該量化到 \(digits) 位")
+    }
+
+    // 上面那張表是**手抄的**，所以它會在有人往註冊表加新 step 時靜默過時。
+    // 拿註冊表實際用到的 step 回頭對一次，逼那個人把表補齊。
+    //
+    // 這同時是 `decimals(of:)` 唯一的已知破口（指數形式沒有小數點，`5e-05`
+    // 會被算成 0 位）的守衛：那種寫法一出現在註冊表就會紅在這裡，
+    // 所以推導本身不必為一個還沒發生的情況長出一條走不到的分支。
+    let useCase = SettingsUseCase(store: StubStore(),
+                                  catalog: StubCatalog(logicalHeight: 100))
+    let inUse = Set(SettingsForm.advancedKeys.compactMap {
+        useCase.presentation(of: $0)?.slider?.step
+    })
+    let unpinned = inUse.subtracting(expected.keys).sorted()
+    #expect(unpinned.isEmpty, "註冊表用了沒被釘住的 step：\(unpinned)")
+}
