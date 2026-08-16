@@ -259,6 +259,37 @@ public final class SettingsUseCase {
         }
     }
 
+    /// 這個 key 現在的值是不是等於**現在的**預設。
+    ///
+    /// 不能改問「鍵在不在 store 裡」：除了 override 欄位與字串型 key
+    /// ——那些才是「nil 就移除鍵」——`SettingsGateway.save` 對 domain 欄位
+    /// 一律無條件全寫，所以存過任何一次之後，鍵一定在。
+    ///
+    /// 預設用既有的 `clear` ＋ `read` 算，不另建預設表——`wake.threshold` 與
+    /// `arrive.radius` 的預設是衍生的（後者還隨 pack 體高與 `cat.scale` 變），
+    /// 常數表必然分岔。
+    ///
+    /// 對呼叫端的後果：**改一列可能翻掉另一列的答案**。`rehunt.threshold` 動了，
+    /// 一個明確寫過的 `wake.threshold` 就可能從「是預設」變成「不是」；`cat.scale`
+    /// 與換 pack 對 `arrive.radius` 同理。所以任何一次變更之後要重算**每一列**，
+    /// 不是只重算剛編輯的那一列。
+    public func isAtDefault(_ key: String) throws -> Bool {
+        let spec = try self.spec(key)
+        switch spec.storage {
+        case .domain(let domain):
+            // store 與體高都只讀一次：`SettingsGateway.config` 是每次重新解一遍
+            // UserDefaults 的 computed property，兩邊各讀各的等於允許基準與現值
+            // 來自不同的快照。
+            let current = store.config
+            let height = catalog.logicalHeight
+            var probe = current
+            domain.clear(&probe)
+            return domain.read(probe, height) == domain.read(current, height)
+        case .external(let fallback):
+            return (store.string(forKey: key) ?? fallback) == fallback
+        }
+    }
+
     public func resetAll() {
         var config = store.config
         for spec in Self.registry {
