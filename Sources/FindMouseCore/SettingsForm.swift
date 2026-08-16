@@ -117,6 +117,18 @@ public enum SettingsForm {
         }
     }
 
+    /// 還原**只有**進階那 15 項。
+    ///
+    /// 刻意不呼叫 `SettingsUseCase.resetAll()`：那會連主視窗的 pack、快捷鍵與
+    /// 聚光燈一起還原，而按鈕在進階視窗裡。CLI 的 `config reset --all` 語意不變。
+    ///
+    /// `try?`：key 全部來自 `advancedKeys`（推導自註冊表），而 `reset` 只在
+    /// `spec(key)` 查不到時拋（`SettingsUseCase.reset`），所以拋不出來；
+    /// 真的拋了也不該讓剩下的項目半途停下。
+    public static func resetAdvanced(_ settings: SettingsUseCase) {
+        for key in advancedKeys { try? settings.reset(key) }
+    }
+
     /// 值域的一句話說明。數字沿用 `SettingsUseCase` 的數字格式（整數印整數），
     /// 不另寫一份——不然同一個範圍在 CLI 與 UI 會印成兩個樣子。
     public static func text(for kind: SettingKind) -> String {
@@ -493,6 +505,50 @@ public final class SettingsFormStore {
         guard let settings = settings(),
               case .number(let current)? = try? settings.value(key) else { return }
         submit(key, number: current + delta)
+    }
+
+    /// 還原一個 key。
+    ///
+    /// 草稿與紅字一併清掉——`reload()` **刻意不清**它們（見它的註解：重讀的觸發者
+    /// 常常是別人，清掉會在使用者眼前重置他正在修的欄位）。但這一次的觸發者就是
+    /// 使用者自己按的還原鍵，留著草稿的話欄位仍顯示他剛打的字、紅字仍指著一個
+    /// 已經被還原掉的值，畫面與狀態分岔。
+    ///
+    /// **還原是一種變更，所以照樣通知 `onChanged`。** CLI 那條路已經先遇到這題
+    /// 並留了字：`RequestRouter.configReset` 對 `reset` 與 `set` 各接一次，
+    /// 註解寫「只接一條的話『改壞了想 reset 回來』會失效——而那正是使用者最需要它
+    /// 當場生效的時刻」。兩條路走的是同一個 `AppDelegate.settingsDidChange()`，
+    /// 這裡不接的話，同一個還原從 CLI 下去會生效、從 ↺ 按下去不會。
+    ///
+    /// 那一輪不會白白重裝快捷鍵：`AppDelegate` 用 `installedSummon`／
+    /// `installedTeaser` 記住現在註冊著的那一組，spec 沒變就不動它。
+    public func reset(_ key: String) {
+        guard let settings = settings() else { return }
+        // 這裡不能照抄 `resetAdvanced` 那個裸 `try?`：那支的 key 全部來自
+        // `advancedKeys`，這支收的是任意字串。未知 key 讓 `reset` 拋錯之後，
+        // 值沒有被還原，卻照樣清掉草稿、重讀、通知——三個副作用建立在一件
+        // 沒發生的事情上。拋了就什麼都不做。
+        guard (try? settings.reset(key)) != nil else { return }
+        snapshot.drafts.removeValue(forKey: key)
+        snapshot.errors.removeValue(forKey: key)
+        reload()
+        onChanged()
+    }
+
+    /// 還原進階那 15 項。範圍與按鈕所在的視窗一致，不碰主視窗那 8 項——
+    /// 理由見 `SettingsForm.resetAdvanced`，通知的理由見 `reset(_:)`。
+    ///
+    /// `onChanged()` 整批只發一次，與 `RequestRouter` 對 `config reset --all`
+    /// 的處置相同——它要的是「設定變了，重新套用一次」，不是逐項各來一輪。
+    public func resetAdvanced() {
+        guard let settings = settings() else { return }
+        SettingsForm.resetAdvanced(settings)
+        for key in SettingsForm.advancedKeys {
+            snapshot.drafts.removeValue(forKey: key)
+            snapshot.errors.removeValue(forKey: key)
+        }
+        reload()
+        onChanged()
     }
 
     /// Toggle 的反轉。基準同樣取當下讀到的值，理由同 `step`。

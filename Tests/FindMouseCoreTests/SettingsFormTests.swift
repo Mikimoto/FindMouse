@@ -1021,3 +1021,141 @@ private let specWindowKeys = [
     let untouched = try #require(rows.first { $0.key == "spotlight.feather" })
     #expect(untouched.isAtDefault, "沒動過的那一列跟著鄰居一起變成「改過」了")
 }
+
+// MARK: - 進階視窗的「全部還原」
+
+/// 範圍語意：按鈕在進階視窗裡，就只能動進階那 15 項。連帶還原主視窗的 pack、
+/// 快捷鍵與聚光燈設定會很意外，而 `resetAll()` 正是那樣。
+@Test func resetAdvancedLeavesTheMainWindowKeysUntouched() throws {
+    let useCase = SettingsUseCase(store: StubStore(),
+                                  catalog: StubCatalog(logicalHeight: 100))
+    try useCase.set("cat.speed", to: "1500")          // 進階
+    try useCase.set("cat.scale", to: "1.5")           // 主視窗
+    try useCase.set("hotkey.summon", to: "⌃⇧K")       // 主視窗
+
+    SettingsForm.resetAdvanced(useCase)
+
+    #expect(try useCase.isAtDefault("cat.speed"), "進階項應被還原")
+    #expect(try !useCase.isAtDefault("cat.scale"), "主視窗的 cat.scale 不該被動")
+    #expect(try useCase.get("hotkey.summon") == "⌃⇧K", "主視窗的快捷鍵不該被動")
+}
+
+/// 先把**每一個**進階 key 都弄髒，再還原。
+///
+/// 原本只弄髒三個 key 就迴圈斷言全部——沒被弄髒的那些本來就在預設值上，
+/// 那些斷言無論 `resetAdvanced` 有沒有碰它們都會過。實測：把實作的迴圈改成
+/// `where key != "spotlight.feather"`，整包全綠；同形的 `!= "cat.speed"`
+/// 會紅（所以突變本身有效，那個綠是真的洞）。名字說全部，證明的是三個。
+///
+/// 探針**推導**而不是手抄字面值：這裡只有兩種 kind（數字與 choice），
+/// 一條規則比一張表小。與 Task 2 的 `everyKeyCanTellThatItHasBeenChanged`
+/// 相反是對的——那條跨五種 kind（含 hotkey 與 packID），規則會比表大。
+///
+/// 兩道防呆，因為「探針剛好等於預設」正是這條測試要修的那種靜默失效：
+/// 挑完探針先確認它與現值不同，寫完再整批確認**沒有一項**還在預設上。
+/// 後者才是完整的守衛——有些 key 的預設是衍生的（`wake.threshold` 跟著
+/// `rehunt.threshold` 動，見 `SettingsUseCase.isAtDefault` 的註解），
+/// 所以「寫入當下不同」不蘊含「全部寫完之後仍然不同」。
+@Test func resetAdvancedClearsEveryAdvancedKey() throws {
+    let useCase = SettingsUseCase(store: StubStore(),
+                                  catalog: StubCatalog(logicalHeight: 100))
+
+    for key in SettingsForm.advancedKeys {
+        let probe: String
+        switch try useCase.kind(of: key) {
+        case .number(let range):
+            guard case .number(let now) = try useCase.value(key) else {
+                Issue.record("\(key) 宣告成數字，讀回來的卻不是"); return
+            }
+            // 挑另一端：預設坐在下界時就用上界，其餘一律用下界。
+            let pick = now == range.lowerBound ? range.upperBound : range.lowerBound
+            try #require(pick != now, "\(key) 的探針等於預設，這一列會變成恆真句")
+            probe = String(pick)
+        case .choice(let allowed):
+            guard case .text(let now) = try useCase.value(key) else {
+                Issue.record("\(key) 宣告成 choice，讀回來的卻不是"); return
+            }
+            probe = try #require(allowed.first { $0 != now },
+                                 "\(key) 只有一個合法值，弄不髒它")
+        case .boolean, .hotkey, .packID:
+            // 停下而不是偷偷跳過：規則沒涵蓋的 kind 要先決定怎麼弄髒它，
+            // 略過它等於把這條測試退回它原本那個恆真的樣子。
+            Issue.record("\(key) 的 kind 不在這條規則的涵蓋範圍內"); return
+        }
+        try useCase.set(key, to: probe)
+    }
+
+    for key in SettingsForm.advancedKeys {
+        #expect(try !useCase.isAtDefault(key), "\(key) 沒被弄髒，它下面那個斷言是恆真的")
+    }
+
+    SettingsForm.resetAdvanced(useCase)
+
+    for key in SettingsForm.advancedKeys {
+        #expect(try useCase.isAtDefault(key), "\(key) 沒被還原")
+    }
+}
+
+/// 還原鍵按下去要收拾三樣東西：值、草稿、紅字。
+///
+/// 後兩樣不是順手——`reload()` **刻意不清**它們（它的註解說明了為什麼：重讀的
+/// 觸發者常常是 CLI），所以沒有人清的話，欄位會繼續顯示使用者按 ↺ 之前打的字，
+/// 而紅字會指著一個已經被還原掉的值。
+///
+/// `snapshot.values` 那一句就是 `reload()` 的守衛：值只有重讀才會進快照，
+/// 漏掉那一行的話畫面停在 1500，而磁碟上已經是預設值。
+@Test @MainActor func revertingAKeyAlsoDropsTheDraftAndTheComplaint() throws {
+    let harness = FormHarness()
+    try harness.settings.set("cat.speed", to: "1500")
+    harness.store.reload()
+    // 造出「打了字、被拒絕」的那個狀態：草稿與紅字同時在。
+    #expect(harness.store.submit("cat.speed", "99999") == false)
+    #expect(harness.store.snapshot.drafts["cat.speed"] == "99999")
+    #expect(harness.store.snapshot.errors["cat.speed"] != nil)
+    #expect(harness.changeNotifications == 0, "被拒絕的寫入不該通知")
+
+    // 另一個 key 也弄成同樣的狀態。還原一列**只能動那一列**——
+    // 把兩行 removeValue 寫成 removeAll 是很自然的手滑，而在補這幾行之前
+    // 那個突變不會讓任何測試轉紅（批次那條路有守衛，單鍵這條沒有）。
+    #expect(harness.store.submit("cat.scale", "9") == false)
+    #expect(harness.store.snapshot.drafts["cat.scale"] == "9")
+    #expect(harness.store.snapshot.errors["cat.scale"] != nil)
+
+    harness.store.reset("cat.speed")
+
+    #expect(try harness.settings.isAtDefault("cat.speed"), "值沒有被還原")
+    #expect(harness.store.snapshot.drafts["cat.speed"] == nil, "欄位還顯示他按 ↺ 之前打的字")
+    #expect(harness.store.snapshot.errors["cat.speed"] == nil, "紅字指著一個已經不存在的值")
+    #expect(harness.store.snapshot.drafts["cat.scale"] == "9", "還原一列不該清掉別列的草稿")
+    #expect(harness.store.snapshot.errors["cat.scale"] != nil, "還原一列不該清掉別列的紅字")
+    #expect(harness.store.snapshot.values["cat.speed"] == .number(900), "沒有重讀，畫面停在舊值")
+    #expect(harness.changeNotifications == 1, "還原是一種變更，要通知一次")
+}
+
+/// 範圍語意在 store 這一層的樣子：值、草稿、紅字**三樣都**只能動進階那些。
+///
+/// 主視窗那一半特別容易被未來的編輯弄壞——把清除迴圈換成
+/// `snapshot.drafts.removeAll()` 看起來更乾淨，而它會靜默清掉使用者正在
+/// 主視窗修的那個欄位。所以這裡對 `cat.scale` 的三個斷言是正向的：它們要求
+/// 那些東西**還在**。
+@Test @MainActor func revertingTheAdvancedPaneLeavesTheMainWindowAlone() throws {
+    let harness = FormHarness()
+    try harness.settings.set("cat.speed", to: "1500")   // 進階
+    try harness.settings.set("cat.scale", to: "1.5")    // 主視窗
+    harness.store.reload()
+    #expect(harness.store.submit("cat.speed", "99999") == false)
+    #expect(harness.store.submit("cat.scale", "9") == false)
+
+    harness.store.resetAdvanced()
+
+    #expect(try harness.settings.isAtDefault("cat.speed"), "進階項的值沒有被還原")
+    #expect(harness.store.snapshot.drafts["cat.speed"] == nil, "進階項的草稿沒被清掉")
+    #expect(harness.store.snapshot.errors["cat.speed"] == nil, "進階項的紅字沒被清掉")
+    #expect(harness.store.snapshot.values["cat.speed"] == .number(900), "沒有重讀，畫面停在舊值")
+
+    #expect(try !harness.settings.isAtDefault("cat.scale"), "主視窗的值被連帶還原了")
+    #expect(harness.store.snapshot.drafts["cat.scale"] == "9", "主視窗的草稿被連帶清掉了")
+    #expect(harness.store.snapshot.errors["cat.scale"] != nil, "主視窗的紅字被連帶清掉了")
+
+    #expect(harness.changeNotifications == 1, "整批只通知一次")
+}
