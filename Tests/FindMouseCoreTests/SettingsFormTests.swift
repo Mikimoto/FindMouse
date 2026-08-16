@@ -943,3 +943,81 @@ private let specWindowKeys = [
     let unpinned = inUse.subtracting(expected.keys).sorted()
     #expect(unpinned.isEmpty, "註冊表用了沒被釘住的 step：\(unpinned)")
 }
+
+// MARK: - 進階視窗的分組
+
+/// 分組是**重新排過的同一批 key**，所以「不重不漏」是它唯一的完整性條件：
+/// 漏一個就是那一列在畫面上不存在，重複一個就是同一個設定出現在兩組
+/// ——後者拖動其中一份，另一份不會跟著動。
+///
+/// 第二句**不是獨立的覆蓋**：`declaredKeys` 不可能有重複（真有的話
+/// `SettingsUseCase.init` 的 `Dictionary(uniqueKeysWithValues:)` 會先 trap），
+/// 所以第一句成立時第二句必然成立。留著是為了**訊息**——實測讓 `window.level`
+/// 落進每一組，兩句一起紅，而第一句吐的是兩串長陣列要人自己比對。
+@Test func advancedSectionsCoverExactlyTheAdvancedKeys() {
+    let useCase = SettingsUseCase(store: StubStore(),
+                                  catalog: StubCatalog(logicalHeight: 100))
+    let listed = SettingsForm.advancedSections(useCase).flatMap { $0.rows.map(\.key) }
+    #expect(listed.sorted() == SettingsForm.advancedKeys.sorted(), "不重不漏")
+    #expect(listed.count == Set(listed).count, "同一個 key 出現在兩組")
+}
+
+/// 兩件不同的事，所以分成兩個斷言。
+///
+/// 前一句是 `advancedGroups` 自己的合約：畫面順序就是 `CaseIterable` 的順序
+/// （`AdvancedGroup` 的註解），而這個函式必須照那個順序回。把 `allCases` 反過來
+/// 跑實測只有這一句會紅——分組全部還在、每一組也都還有 key，錯的只有順序。
+///
+/// 後一句問的是**註冊表**：有沒有哪個分組沒人用。它不是前一句的副作用——
+/// 沒有它的話，一個沒人用的分組會紅在「順序」那一句上，而讀到那句話的人
+/// 會跑去查 `advancedGroups` 的排序，真正該改的地方在註冊表。
+///
+/// 沒人用的分組**判為錯誤**而不是放行：到得了它的只有兩種手動編輯——加了 case
+/// 還沒配 key，或把某組最後一個 key 升上 `windowKeys` 卻留著空 case——兩種都是
+/// 沒做完的改動，而畫面上的後果是一個底下什麼都沒有的標題。
+@Test func advancedSectionsAreOrderedAndNonEmpty() {
+    let useCase = SettingsUseCase(store: StubStore(),
+                                  catalog: StubCatalog(logicalHeight: 100))
+    let groups = SettingsForm.advancedSections(useCase)
+    #expect(groups.map(\.group) == AdvancedGroup.allCases, "順序要與 CaseIterable 一致")
+
+    let orphans = groups.filter { $0.rows.isEmpty }.map(\.group)
+    #expect(orphans.isEmpty, "這些分組沒有任何 key 用它：\(orphans)")
+}
+
+/// 同一組內的順序來自**註冊表的宣告順序**，不是 key 的字典序。
+///
+/// 斷言用標題而不是 key，因為要看的就是它讀起來對不對：字典序會排成
+/// 命中半徑 → 撲擊速度 → 撲擊觸發速度 → 後退距離 → 潛行距離 → 潛行逾時，
+/// 也就是效果排在觸發它的原因前面，而使用者是照著這個順序一格一格試的。
+@Test func rowsWithinAGroupFollowTheRegistryNotTheAlphabet() throws {
+    let useCase = SettingsUseCase(store: StubStore(),
+                                  catalog: StubCatalog(logicalHeight: 100))
+    let teaser = try #require(
+        SettingsForm.advancedSections(useCase).first { $0.group == .teaser })
+    #expect(teaser.rows.map(\.presentation.title)
+            == ["潛行距離", "潛行逾時", "撲擊觸發速度", "撲擊速度", "命中半徑", "後退距離"],
+            "逗貓棒那組要照 潛行 → 撲擊 → 命中 → 後退 的因果順序")
+}
+
+/// 每一列的欄位都是**各自算的**。寫成常數的話畫面上整欄會一致地錯，
+/// 而一致的錯看起來像對的（整排都不顯示還原鍵、或整排都顯示）。
+///
+/// 走 `reload()` 而不是直接呼叫 `advancedSections`：View 讀的是快照，
+/// 漏接那一行的話函式再正確畫面也是空的——兩個 `#require` 就是那條線的守衛，
+/// 快照沒填的話它們先掛。
+@Test @MainActor func theSnapshotCarriesEveryAdvancedRowWithItsOwnState() throws {
+    let harness = FormHarness()
+    try harness.settings.set("spotlight.margin", to: "48")   // 預設是 24
+    harness.store.reload()
+
+    let rows = harness.store.snapshot.advancedSections.flatMap(\.rows)
+
+    let edited = try #require(rows.first { $0.key == "spotlight.margin" })
+    #expect(edited.isAtDefault == false, "剛改過的那一列不該說自己是預設")
+    #expect(edited.presentation.title == "邊界留白")
+    #expect(edited.kind == .number(0...200))
+
+    let untouched = try #require(rows.first { $0.key == "spotlight.feather" })
+    #expect(untouched.isAtDefault, "沒動過的那一列跟著鄰居一起變成「改過」了")
+}

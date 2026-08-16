@@ -30,8 +30,16 @@ public enum SettingsForm {
 
     /// 「進階設定…」要列的其餘項目。**推導而不是手抄**：
     /// 手抄的清單在有人往註冊表加設定時會靜默過時，而少列一項不會有任何訊號。
+    ///
+    /// 順序是註冊表的**宣告順序**，所以這裡讀 `registry` 而不是 `declaredKeys`。
+    /// 後者的字典序會把逗貓棒那組排成「命中半徑 → 撲擊速度 → 撲擊觸發速度 →
+    /// 後退距離 → 潛行距離 → 潛行逾時」——效果排在觸發它的原因前面，而作者在
+    /// 註冊表裡寫下的是因果順序（潛行 → 撲擊 → 命中 → 後退）。
+    /// `rowsWithinAGroupFollowTheRegistryNotTheAlphabet` 釘住它。
+    ///
+    /// **`declaredKeys` 不動**：它的字典序是 `config get` 列表的樣子，是另一回事。
     public static var advancedKeys: [String] {
-        SettingsUseCase.declaredKeys.filter { !windowKeys.contains($0) }
+        SettingsUseCase.registry.map(\.key).filter { !windowKeys.contains($0) }
     }
 
     /// 「進階設定…」的一列：可以直接貼進終端機的命令，加上值域說明。
@@ -52,6 +60,60 @@ public enum SettingsForm {
             return AdvancedEntry(key: key,
                                  command: "findmouse config set \(key) \(value)",
                                  range: text(for: kind))
+        }
+    }
+
+    /// 進階視窗的一列。
+    ///
+    /// **目前還沒有任何 View 讀它**——現在畫在設定視窗裡的那個「進階設定…」
+    /// 摺疊區走的是 `advancedEntries`（每列一行可複製的命令）。兩者會並存到
+    /// 進階視窗做完為止，屆時這兩份一起收掉。
+    ///
+    /// 沒有 `range`：值域說明由 `text(for: kind)` 當場算，而 `kind` 就在同一個
+    /// 結構裡。存一份衍生欄位只是多一個會與來源分岔的地方。
+    public struct AdvancedRow: Sendable, Equatable {
+        public let key: String
+        public let presentation: AdvancedPresentation
+        public let kind: SettingKind
+        /// false 時那一列才顯示還原鍵
+        public let isAtDefault: Bool
+    }
+
+    public struct AdvancedSection: Sendable, Equatable {
+        public let group: AdvancedGroup
+        public let rows: [AdvancedRow]
+    }
+
+    /// 依 `AdvancedGroup.allCases` 的順序分組——那個順序就是畫面順序。
+    /// 組內順序見 `advancedKeys`（註冊表的宣告順序，`filter` 原樣保留它）。
+    ///
+    /// **沒有任何 key 用的分組不濾掉**，即使那會讓畫面多一個底下空無一物的標題。
+    /// 曾經寫成濾掉，實測拿掉那一行整批測試全綠：分組來自靜態註冊表，呼叫端換掉
+    /// store 或 catalog 都影響不到它，所以沒有人造得出空組，那一行是走不到、也
+    /// 無法被證明有效的程式碼。守衛改放在 `advancedSectionsAreOrderedAndNonEmpty`
+    /// ——它在註冊表長出沒人用的分組時會紅，而且說得出是哪一個。與
+    /// `SliderSpec.decimals(of:)` 對指數形式的處置同一個判斷。
+    ///
+    /// **列先一次建好再分組**，不是每組各掃一遍 `advancedKeys`：後者會把
+    /// `advancedKeys` 求值五次，而它每次都重建整份 `registry`（連同每個 spec 的
+    /// closure，見 `presentation(of:)` 的註解）。省下來的是那四次重建與四輪
+    /// 字典查詢；`isAtDefault` 兩種寫法都只跑每個 key 一次，因為舊版的分組條件
+    /// 排在那兩個查詢**之前**就短路了。
+    ///
+    /// 三個 `guard` 是另一回事：key 來自註冊表，三個查詢都不會落空
+    /// （`presentation` 的完整性另有 `everyAdvancedKeyHasPresentation` 守）。
+    /// 真的落空時那一列會安靜消失，而 `advancedSectionsCoverExactlyTheAdvancedKeys`
+    /// 會抓到——與 `advancedEntries` 同一個處理方式。
+    public static func advancedSections(_ settings: SettingsUseCase) -> [AdvancedSection] {
+        let rows = advancedKeys.compactMap { key -> AdvancedRow? in
+            guard let presentation = settings.presentation(of: key),
+                  let kind = try? settings.kind(of: key),
+                  let isDefault = try? settings.isAtDefault(key) else { return nil }
+            return AdvancedRow(key: key, presentation: presentation, kind: kind,
+                               isAtDefault: isDefault)
+        }
+        return AdvancedGroup.allCases.map { group in
+            AdvancedSection(group: group, rows: rows.filter { $0.presentation.group == group })
         }
     }
 
@@ -247,6 +309,7 @@ public final class SettingsFormStore {
         /// 非 nil 時設定視窗要彈確認框。
         public var packConfirmation: PendingPackImport?
         public var advanced: [SettingsForm.AdvancedEntry] = []
+        public var advancedSections: [SettingsForm.AdvancedSection] = []
 
         public init() {}
 
@@ -335,6 +398,7 @@ public final class SettingsFormStore {
             }
             snapshot.values = values
             snapshot.advanced = SettingsForm.advancedEntries(settings)
+            snapshot.advancedSections = SettingsForm.advancedSections(settings)
         }
         snapshot.currentPackID = currentPackID()
         snapshot.packs = PackChoice.choices(packs: packs(), current: snapshot.currentPackID,
