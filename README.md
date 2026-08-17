@@ -19,10 +19,15 @@ brew install --cask findmouse
 拖進「應用程式」。兩條路拿到的是同一個 `.app`：簽好章、notarize 過，Gatekeeper
 不會擋，也不必右鍵開啟。
 
-> 票（notarization ticket）釘在 `.dmg` 上，**不在 `.app` 裡**。兩條路都一樣：從 dmg
-> 拖出來的、以及 brew 抽出來的，`.app` 本身都沒有票。它照樣過 Gatekeeper（實測
-> `spctl` 回 `accepted / Notarized Developer ID`），因為系統查得到線上紀錄——但
-> 「離線首次啟動會不會被擋」本專案還沒測過。
+> **v0.5.0（含）以前發出去的 `.app` 裡沒有票**（notarization ticket）——票只釘在
+> `.dmg` 上，而兩條安裝路徑拿到的都是從 dmg 取出來的 `.app`。它照樣過 Gatekeeper
+> （實測 `spctl` 回 `accepted / Notarized Developer ID`），因為系統上網查得到紀錄；
+> 但 Apple 自己的 `syspolicy_check` 對它回 `Notary Ticket Missing / Severity: Fatal`，
+> 而離線首次啟動會不會被擋，本專案沒有能重現的機器可以測。
+>
+> `Scripts/release.sh` 已改成 `.app` 與 `.dmg` 各送審一次、兩邊都釘票，**下一版起
+> 兩條路拿到的 `.app` 都自帶票**。已經裝好的 v0.5.0 想現在就補：
+> `xcrun stapler staple /Applications/FindMouse.app`（票在 Apple 那裡，不必重新下載）。
 
 更新是 `brew upgrade --cask findmouse`。
 
@@ -106,7 +111,8 @@ xcrun notarytool store-credentials findmouse-release
 發布是五步，**順序有相依**：
 
 ```sh
-# 1. 建置 → 簽 → notarize → staple → 12 條驗收 → 打本機 tag
+# 1. 建置 → 簽 → notarize .app → 釘票 → 打 dmg → notarize dmg → 釘票 → 驗收 → 打本機 tag
+#    要等 Apple 兩次（票按 cdhash 發，.app 與 dmg 各要一張）
 mise run release -- <版本> --profile findmouse-release
 
 # 2. 推 tag。release.sh 刻意不自動推：本地打錯是 git tag -d 一行，
@@ -130,8 +136,9 @@ git push origin dev:main
 
 只驗一個既有的 dmg：`Scripts/release.sh --verify-only <某個.dmg>`
 
-那 12 條驗收都只驗 `.dmg`。**它們證明不了 `.app` 被抽出來之後還過不過**——
-使用者拿到的其實是那個 `.app`（見〈安裝〉那則關於票的說明）。
+驗收會掛載 dmg、對**裡面那個 `.app`** 也跑一遍（包含 `stapler validate` 與 Apple 的
+`syspolicy_check distribution`）——因為使用者實際執行的是它，不是 dmg。拿 v0.5.0 的
+dmg 當正控制實測過：只有那兩條 `.app` 相關的紅，其餘全綠。
 
 ### `main` 什麼時候可以動
 
