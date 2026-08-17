@@ -69,6 +69,13 @@ check() {
 require_gatekeeper_on() {
     spctl --status 2>&1 | grep -q 'assessments enabled' || die \
         "這台機器的 Gatekeeper 評估是關的（spctl --status），兩條 spctl 驗收會一律回 accepted、等於沒驗。先跑 sudo spctl --master-enable 再重來。"
+    # `syspolicy_check` 是 macOS 14 起才有的。它不在的話 `check()` 會如實報紅
+    # （exit 127 ＋ command not found），所以不會靜默放行——但那個紅看起來像
+    # 「產物有問題」，而實際上是「這台機器驗不了」，兩個結論相反。在這裡先問一次，
+    # 讓訊息講對是哪一種。放這支而不是塞進那條驗收裡：這支的職責就是
+    # 「先確認這台機器驗得動」，Gatekeeper 那條也是同一個理由。
+    command -v syspolicy_check >/dev/null 2>&1 || die \
+        "找不到 syspolicy_check（macOS 14 起內建）。它是唯一不吃 Gatekeeper 評估快取的那條驗收，缺了它等於少驗「.app 有沒有票」。在 macOS 14 以上的機器發布。"
 }
 
 # 送一個產物去 notarize 並確認 Apple 判 Accepted。跑完之後那個 cdhash 的票就
@@ -99,7 +106,10 @@ notarize() {
         die "notarize 失敗（${label}，submission ${id:-未知}）"
     fi
     rm -f "${log}"
-    ok "Accepted（${label}，submission ${id}）"
+    # `${id:-未知}` 與失敗路徑同一個寫法。grep 撈不到 UUID（notarytool 改格式）時，
+    # 裸 `${id}` 會印成「submission 」——一個看起來只是排版怪的空白，而它正好
+    # 出現在事後唯一能拿去查這次送審的識別碼上。
+    ok "Accepted（${label}，submission ${id:-未知}）"
 }
 
 verify_dmg() {
