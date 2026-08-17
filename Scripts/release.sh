@@ -61,21 +61,67 @@ check() {
 }
 
 # 掛起來驗 dmg 裡面那個 .app——驗的是使用者真的會拿到的東西，不是手邊那份
-# staging 副本。六條都跑完才回報，不在第一條就 die：只紅一條與六條全紅
+# staging 副本。**每一條都跑完才回報**，不在第一條就 die：只紅一條與全部都紅
 # 是完全不同的診斷，而前者常常代表後面幾條根本沒執行。
 # spctl 在「assessments disabled」下對任何東西都回 accepted（man spctl：assessment
 # APIs "always report success"）。開發機為了測未簽版本關掉 Gatekeeper 是常見的事，
-# 而症狀是六條驗收裡的兩條**靜默變成恆真句**——正好是這份驗收最該防的東西。
+# 而症狀是那兩條 spctl 驗收**靜默變成恆真句**——正好是這份驗收最該防的東西。
 require_gatekeeper_on() {
     spctl --status 2>&1 | grep -q 'assessments enabled' || die \
         "這台機器的 Gatekeeper 評估是關的（spctl --status），兩條 spctl 驗收會一律回 accepted、等於沒驗。先跑 sudo spctl --master-enable 再重來。"
+    # `syspolicy_check` 是 macOS 14 起才有的。它不在的話 `check()` 會如實報紅
+    # （exit 127 ＋ command not found），所以不會靜默放行——但那個紅看起來像
+    # 「產物有問題」，而實際上是「這台機器驗不了」，兩個結論相反。在這裡先問一次，
+    # 讓訊息講對是哪一種。放這支而不是塞進那條驗收裡：這支的職責就是
+    # 「先確認這台機器驗得動」，Gatekeeper 那條也是同一個理由。
+    command -v syspolicy_check >/dev/null 2>&1 || die \
+        "找不到 syspolicy_check（macOS 14 起內建）。它是唯一不吃 Gatekeeper 評估快取的那條驗收，缺了它等於少驗「.app 有沒有票」。在 macOS 14 以上的機器發布。"
+}
+
+# 送一個產物去 notarize 並確認 Apple 判 Accepted。跑完之後那個 cdhash 的票就
+# 存在了，呼叫端可以 staple。抽成函式是因為現在要送兩次（.app 與 dmg），
+# 而這一段的判準有兩個容易寫錯的地方，複製一份就是複製兩個坑。
+notarize() {
+    local target="$1" label="$2" log id
+    log="$(mktemp)"
+    xcrun notarytool submit "${target}" --keychain-profile "${PROFILE}" --wait 2>&1 \
+        | tee "${log}" || true
+    # `|| true` 不是防禦性裝飾：`set -euo pipefail` 下 grep 沒中會讓**這一行的賦值**
+    # 回非零，整支當場死掉——實測 exit 1 且**零輸出**。而它就在 `status: Accepted`
+    # 判定之前，所以症狀是「notarize 明明成功，腳本卻無聲無息地結束」。
+    # 抓不到就讓 id 是空字串，交給下面的 `${id:-未知}`。
+    id="$(grep -Eo '[0-9a-f]{8}-([0-9a-f]{4}-){3}[0-9a-f]{12}' "${log}" | head -1 || true)"
+    # 不拿 exit code 當判準。notarytool 對「命令自己失敗」是有紀律的（實測：profile
+    # 不存在回 69、檔案不存在回 64、合約過期回 403 且非零），但「送出成功、而 Apple
+    # 判 Invalid」會不會也回非零，本專案**還沒有樣本**。看它印出來的 status 在兩種
+    # 情況下都對，不必賭一個沒驗過的前提。第一次真的踩到 Invalid 時順手記下它的
+    # exit code，那時這段註解才有資格講得更肯定。
+    if ! grep -qE 'status: *Accepted' "${log}"; then
+        printf '\033[31mnotarize 沒過（%s）。以下是 Apple 給的原因：\033[0m\n' "${label}"
+        # 失敗最常見的回覆只有一個 request id，要再下一個指令才看得到原因。
+        # 「還要再問一次才知道為什麼」不留給未來的自己。
+        # `|| true`：在 set -e ＋ pipefail 底下，這條管線失敗（憑證過期、斷網）會讓
+        # 整支當場終止，下面的 die 與 submission id 那句話就永遠印不出來——失敗診斷
+        # 反而被失敗吃掉。這正是檔頭記過的同一個坑。
+        if [[ -n "${id}" ]]; then
+            xcrun notarytool log "${id}" --keychain-profile "${PROFILE}" 2>&1 | sed 's/^/  /' || true
+        fi
+        rm -f "${log}"
+        die "notarize 失敗（${label}，submission ${id:-未知}）"
+    fi
+    rm -f "${log}"
+    # `${id:-未知}` 與失敗路徑同一個寫法。grep 撈不到 UUID（notarytool 改格式）時，
+    # 裸 `${id}` 會印成「submission 」——一個看起來只是排版怪的空白，而它正好
+    # 出現在事後唯一能拿去查這次送審的識別碼上。
+    ok "Accepted（${label}，submission ${id:-未知}）"
 }
 
 verify_dmg() {
-    # `req` 要 local。原本它沒宣告、名字又和後半段存 submission id 的那個變數
-    # 撞在一起，兩個都是全域。今天沒事只因為執行順序剛好（驗收跑在最後一次用到
-    # submission id 之後）；哪天有人在結尾的成功訊息裡多印一次 id，印出來的會是
-    # codesign 的 requirement 字串——而那看起來只是「訊息怪怪的」，不像 bug。
+    # `req` 要 local。它曾經沒宣告，而當時存 submission id 的那個變數也是全域、
+    # 名字還撞在一起；沒出事只因為執行順序剛好。那個特定的撞法現在不存在了
+    # （submission id 收進 `notarize()` 成了 local `id`），但這一行留著——
+    # 這支腳本裡每個函式都會被呼叫兩次以上，靠「順序剛好」活著的東西遲早會死，
+    # 而症狀是印出一個怪字串，看起來不像 bug。
     local dmg="$1" mnt app rc=0 req
     mnt="$(mktemp -d)"
     hdiutil attach "${dmg}" -readonly -nobrowse -mountpoint "${mnt}" >/dev/null 2>&1 \
@@ -103,6 +149,18 @@ verify_dmg() {
         done < <(/usr/bin/find "${app}/Contents/Resources" -maxdepth 1 -name '*.bundle' 2>/dev/null)
         check "spctl app（Gatekeeper 對 app 的判定）" \
               spctl -a --no-cache -vvv -t exec "${app}" || rc=1
+        # 使用者最後執行的是**這個 .app**，不是 dmg。它自己沒有票的話，離線首次
+        # 啟動就得靠系統上網查——而那正是漏 staple 最賤的症狀：本機測都過。
+        # 2026-08-17 實測 v0.5.0：dmg 有票、裡面的 .app 沒有，
+        # 而 `stapler validate` 對兩者的 exit code 分得開（0 / 65）。
+        check "stapler validate app（拖出來那份也要有票）" \
+              xcrun stapler validate "${app}" || rc=1
+        # Apple 自己的發布就緒檢查，與上一條獨立：它讀的是整份 bundle 的多項條件，
+        # 而且**不吃 Gatekeeper 的評估快取**（spctl 那兩條會）。同日實測對沒票的
+        # .app 回 exit 70 並明寫 `Notary Ticket Missing / Severity: Fatal`，
+        # 對有票的回 0。macOS 14 起內建。
+        check "syspolicy_check（Apple 的發布就緒判定）" \
+              syspolicy_check distribution "${app}" || rc=1
     fi
     # -t open 是給 dmg 的；-t install 是給 .pkg 的，型別用錯會得到看似通過的
     # 無意義結果。這一條是使用者實際遇到的那一關。
@@ -112,7 +170,7 @@ verify_dmg() {
     check "spctl dmg（使用者實際遇到的那一關）" \
           spctl -a --no-cache -vvv -t open --context context:primary-signature "${dmg}" || rc=1
     check "stapler validate（票沒釘上，使用者離線就被擋）" \
-          stapler validate "${dmg}" || rc=1
+          xcrun stapler validate "${dmg}" || rc=1
 
     hdiutil detach "${mnt}" -quiet >/dev/null 2>&1 \
         || hdiutil detach "${mnt}" -force -quiet >/dev/null 2>&1 || true
@@ -120,12 +178,14 @@ verify_dmg() {
     return "${rc}"
 }
 
-# 第二輪：對加了隔離屬性的**副本**再跑一次同樣六條。
+# 第二輪：對加了隔離屬性的**副本**再跑一次同樣那一組。
 #
 # 對副本做是因為原檔加了再拿掉，殘留的 xattr 會讓下一次驗證的前提悄悄變成
 # 不同的東西。
 #
-# **這一輪目前沒有被證明有鑑別力。** 2026-08-11 拿三種產物各實測一次（六條版本；
+# **這一輪目前沒有被證明有鑑別力。** 2026-08-11 拿三種產物各實測一次（**當時是六條**，
+# 2026-08-17 加了 stapler validate app 與 syspolicy_check 之後是八條，下面的數字
+# 沒有重量過、不要拿去對現在的輸出；
 # 前一次量的是加巢狀 bundle 那條之前的五條版本，數字已作廢），兩輪的結果完全相同：
 #   完全沒簽          → 兩輪都 6 紅
 #   簽了但沒送審      → 兩輪都 4 綠 2 紅（spctl dmg 回 source=Unnotarized Developer ID、
@@ -141,7 +201,7 @@ verify_quarantined() {
     cp "${dmg}" "${tmp}"
     xattr -w com.apple.quarantine "0081;00000000;Safari;$(uuidgen)" "${tmp}"
     # 讀回來確認屬性真的在。少了這一步，`cp` 或 `xattr -w` 失敗時第二輪會在一個
-    # **沒有隔離屬性**的副本上跑完六條、全部通過，卻仍掛在「已加隔離屬性」的標題
+    # **沒有隔離屬性**的副本上整組跑完、全部通過，卻仍掛在「已加隔離屬性」的標題
     # 底下回報——而這一輪正是整個驗收唯一測得到「使用者從網路下載會不會被擋」的
     # 地方（前一輪在本機幾乎必過）。那會讓最重要的那條變成沒有內容的恆真句。
     xattr -p com.apple.quarantine "${tmp}" >/dev/null 2>&1 || {
@@ -171,7 +231,7 @@ fi
 [[ "${MODE}" == dry || -n "${PROFILE}" ]] \
     || die "要給 --profile <名稱>。先跑一次：xcrun notarytool store-credentials <名稱>"
 
-say "1／10 工作樹與版本"
+say "1／12 工作樹與版本"
 # 版本號會進檔名（`rm -f "${DMG}"` 打得到它）、dmg 卷標、與 Info.plist。
 # 沒有 shell injection 的風險（全程雙引號、無 eval），但 `0.2.0/../../x` 這種值
 # 會讓那個 rm 打到 build/ 之外，而且產物標籤與 plist 會對不起來。
@@ -204,11 +264,11 @@ ok "${VERSION}（build ${BUILD_NUMBER}）@ ${SHA}"
 # Xcode 27 還是 beta。等正式版出來要送 App Store Connect 時，得知道先前發出去的
 # 哪幾版是 beta SDK 建的——那些不能直接送審。不手寫 DTXcode 之類的鍵：
 # Apple 會讀它們，手寫等於謊報。
-say "2／10 工具鏈"
+say "2／12 工具鏈"
 swift --version 2>&1 | sed 's/^/  /'
 xcodebuild -version 2>&1 | sed 's/^/  /'
 
-say "3／10 · 4／10 建置與組裝"
+say "3／12 · 4／12 建置與組裝"
 rm -rf "${STAGE}"
 mkdir -p "${STAGE}"
 APP_DIR="${STAGE}/FindMouse.app" Scripts/make-app.sh release >/dev/null
@@ -285,7 +345,7 @@ if [[ "${MODE}" == dry ]]; then
     exit 0
 fi
 
-say "5／10 簽章"
+say "5／12 簽章"
 # 由內而外簽。SwiftPM 給資源 bundle 蓋的是 ad-hoc 章（實測
 # `codesign -dv` 回 Signature=adhoc、Identifier=findmouse.FindMouseAdapters.resources），
 # 留著它會讓外層的 Developer ID 簽章包著一個非 Developer ID 的巢狀 bundle。
@@ -299,10 +359,37 @@ done < <(/usr/bin/find "${APP}/Contents/Resources" -maxdepth 1 -name '*.bundle' 
 codesign --force --options runtime --timestamp --sign "${IDENTITY}" "${APP}"
 ok "已簽 ${IDENTITY}"
 
-say "6／10 打包 dmg"
-# 為什麼是 dmg 不是 zip：**票釘不釘得上**。zip 不能 staple，流程會變成
-# 「簽 → 壓 → notarize → staple 裡面的 .app → 重壓」，多一次拆裝、多一個漏掉
-# 最後那步的機會。而漏 staple 的症狀很賤——本機測都過，使用者離線時被擋。
+say "6／12 notarize .app（第一次等 Apple）"
+# **兩個產物都要各自送審一次，因為票是按 cdhash 發的。**
+#
+# 送 dmg 時 Apple 也會替裡面的 .app 發一張票（2026-08-17 實測：v0.5.0 只送過
+# dmg，事後直接對 .app 跑 `stapler staple` 就成功了）。但那救不了流程——票要等
+# 送審完才存在，而 .app 一旦被釘票，用它重打的 dmg 就是新的 cdhash、又得再送
+# 一次。所以順序只能是「先釘 .app，再拿釘好的去打 dmg」。
+#
+# 交出去的是 zip 而不是 .app 本身：notarytool 只吃 zip／dmg／pkg。zip 只是運輸
+# 工具，**票是釘在 .app 上**，所以送完就丟。要用 `ditto -c -k --keepParent`
+# 而不是 `zip`——後者不保留 symlink 與 extended attributes，簽章會在 Apple 那側
+# 驗不過。
+APP_ZIP="${ROOT}/build/FindMouse-${VERSION}-${SHA}-app.zip"
+rm -f "${APP_ZIP}"
+ditto -c -k --keepParent "${APP}" "${APP_ZIP}"
+notarize "${APP_ZIP}" ".app"
+rm -f "${APP_ZIP}"
+
+say "7／12 staple .app"
+xcrun stapler staple "${APP}"
+# 立刻斷言，不要等到第 11 步：這一步失敗的話，後面打出來的 dmg 裡是一份沒有票
+# 的 .app，而那個 dmg 自己的票會讓 9／12 與 10／12 看起來一切正常。
+# 票寫進 `Contents/CodeResources`，不在簽章封印範圍內——實測釘票前後 cdhash
+# 逐字相同，`codesign --verify --deep --strict` 仍回 valid。
+check "stapler validate app（票真的釘上去了）" xcrun stapler validate "${APP}" \
+    || die "票沒釘上 .app。繼續下去會打出一個內含無票 .app 的 dmg。"
+
+say "8／12 打包 dmg"
+# 為什麼交給使用者的是 dmg 不是 zip：**zip 不能 staple**。使用者拿到的那個容器
+# 自己要有票，否則離線連掛載都可能被擋。上面那次 zip 是送審用的運輸工具，不是
+# 交付物——它送完就刪了。
 DMG="${ROOT}/build/FindMouse-${VERSION}-${SHA}.dmg"
 rm -f "${DMG}"
 ln -sfn /Applications "${STAGE}/Applications"
@@ -311,36 +398,13 @@ hdiutil create -volname "FindMouse ${VERSION}" -srcfolder "${STAGE}" \
 codesign --force --timestamp --sign "${IDENTITY}" "${DMG}"
 ok "$(basename "${DMG}")"
 
-say "7／10 notarize（要等 Apple，通常數分鐘）"
-SUBMIT_LOG="$(mktemp)"
-xcrun notarytool submit "${DMG}" --keychain-profile "${PROFILE}" --wait 2>&1 \
-    | tee "${SUBMIT_LOG}" || true
-SUBMISSION_ID="$(grep -Eo '[0-9a-f]{8}-([0-9a-f]{4}-){3}[0-9a-f]{12}' "${SUBMIT_LOG}" | head -1)"
-# 不拿 exit code 當判準。notarytool 對「命令自己失敗」是有紀律的（實測：profile
-# 不存在回 69、檔案不存在回 64、合約過期回 403 且非零），但「送出成功、而 Apple
-# 判 Invalid」會不會也回非零，本專案**還沒有樣本**。看它印出來的 status 在兩種
-# 情況下都對，不必賭一個沒驗過的前提。第一次真的發布時順手記下 Invalid 的 exit
-# code，那時這段註解才有資格講得更肯定。
-if ! grep -qE 'status: *Accepted' "${SUBMIT_LOG}"; then
-    printf '\033[31mnotarize 沒過。以下是 Apple 給的原因：\033[0m\n'
-    # 失敗最常見的回覆只有一個 request id，要再下一個指令才看得到原因。
-    # 「還要再問一次才知道為什麼」不留給未來的自己。
-    # `|| true`：在 set -e ＋ pipefail 底下，這條管線失敗（憑證過期、斷網）會讓
-    # 整支當場終止，下面的 die 與 submission id 那句話就永遠印不出來——失敗診斷
-    # 反而被失敗吃掉。這正是檔頭記過的同一個坑。
-    if [[ -n "${SUBMISSION_ID}" ]]; then
-        xcrun notarytool log "${SUBMISSION_ID}" --keychain-profile "${PROFILE}" 2>&1 | sed 's/^/  /' || true
-    fi
-    rm -f "${SUBMIT_LOG}"
-    die "notarize 失敗（submission ${SUBMISSION_ID:-未知}）"
-fi
-rm -f "${SUBMIT_LOG}"
-ok "Accepted（submission ${SUBMISSION_ID}）"
+say "9／12 notarize dmg（第二次等 Apple）"
+notarize "${DMG}" "dmg"
 
-say "8／10 staple"
+say "10／12 staple dmg"
 xcrun stapler staple "${DMG}"
 
-say "9／10 驗收"
+say "11／12 驗收"
 require_gatekeeper_on
 RC=0
 verify_dmg "${DMG}" || RC=1
@@ -348,7 +412,7 @@ say "再驗一次（已加隔離屬性，模擬從網路下載）"
 verify_quarantined "${DMG}" || RC=1
 [[ "${RC}" -eq 0 ]] || die "驗收沒過。這份產物不能發出去。"
 
-say "10／10 打 tag"
+say "12／12 打 tag"
 # 打在**驗收全過之後**：失敗的發布不留垃圾 tag。
 #
 # **tag 明確指向 ${SHA}，不是指向此刻的 HEAD。** 第 1 步的乾淨工作樹檢查是幾分鐘前

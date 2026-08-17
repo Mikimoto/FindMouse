@@ -181,14 +181,27 @@
   不必賭一個沒驗過的前提。
 - **驗收命令不接管線。** `codesign ... | tail` 的 exit code 來自 `tail`，接了就
   每一條都通過。`release.sh` 的 `check()` 把輸出寫檔再讀，就是為了這個。
-- **票只釘在 `.dmg` 上，`.app` 裡沒有票。** 三份都驗過都沒有（2026-08-14）：dmg 裡
-  那份、從 dmg 拖進 `/Applications` 那份、brew cask 抽出來那份。`release.sh` 那 12 條
-  驗收全部只驗 dmg，所以**它們證明不了使用者實際執行的那個 `.app`**。
-  現況能過 Gatekeeper（帶著 `com.apple.quarantine` 實測 `spctl` 回
-  `accepted / Notarized Developer ID`），因為系統查得到線上紀錄——但**離線首次啟動
-  沒有測過**，而那正是 spec 說「漏 staple 的症狀很賤」時擔心的情境。要補的話是多送
-  一次 notarize：先送 `.app`、staple 它，再用那份打 dmg 再送審。兩次提交換一個離線
-  保證，值不值得沒量過。
+- **票是按 cdhash 發的，所以 `.app` 與 `.dmg` 要各自送審一次。** v0.5.0 以前只送
+  dmg，於是**使用者實際執行的那個 `.app` 沒有票**——`syspolicy_check distribution`
+  對它回 `Notary Ticket Missing / Severity: Fatal`（2026-08-17 實測；那是 Apple
+  自己的發布就緒工具，macOS 14 起內建）。已在 `release.sh` 修掉：先把 `.app` 壓成
+  zip 送審、釘票，再用釘好的那份打 dmg 送第二次。
+
+  三件從文件看不出來、而且改變了成本估算的事：
+
+  1. **notarize dmg 時 Apple 連裡面的 `.app` 一起發票。** 所以已經發出去的版本
+     事後補得起來——直接對那份 `.app` 跑 `stapler staple` 就會成功，不必重發。
+     但這救不了流程：票要等送審完才存在，而 `.app` 一被釘票，用它重打的 dmg 就是
+     新的 cdhash、還是得再送一次。順序只能是「先釘 app，再打 dmg」。
+  2. **釘票不動 cdhash**（實測前後逐字相同）——票寫進 `Contents/CodeResources`，
+     不在簽章封印範圍內，`codesign --verify --deep --strict` 照樣過。
+  3. **`spctl` 會吃 Gatekeeper 的評估快取，`syspolicy_check` 不會。** 所以在一台
+     早就信任過這個 app 的機器上，「斷網再 `spctl` 一次」量不出東西，而
+     `syspolicy_check` 直接給答案。兩者的 exit code 都分得開
+     （`stapler validate` 0／65、`syspolicy_check` 0／70），可以直接當驗收判準。
+
+  `release.sh` 的驗收因此多了兩條（`stapler validate app`、`syspolicy_check`），
+  兩輪都跑。拿 v0.5.0 的 dmg 當正控制實測：**只有那兩條紅**、其餘全綠。
 - **Homebrew tap 在另一個 repo**（`Mikimoto/homebrew-findmouse`），發版收尾要手動同步，
   完整順序寫在 README 的〈自己發一份〉。動它之前先知道兩件事：
   `depends_on macos:` 的字串比較格式（`">= :sonoma"`）在 **cask 只是 deprecation 警告、
