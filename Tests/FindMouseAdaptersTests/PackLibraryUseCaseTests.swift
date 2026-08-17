@@ -615,3 +615,32 @@ private func libraryOverRealScan(_ packs: URL) -> PackLibraryUseCase {
     #expect(FileManager.default.fileExists(atPath: packs.appendingPathComponent("bar").path),
             "排在前面的那個不該被牽連")
 }
+
+/// 讀不到的來源要說「讀不到」，不能說「這裡面沒有 pack.json」。
+///
+/// **後者是與真相相反的一句話**：它宣稱來源的內容不對，而實際上我們根本沒看到
+/// 內容。沙盒下容器外的路徑正是這個形狀——`fileExists` 過、`opendir` 回 EPERM
+/// （2026-08-17 實測），於是後面每一步都看到一個空目錄。分不開的話，使用者會
+/// 去改一個沒有問題的 pack。
+///
+/// 用 `chmod 000` 構造：實測對**擁有者自己**也回 `access(R_OK) == false`。
+/// defer 要先 chmod 回去再刪，否則刪不掉。
+@Test func anUnreadableSourceSaysSoInsteadOfBlamingTheManifest() throws {
+    let root = try tempDir()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let packs = root.appendingPathComponent("Packs")
+    let source = root.appendingPathComponent("blocked")
+    try FileManager.default.createDirectory(at: source, withIntermediateDirectories: true)
+    try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: source.path)
+    defer { try? FileManager.default.setAttributes([.posixPermissions: 0o755],
+                                                   ofItemAtPath: source.path) }
+
+    let library = PackLibraryUseCase(packsDirectory: { packs }, installedPacks: { [] })
+    guard case let .failed(code, message) = library.install(source: source, force: false) else {
+        Issue.record("預期 failed"); return
+    }
+    #expect(code == .packSourceInvalid)
+    #expect(message.contains("讀不到"), "訊息是「\(message)」")
+    #expect(!message.contains("沒有 pack.json"),
+            "這正是要避免的那句話：它把權限問題說成內容問題")
+}

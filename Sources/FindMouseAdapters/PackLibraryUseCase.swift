@@ -65,6 +65,18 @@ public struct PackLibraryUseCase {
         guard FileManager.default.fileExists(atPath: source.path) else {
             return .failed(code: .packSourceInvalid, message: "找不到 \(source.path)。")
         }
+        // **`fileExists` 過不代表讀得到。** 沙盒下容器外的路徑是
+        // 「stat 成功、內容 EPERM」（2026-08-17 實測），於是後面那些步驟看到的是
+        // 一個空目錄，回報「這個來源裡沒有 pack.json」——一句**與真相相反**的話：
+        // 它說來源的內容不對，實際上是我們根本沒看到內容。
+        //
+        // 兩者的下一步完全不同（換一個來源／處理權限），所以在這裡分開。
+        guard FileManager.default.isReadableFile(atPath: source.path) else {
+            return .failed(code: .packSourceInvalid,
+                           message: "讀不到 \(source.path)（沒有權限）。"
+                               + "從命令列匯入時請用 findmouse pack install，不要自己把路徑送進來；"
+                               + "拖進設定視窗或雙擊 .fmpack 也可以。")
+        }
 
         // id 取自 manifest 而不是檔名：spec 第 6.2 節要求 id 與目錄名一致，
         // 而檔名可以是任何東西（下載時被瀏覽器改名是常態）。

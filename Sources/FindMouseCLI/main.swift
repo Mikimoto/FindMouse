@@ -62,15 +62,78 @@ do {
     fail(.invalidArgument, "\(error)", json: wantsJSON)
 }
 
+// --- 把來源搬進 App 的容器 ------------------------------------------------
+//
+// 沙盒 App 讀不到容器外的裸路徑（見 SourceStaging 的檔頭）。這一段把 pack 的
+// 來源複製進去，再把請求裡的路徑換成複製後的位置。
+//
+// **只在容器已經存在時做。** 容器由系統在 App 首次啟動時建立；不存在就代表
+// 這台機器上沒跑過沙盒版的 FindMouse，那時 CLI 該回的是 APP_NOT_RUNNING
+// （下面那個 send 自然會給），而不是自己去造一個 containermanagerd 不認得的目錄。
+var stagingToRemove: String?
+var requestToSend = parsed.request
+
+// **來源不存在時不搬。** 搬的話 `copyItem` 會拋，於是「路徑打錯」變成
+// 「複製失敗」——而那兩件事的 exit code 不同（spec 第 8.5 節：路徑不存在或
+// 無法讀取是 2，pack 本身不合格才是 1）。staging 是運輸機制，不該自己發明
+// 新的錯誤分類；原樣送出去，讓 App 給出它一直以來給的那個答案。
+if let source = SourceStaging.sourcePath(of: parsed.request),
+   FileManager.default.fileExists(atPath: source),
+   FileManager.default.fileExists(atPath: ControlSocket.containerData) {
+
+    // 先掃掉別人留下的 staging。CLI 被 SIGKILL 時下面那個 defer 不會跑，
+    // 所以「上一次沒收拾的」只能由下一次來清——判準是那個 pid 已經不在了。
+    let tmp = "\(ControlSocket.containerData)/tmp"
+    for name in (try? FileManager.default.contentsOfDirectory(atPath: tmp)) ?? [] {
+        guard let owner = SourceStaging.pid(ofStagingDirectoryNamed: name) else { continue }
+        // kill(pid, 0) 只做存在性檢查，不送信號。ESRCH ＝ 那個 process 沒了。
+        if kill(owner, 0) != 0 && errno == ESRCH {
+            try? FileManager.default.removeItem(atPath: "\(tmp)/\(name)")
+        }
+    }
+
+    let dir = SourceStaging.stagingDirectory(container: ControlSocket.containerData,
+                                             pid: getpid())
+    let staged = "\(dir)/\(URL(fileURLWithPath: source).lastPathComponent)"
+    do {
+        try? FileManager.default.removeItem(atPath: dir)
+        try FileManager.default.createDirectory(atPath: dir,
+                                                withIntermediateDirectories: true)
+        try FileManager.default.copyItem(atPath: source, toPath: staged)
+    } catch {
+        // 複製失敗要講得出是複製失敗。不講的話使用者拿到的是 App 對一個
+        // 不存在路徑的抱怨，而那指向完全錯誤的方向。
+        try? FileManager.default.removeItem(atPath: dir)
+        fail(.packSourceInvalid,
+             "把來源複製進 FindMouse 的沙盒容器時失敗：\(error.localizedDescription)",
+             json: parsed.json)
+    }
+    stagingToRemove = dir
+    requestToSend = SourceStaging.rewritten(parsed.request, sourcePath: staged)
+}
+
+/// 收拾 staging。**要等 App 回應之後**——它是在我們等回應的期間去讀那份複本的。
+///
+/// `@MainActor` 是必要的不是裝飾：top-level 程式碼隱含跑在 main actor 上，而
+/// top-level 宣告的 `func` **不繼承那個隔離**，於是它碰不到上面那個變數。
+@MainActor
+func removeStaging() {
+    if let dir = stagingToRemove { try? FileManager.default.removeItem(atPath: dir) }
+    stagingToRemove = nil
+}
+
 let line: Data
 do {
-    line = try WireClient.send(parsed.request, to: socketPath)
+    line = try WireClient.send(requestToSend, to: socketPath)
+    removeStaging()
 } catch let error as WireClient.ClientError {
+    removeStaging()
     // 對應住在 Output.failure（CLICore），因為 exit code 的分岔是對外契約，
     // 而 main.swift 沒有任何測試碰得到。
     let wire = Output.failure(for: error, socketPath: socketPath)
     fail(wire.code, wire.message, json: parsed.json)
 } catch {
+    removeStaging()
     fail(.appNotResponding, "連不上 FindMouse：\(error)", json: parsed.json)
 }
 
