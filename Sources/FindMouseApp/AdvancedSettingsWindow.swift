@@ -95,7 +95,7 @@ struct AdvancedSettingsRootView: View {
                 }
                 // 欄位這一**欄**的寬度寫死，比欄位本身寬。`SettingField` 的第二行
                 // 是錯誤訊息，而它比欄位長得多——caption 10pt 下實測
-                // 「「abc」不合法，要的是 300–3000」是 154.8pt，欄位是 72pt。
+                // 「「abc」不合法，要的是 500–6000」是 154.8pt，欄位是 72pt。
                 // 不封住的話，打錯一個值就把這一欄撐開、同一列的滑軌當場變短；
                 // 封住之後它改成換行。值域提示不會撐開（最長的「500–6000」50.8pt）。
                 SettingField(model: model, key: row.key, width: 72, focused: $focused)
