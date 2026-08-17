@@ -16,45 +16,41 @@ import SwiftUI
 /// 所有判斷都在 `SettingsFormStore`（Core，有測試）。這一層剩下版面配置，
 /// 而版面配置本來就只能用眼睛驗——`FindMouseApp` 沒有測試 target。
 @MainActor
-final class SettingsWindowController: NSObject, NSWindowDelegate {
+final class SettingsWindowController {
 
     private let model: SettingsViewModel
-    private var window: NSWindow?
+    private let hosted: HostedWindow
 
     init(store: SettingsFormStore, loginItem: LoginItemGateway) {
-        model = SettingsViewModel(store: store, loginItem: loginItem)
+        let model = SettingsViewModel(store: store, loginItem: loginItem)
+        self.model = model
+        // 兩個回呼捕的都是這個**區域變數**而不是 `self`：它們只需要 model，
+        // 繞過 self 就沒有「controller → HostedWindow → 回呼 → controller」這個環，
+        // 也就不必寫 `[weak self]`——那會讓提交在 controller 已經消失時靜默跳過，
+        // 而下面那段註解說的正是「不要靜默地丟掉使用者打的字」。
+        //
+        // 視窗本身仍然是延遲建立的（`HostedWindow.show()` 才生），這裡只是先把
+        // 「要怎麼生」記下來。
+        hosted = HostedWindow(
+            title: "FindMouse 設定",
+            onWillClose: {
+                // 打了字但沒按 Enter 就把視窗關掉——把還沒提交的都提交掉。
+                //
+                // 為什麼要這個而不是只靠失焦（`SettingsRootView` 的 `onChange(of: focused)`）：
+                // 關視窗時焦點變化不保證會走到那條路，而「我明明打了，關掉再開卻沒生效」
+                // 是完全沒有訊號的資料遺失。這裡重複提交是安全的——`commitDraft` 對
+                // 「沒有草稿」與「草稿等於現值」都是 no-op（`leavingAnUntouchedFieldWritesNothing`）。
+                //
+                // 非法值在這裡照樣被拒絕、照樣不寫入；使用者下次打開會看到那個紅字。
+                for key in SettingsForm.windowKeys { model.commitDraft(key) }
+            },
+            content: { NSHostingController(rootView: SettingsRootView(model: model)) })
     }
 
     func show() {
         // 每次打開都重讀：上次關掉之後 CLI 可能改過任何一個值
         model.reload()
-        if window == nil {
-            let hosting = NSHostingController(rootView: SettingsRootView(model: model))
-            let created = NSWindow(contentViewController: hosting)
-            created.title = "FindMouse 設定"
-            created.styleMask = [.titled, .closable]
-            // 關掉再打開要是同一個視窗。少了這行，關閉會釋放它而下次
-            // `makeKeyAndOrderFront` 打在已釋放的物件上。
-            created.isReleasedWhenClosed = false
-            created.delegate = self
-            created.center()
-            window = created
-        }
-        // `.accessory` 政策的 app 不會自動變成前景，不叫的話視窗收不到鍵盤輸入
-        NSApp.activate()
-        window?.makeKeyAndOrderFront(nil)
-    }
-
-    /// 打了字但沒按 Enter 就把視窗關掉——把還沒提交的都提交掉。
-    ///
-    /// 為什麼要這個而不是只靠失焦（`SettingsRootView` 的 `onChange(of: focused)`）：
-    /// 關視窗時焦點變化不保證會走到那條路，而「我明明打了，關掉再開卻沒生效」
-    /// 是完全沒有訊號的資料遺失。這裡重複提交是安全的——`commitDraft` 對
-    /// 「沒有草稿」與「草稿等於現值」都是 no-op（`leavingAnUntouchedFieldWritesNothing`）。
-    ///
-    /// 非法值在這裡照樣被拒絕、照樣不寫入；使用者下次打開會看到那個紅字。
-    func windowWillClose(_ notification: Notification) {
-        for key in SettingsForm.windowKeys { model.commitDraft(key) }
+        hosted.show()
     }
 
     /// 值被別人改了（CLI 的 `config set`／`config reset`）。
