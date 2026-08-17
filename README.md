@@ -39,7 +39,8 @@ brew install findmouse-cli
 ```
 
 移除用 `brew uninstall --cask findmouse`。**加 `--zap` 會連設定與你自己裝的 pack
-一起刪掉**（`~/Library/Application Support/FindMouse/`），要清乾淨才加。
+一起刪掉**（`~/Library/Containers/tw.com.deepthought.findmouse/`，v0.5.0 以前
+是 `~/Library/Application Support/FindMouse/`），要清乾淨才加。
 而**開機啟動的註冊連 `--zap` 都清不掉**——那筆紀錄在系統手上，`brew` 碰不到。
 先在設定視窗把那個勾關掉，或到「系統設定 → 一般 → 登入項目」移除。
 
@@ -134,6 +135,12 @@ git push origin dev:main
 「使用者從網路下載會不會被擋」的方式。任一條紅，整個發布視為失敗。它打的 tag 指向
 **被建置的那個 commit** 而不是當下的 HEAD（notarize 要等 Apple，那段窗口裡 HEAD 會動）。
 
+**v0.5.1 的 step 4 還要改一樣東西**：cask 的 `zap trash:` 目前列的是
+`~/Library/Application Support/FindMouse`，而沙盒化之後使用者的圖組與設定都住在
+`~/Library/Containers/tw.com.deepthought.findmouse`。兩個都要列——舊位置對
+「從 v0.5.0 以前升上來、但沒按過設定裡那個『搬過來…』」的人仍然有東西。
+沒改的話 `--zap` 會清掉一個空目錄然後說完成，而使用者的 pack 與設定原封不動留著。
+
 只驗一個既有的 dmg：`Scripts/release.sh --verify-only <某個.dmg>`
 
 驗收會掛載 dmg、對**裡面那個 `.app`** 也跑一遍（包含 `stapler validate` 與 Apple 的
@@ -165,8 +172,22 @@ findmouse pack remove <id>
 ```
 
 - 內建：`mycat`（出廠預設，就是那隻貓）、`test-blocks` 與 `test-blocks-tall`（開發用的色塊）
-- 使用者的：`~/Library/Application Support/FindMouse/Packs/<id>/`
+- 使用者的：`~/Library/Containers/tw.com.deepthought.findmouse/Data/Library/Application Support/FindMouse/Packs/<id>/`
 - 缺 flourish 只會降級，缺任一 teaser 則逗貓棒不可用，缺 core 則整套無效
+
+那一長串是 App 的沙盒容器。**不必自己打**——設定視窗的「顯示資料夾」會直接開到
+那裡。FindMouse 從 v0.5.1 起在沙盒裡跑，而沙盒把「應用程式支援」重導進容器。
+
+### 從 v0.5.0 以前升級上來，圖組不見了
+
+沒有不見，只是它們還在舊位置（`~/Library/Application Support/FindMouse/Packs/`），
+而沙盒版沒有權限讀那裡。**設定不受影響**——那是 macOS 自己搬的，圖組沒有人替你搬。
+
+打開設定，圖組清單下面會有一行「舊版放的圖組還在原本的位置」加一個「搬過來…」。
+按下去選那個資料夾（面板已經幫你指好了），按「授權並搬移」——那個選取動作就是
+授權，FindMouse 要有它才讀得到。新家已經有同 id 的一律跳過不覆蓋。
+
+舊資料夾**不會被刪**，確認搬好之後可以自己清掉。
 
 ### 裝別人做的一套
 
