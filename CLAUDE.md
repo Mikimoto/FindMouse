@@ -68,8 +68,9 @@
   `==> Removing App '/Applications/FindMouse.app'`（brew 的原句，路徑帶單引號）
   再把新版放進 `--appdir`，接著你為了收拾而跑的 `brew uninstall --cask findmouse`
   就把那份也清掉——使用者最後一個 app 都沒有，而且
-  正在跑的那個 process 從此指著一個被刪掉的 bundle（`pack list` 回空陣列，
-  因為它連自己的內建 pack 都讀不到了）。2026-08-17 實際造成過一次，
+  正在跑的那個 process 從此指著一個被刪掉的 bundle（`findmouse pack list --json`
+  的 `data.packs` 變成空陣列，因為它連自己的三個內建 pack 都讀不到了——那是
+  「這個實例已經廢了」最快的判別法）。2026-08-17 實際造成過一次，
   復原是 `brew install --cask <tap>/findmouse` 重裝，然後請使用者重開 App。
   真的要驗「裝進去長什麼樣」就直接 `brew upgrade --cask findmouse`——它結束在
   一個好的狀態，而不是一個要你自己收拾的狀態。
