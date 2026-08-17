@@ -379,8 +379,8 @@ private struct SettingsRootView: View {
                            width: CGFloat = 64) -> some View {
         HStack(alignment: .firstTextBaseline) {
             Text(title).frame(width: 150, alignment: .leading)
-            SettingSlider(model: model, key: key, slider: slider)
-            SettingField(model: model, key: key, width: width, focused: $focused)
+            SettingSlider(model: model, key: key, slider: slider, label: title)
+            SettingField(model: model, key: key, label: title, width: width, focused: $focused)
         }
     }
 
@@ -395,7 +395,7 @@ private struct SettingsRootView: View {
     private func stepperRow(_ key: String, title: String, unit: String) -> some View {
         HStack(alignment: .firstTextBaseline) {
             Text(title).frame(width: 150, alignment: .leading)
-            SettingField(model: model, key: key, width: 64, focused: $focused)
+            SettingField(model: model, key: key, label: title, width: 64, focused: $focused)
             Stepper {
                 Text(unit)
             } onIncrement: {
@@ -423,7 +423,7 @@ private struct SettingsRootView: View {
                            labels: [String: String]) -> some View {
         HStack {
             Text(title).frame(width: 150, alignment: .leading)
-            SettingChoice(model: model, key: key, labels: labels)
+            SettingChoice(model: model, key: key, labels: labels, label: title)
             Spacer()
         }
     }
@@ -447,7 +447,7 @@ private struct SettingsRootView: View {
     private func hotkeyRow(_ key: String, title: String) -> some View {
         HStack(alignment: .firstTextBaseline) {
             Text(title).frame(width: 150, alignment: .leading)
-            SettingField(model: model, key: key, focused: $focused)
+            SettingField(model: model, key: key, label: title, focused: $focused)
         }
     }
 
@@ -519,25 +519,36 @@ private struct SettingsRootView: View {
 /// **焦點收 `FocusState<String?>.Binding` 而不是自己開一個 `@FocusState`。**
 /// 提交時機掛在根 view 的單一 `onChange(of: focused)` 上（理由寫在那裡），
 /// 每個欄位自帶焦點狀態的話那條就看不到欄位之間的切換了。
+///
+/// **`label` 沒有預設值**：它畫不出來（標題是同一列的 `Text` 畫的，欄位自己
+/// 只有框），所以漏給的唯一症狀是 VoiceOver 唸「文字欄」而畫面完全正常——
+/// 沒有任何人看得出來。設成必填讓編譯器擋住，這是本檔三個控制項共用的做法。
 struct SettingField: View {
 
     @ObservedObject var model: SettingsViewModel
     let key: String
     let width: CGFloat?
+    /// 唸給 VoiceOver 的名字。呼叫端傳的是**它同一列已經在畫的那個字串**，
+    /// 所以不是第二份事實。
+    let label: String
     @FocusState.Binding var focused: String?
 
-    init(model: SettingsViewModel, key: String, width: CGFloat? = nil,
+    init(model: SettingsViewModel, key: String, label: String, width: CGFloat? = nil,
          focused: FocusState<String?>.Binding) {
         self.model = model
         self.key = key
         self.width = width
+        self.label = label
         self._focused = focused
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
+            // `TextField` 的 label 留空是刻意的（標題在同一列左邊，畫兩次會重複），
+            // 但空 label 不會讓 VoiceOver 去認旁邊那個 `Text`——要明講。
             TextField("", text: Binding(get: { model.snapshot.text(key) },
                                         set: { model.draft(key, $0) }))
+                .accessibilityLabel(label)
                 .monospacedDigit()
                 .frame(width: width)
                 .focused($focused, equals: key)
@@ -566,6 +577,9 @@ struct SettingSlider: View {
     @ObservedObject var model: SettingsViewModel
     let key: String
     let slider: AdvancedPresentation.SliderSpec
+    /// 同 `SettingField.label`。`Slider(value:in:step:)` 這個 init **沒有 label
+    /// 參數**，所以不補的話 VoiceOver 只唸得出值、唸不出這是什麼的值。
+    let label: String
 
     var body: some View {
         if case .number(let range)? = model.kind(of: key) {
@@ -581,6 +595,7 @@ struct SettingSlider: View {
                 // 不是這一支真的照這個公式量化。
                 set: { model.submit(key, number: ($0 * factor).rounded() / factor) }
             ), in: range, step: slider.step)
+            .accessibilityLabel(label)
         }
     }
 }
@@ -593,6 +608,9 @@ struct SettingChoice: View {
     let key: String
     /// rawValue → 中文標籤。
     let labels: [String: String]
+    /// 同 `SettingField.label`。`.labelsHidden()` 只藏畫面上的 label，
+    /// 它藏的是那個空字串——所以無障礙那一側同樣要明講。
+    let label: String
 
     var body: some View {
         if case .choice(let options)? = model.kind(of: key) {
@@ -607,6 +625,7 @@ struct SettingChoice: View {
             }
             .pickerStyle(.radioGroup)
             .labelsHidden()
+            .accessibilityLabel(label)
         }
     }
 }
