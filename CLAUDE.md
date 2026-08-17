@@ -21,9 +21,10 @@
 指令的**唯一真實來源是 `mise.toml`**——`mise tasks` 列得出來，這裡不重複抄，
 免得兩邊漂掉。常用的是 `mise run check`（unit ＋ 素材管線）與 `mise run e2e`。
 
-`mise.toml` **刻意沒有 `[tools]` 區段**：Swift 來自 Xcode（本機只能用 27.0 Beta 4，
-macOS 27 上跑不動 26.6），而 Python 必須維持系統那一份——`tools/` 的 Pillow 與
-SciPy 裝在它上面，讓 mise 換一個 python 進來會讓素材管線立刻找不到套件。
+`mise.toml` **刻意沒有 `[tools]` 區段**：Swift 來自 Xcode（本機只能用 27.0 的 beta，
+最後一個正式版 26.6 在 macOS 27 上跑不動），而 Python 必須維持系統那一份——`tools/`
+的 Pillow 與 SciPy 裝在它上面，讓 mise 換一個 python 進來會讓素材管線立刻找不到套件。
+要知道當下是哪一個 beta 就跑 `xcodebuild -version`，別在文件裡存第二份。
 
 - **`FindMouseApp` 沒有測試 target**。那一層的東西只有 `e2e.sh` 驗得到。
 - **`e2e.sh` 有三種結果**，第三種是「無法判定」。某些斷言需要獨占游標，使用者
