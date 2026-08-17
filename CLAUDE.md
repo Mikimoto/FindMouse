@@ -65,8 +65,9 @@
 
   **不要用 `brew install --cask --appdir="$(mktemp -d)"` 當沙盒。** 那條路只在
   cask **沒裝過**時是安全的；已經裝了的話 brew 把它當**升級**，會先
-  `Removing App '/Applications/FindMouse.app'` 再把新版放進 `--appdir`，接著你
-  為了收拾而跑的 `uninstall` 就把那份也清掉——使用者最後一個 app 都沒有，而且
+  `==> Removing App '/Applications/FindMouse.app'`（brew 的原句，路徑帶單引號）
+  再把新版放進 `--appdir`，接著你為了收拾而跑的 `brew uninstall --cask findmouse`
+  就把那份也清掉——使用者最後一個 app 都沒有，而且
   正在跑的那個 process 從此指著一個被刪掉的 bundle（`pack list` 回空陣列，
   因為它連自己的內建 pack 都讀不到了）。2026-08-17 實際造成過一次，
   復原是 `brew install --cask <tap>/findmouse` 重裝，然後請使用者重開 App。
