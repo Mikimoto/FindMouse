@@ -2,8 +2,9 @@
 #
 # **刻意沒有 [tools] 區段。** 兩個工具都不該由 mise 管：
 #
-# - Swift 來自 Xcode（本機是 27.0 Beta 4——macOS 27 上跑不動 26.6，這是環境
-#   約束不是選擇）。mise 管不到 Xcode，那是 `xcodes` 的事。
+# - Swift 來自 Xcode，而本機只能用 27.0 的 beta——最後一個正式版 26.6 在
+#   macOS 27 上跑不動，這是環境約束不是選擇。mise 管不到 Xcode，那是 `xcodes`
+#   的事。（不寫是哪一個 beta：那個號碼每次更新就爛掉一次，而它從來不是重點。）
 # - Python 必須維持系統那一份：`tools/` 的 Pillow 與 SciPy 裝在它上面，
 #   讓 mise 換一個 python 進來會讓 `tools/test_pipeline.py` 立刻找不到套件。
 #   `tools/README.md` 明文寫過「不建 venv、不寫 requirements.txt」是刻意決定，
