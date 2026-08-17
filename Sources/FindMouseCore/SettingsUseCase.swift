@@ -81,7 +81,7 @@ public struct AdvancedPresentation: Sendable, Equatable {
         ///
         /// 需要量化是量出來的：即使 `Slider` 帶了 `step`，它給的仍是
         /// `1.2999999999`，而那個字串會原封不動出現在 `config get` 裡
-        /// （`SettingsWindow.scaleRow` 的註解）。
+        /// （`SettingsWindow.sliderRow` 的註解）。
         public let fractionDigits: Int
 
         /// **位數從 `step` 推導，不另外收一個參數。**

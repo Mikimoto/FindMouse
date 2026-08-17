@@ -26,7 +26,9 @@ final class SettingsWindowController {
         self.model = model
         // 兩個回呼捕的都是這個**區域變數**而不是 `self`：它們只需要 model，
         // 繞過 self 就沒有「controller → HostedWindow → 回呼 → controller」這個環，
-        // 也就不必寫 `[weak self]`——那會讓提交在 controller 已經消失時靜默跳過，
+        // 也就不必寫 `[weak self]`——視窗由 `HostedWindow` 獨佔持有、它又由
+        // controller 獨佔持有，controller 沒了視窗就跟著沒了，關閉回呼不可能在
+        // self 已死時抵達；寫了也只是多一條走不到的靜默分支，
         // 而下面那段註解說的正是「不要靜默地丟掉使用者打的字」。
         //
         // 視窗本身仍然是延遲建立的（`HostedWindow.show()` 才生），這裡只是先把
@@ -337,20 +339,39 @@ private struct SettingsRootView: View {
 
     // MARK: - 數值
 
-    /// 範圍取自 `SettingKind`，不在這裡寫第二份 0.5...2.0（spec 第 9 節：值域只有一份）。
-    private var scaleRow: some View {
+    /// 滑軌 ＋ 欄位。範圍取自 `SettingKind`，不在這裡寫第二份（spec 第 9 節：
+    /// 值域只有一份）。
+    ///
+    /// **收 `SliderSpec` 而不是 `step` 與位數兩個參數**：兩個各自填的旋鈕可以互相
+    /// 矛盾，而那個矛盾沒有任何測試看得見（症狀寫在 `AdvancedPresentation.SliderSpec`
+    /// 的註解）。`SliderSpec` 的位數是從 step 推導的，所以傳不進不一致的一組。
+    /// 註冊表的 `AdvancedPresentation.slider` 解開之後就是這個型別；
+    /// `cat.scale` 是主視窗的，沒有 presentation，就地從它的 step 生一個。
+    private func sliderRow(_ key: String, title: String,
+                           slider: AdvancedPresentation.SliderSpec,
+                           width: CGFloat = 64) -> some View {
         HStack(alignment: .firstTextBaseline) {
-            Text("貓的大小").frame(width: 150, alignment: .leading)
-            if case .number(let range)? = model.kind(of: "cat.scale") {
+            Text(title).frame(width: 150, alignment: .leading)
+            if case .number(let range)? = model.kind(of: key) {
+                let factor = pow(10.0, Double(slider.fractionDigits))
                 Slider(value: Binding(
-                    get: { model.snapshot.number("cat.scale") ?? range.lowerBound },
-                    // 量化到兩位小數：slider 給的是 1.2999999999，那個字串
-                    // 會原封不動出現在 `config get` 裡
-                    set: { model.submit("cat.scale", number: ($0 * 100).rounded() / 100) }
-                ), in: range, step: 0.05)
+                    get: { model.snapshot.number(key) ?? range.lowerBound },
+                    // 量化到 `fractionDigits` 位：slider 給的是 1.2999999999，
+                    // 那個字串會原封不動出現在 `config get` 裡。
+                    // 公式與 `everySliderStopIsAValueTheValidatorAccepts` 同一條，
+                    // **但那條蓋不到這裡**：它只掃 `advancedKeys`，而 `cat.scale`
+                    // 是 windowKey、被排除在外。它釘的是註冊表的 step 與值域相容，
+                    // 不是這一列真的照這個公式量化。
+                    set: { model.submit(key, number: ($0 * factor).rounded() / factor) }
+                ), in: range, step: slider.step)
             }
-            editableField("cat.scale", width: 64)
+            editableField(key, width: width)
         }
+    }
+
+    private var scaleRow: some View {
+        sliderRow("cat.scale", title: "貓的大小",
+                  slider: AdvancedPresentation.SliderSpec(step: 0.05))
     }
 
     /// 用 `onIncrement`／`onDecrement` 而不是 `Stepper(value:in:)`：後者的加減
@@ -410,19 +431,20 @@ private struct SettingsRootView: View {
         }
     }
 
-    /// 兩選一。選項來自 `SettingKind.choice`——寫死兩個 case 的話，
-    /// spec 哪天多一個觸發時機，這裡會靜默少一個選項。
-    private var triggerRow: some View {
+    /// 選項來自 `SettingKind.choice`——寫死在這裡的話，
+    /// spec 哪天多一個選項，這裡會靜默少一個。
+    private func choiceRow(_ key: String, title: String,
+                           labels: [String: String]) -> some View {
         HStack {
-            Text("聚光燈時機").frame(width: 150, alignment: .leading)
-            if case .choice(let options)? = model.kind(of: "spotlight.trigger") {
+            Text(title).frame(width: 150, alignment: .leading)
+            if case .choice(let options)? = model.kind(of: key) {
                 Picker("", selection: Binding(
-                    get: { model.snapshot.text("spotlight.trigger") },
-                    set: { model.submit("spotlight.trigger", $0) }
+                    get: { model.snapshot.text(key) },
+                    set: { model.submit(key, $0) }
                 )) {
                     ForEach(options, id: \.self) { option in
                         // 沒有對應中文標籤時退回 rawValue，而不是漏掉這個選項
-                        Text(Self.triggerLabels[option] ?? option).tag(option)
+                        Text(labels[option] ?? option).tag(option)
                     }
                 }
                 .pickerStyle(.radioGroup)
@@ -430,6 +452,10 @@ private struct SettingsRootView: View {
             }
             Spacer()
         }
+    }
+
+    private var triggerRow: some View {
+        choiceRow("spotlight.trigger", title: "聚光燈時機", labels: Self.triggerLabels)
     }
 
     private static let triggerLabels = [
