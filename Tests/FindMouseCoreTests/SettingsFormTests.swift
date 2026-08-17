@@ -102,27 +102,6 @@ private let specWindowKeys = [
     #expect(Set(SettingsForm.windowKeys).union(SettingsForm.advancedKeys) == Set(declared))
 }
 
-/// 兩件事：一項都不能掉（`advancedEntries` 裡的 `try?` 是靜默的），
-/// 而且總數是 spec 第 9 節的 15——後者不從 `advancedKeys` 推導，
-/// 不然清單算錯的時候這條會跟著錯。
-@Test func advancedEntriesCoverEveryCLIOnlyKey() {
-    let entries = SettingsForm.advancedEntries(
-        SettingsUseCase(store: StubStore(), catalog: StubCatalog()))
-    #expect(entries.count == 15)
-    #expect(entries.map(\.key) == SettingsForm.advancedKeys)
-}
-
-/// 命令要帶**當前值**：貼進終端機就是原地不動，改一個數字才是新設定。
-/// 印佔位符的話，調手感的人得先自己去 `config get` 一次。
-@Test func advancedCommandsCarryTheValueThatIsInEffectNow() throws {
-    let settings = SettingsUseCase(store: StubStore(), catalog: StubCatalog())
-    try settings.set("cat.speed", to: "1234")
-    let entry = try #require(SettingsForm.advancedEntries(settings)
-        .first { $0.key == "cat.speed" })
-    #expect(entry.command == "findmouse config set cat.speed 1234")
-    #expect(entry.range == "200–3000")
-}
-
 /// 值域說明沿用 `SettingsUseCase` 的數字格式，不另寫一份——
 /// 各印各的話同一個範圍在 CLI 是 `40–1000`、在設定視窗是 `40.0–1000.0`。
 @Test func rangeTextReadsTheSameWayTheCLIPrintsValues() {
@@ -326,7 +305,7 @@ private let specWindowKeys = [
     #expect(try harness.settings.get("cat.scale") == "1")
 }
 
-/// 回送在 hotkey 欄位一樣會發生——`editableField` 是三種列共用的那一塊，
+/// 回送在 hotkey 欄位一樣會發生——`SettingField` 是三種列共用的那一塊，
 /// 只守數值欄的話另外兩種列照樣靜默。
 @Test @MainActor func theEchoAfterARejectedHotkeyKeepsTheComplaintToo() {
     let harness = FormHarness()
@@ -627,12 +606,6 @@ private let specWindowKeys = [
     #expect(harness.store.snapshot.text("rest.duration") == "10")
 }
 
-@Test @MainActor func theSnapshotCarriesTheFifteenAdvancedCommands() {
-    let harness = FormHarness()
-    harness.store.reload()
-    #expect(harness.store.snapshot.advanced.map(\.key) == SettingsForm.advancedKeys)
-}
-
 // MARK: - 換 pack
 
 /// **裁決 3**：只寫 `pack.id` 不會換 pack —— 它的持久化是換 pack 的副作用，
@@ -881,4 +854,345 @@ private let specWindowKeys = [
     let harness = FormHarness()
     harness.store.revealPacks()
     #expect(harness.revealCount == 1)
+}
+
+// MARK: - 進階設定那一列要顯示什麼
+
+/// 完整性：`advancedKeys` 是推導的，所以有人加了新設定又沒填展示資料時，
+/// 這條會紅——不是靜默少畫一列。
+///
+/// **它不是獨立的覆蓋。** 同一個缺漏會讓 `sliderSpecExistsExactlyForNumberKinds`
+/// 的 `try #require` 一起紅。留著是為了**訊息**：這條說得出缺的是哪幾個 key，
+/// 那條只會說某個 required value 是 nil。
+@Test func everyAdvancedKeyHasPresentation() {
+    let useCase = SettingsUseCase(store: StubStore(),
+                                  catalog: StubCatalog(logicalHeight: 100))
+    let missing = SettingsForm.advancedKeys.filter { useCase.presentation(of: $0) == nil }
+    #expect(missing.isEmpty, "這些進階 key 沒有展示資料：\(missing)")
+
+    // 反方向：主視窗那 8 項的標題寫在 View 裡，registry 再放一份就是兩份
+    // 會漂掉的字串。多填的那一份不會有任何訊號，所以在這裡擋。
+    let extra = SettingsForm.windowKeys.filter { useCase.presentation(of: $0) != nil }
+    #expect(extra.isEmpty, "這些主視窗 key 不該有展示資料：\(extra)")
+}
+
+/// 數字 key 一定要有滑桿規格，choice 一定不能有——畫錯列型就是這裡分岔。
+@Test func sliderSpecExistsExactlyForNumberKinds() throws {
+    let useCase = SettingsUseCase(store: StubStore(),
+                                  catalog: StubCatalog(logicalHeight: 100))
+    for key in SettingsForm.advancedKeys {
+        let presentation = try #require(useCase.presentation(of: key))
+        if case .number = try useCase.kind(of: key) {
+            #expect(presentation.slider != nil, "\(key) 是數字卻沒有滑桿規格")
+        } else {
+            #expect(presentation.slider == nil, "\(key) 不是數字卻有滑桿規格")
+        }
+    }
+}
+
+/// 量化位數是從 `step` 推導出來的，這條釘住現行五個 step 值的對應。
+///
+/// 推導取代了「另外傳一個 digits」——那兩個旋鈕可以互相矛盾，而矛盾**沒有任何
+/// 測試看得見**（`step: 0.05` 配 0 位會把 0.95 量化成 1.0，超出宣告值域，
+/// 症狀只在軌道盡頭出現）。代價是推導本身成了單點，所以它要有自己的測試。
+@Test func sliderDigitsFollowFromTheStep() {
+    let expected: [Double: Int] = [10: 0, 5: 0, 50: 0, 0.5: 1, 0.05: 2]
+    for (step, digits) in expected {
+        #expect(AdvancedPresentation.SliderSpec(step: step).fractionDigits == digits,
+                "step \(step) 應該量化到 \(digits) 位")
+    }
+
+    // 上面那張表是**手抄的**，所以它會在有人往註冊表加新 step 時靜默過時。
+    // 拿註冊表實際用到的 step 回頭對一次，逼那個人把表補齊。
+    //
+    // 這同時是 `decimals(of:)` 唯一的已知破口（指數形式沒有小數點，`5e-05`
+    // 會被算成 0 位）的守衛：那種寫法一出現在註冊表就會紅在這裡，
+    // 所以推導本身不必為一個還沒發生的情況長出一條走不到的分支。
+    let useCase = SettingsUseCase(store: StubStore(),
+                                  catalog: StubCatalog(logicalHeight: 100))
+    let inUse = Set(SettingsForm.advancedKeys.compactMap {
+        useCase.presentation(of: $0)?.slider?.step
+    })
+    let unpinned = inUse.subtracting(expected.keys).sorted()
+    #expect(unpinned.isEmpty, "註冊表用了沒被釘住的 step：\(unpinned)")
+}
+
+/// 滑桿吐得出來的每一格，`set` 都必須收得下。
+///
+/// 兩個獨立的決定湊在一起才有這個危險：值要量化（`Slider` 帶了 `step` 仍給
+/// `1.2999999999`），而 `set` **拒絕超出值域的值、不 clamp**（spec 第 9 節）。
+/// 量化把值推出值域的話，使用者只是拉一下滑桿就吃一行紅字，而那一格他永遠
+/// 拉不到——UI 吐出自己的驗證器不收的值。
+///
+/// **這條與 `sliderDigitsFollowFromTheStep` 不重疊。** 那條只問「digits 是不是
+/// 從 step 推出來的」，它對值域一無所知；推導正確而**值域端點比 step 細**時
+/// 它照樣綠。實測：`spotlight.dimOpacity` 的 step 從 0.05 改成 0.1、並照那條
+/// 的要求把 `0.1: 1` 補進它那張表（digits 仍是正確的 1），0.95 這個上界量化成
+/// 1.0，全 suite 只有這條紅。
+///
+/// 走 `store.submit(key, number:)` 而不是直接 `settings.set`：那才是滑桿實際
+/// 走的線（`SettingsWindow` → `model.submit(_:number:)` → 這裡 → `render` →
+/// `set`），中間的 `render` 也在受測範圍內。自己拼字串等於把 `render` 抄一份。
+///
+/// **量化公式在這裡是抄的。** 產品碼那一份在 `SettingSlider`（兩個視窗共用），
+/// 而 `FindMouseApp` 沒有測試 target，所以它跑不到這裡來——**進階視窗做出來
+/// 並沒有改變這件事**：共用的是公式，不是涵蓋。所以這條釘的仍然只是「註冊表的
+/// step 與值域互相相容」，不是「視窗真的照這個公式量化」。要補上後者，得等
+/// App 有測試 target，或那段量化搬進 Core。
+@Test @MainActor func everySliderStopIsAValueTheValidatorAccepts() throws {
+    let harness = FormHarness()
+    for key in SettingsForm.advancedKeys {
+        guard let slider = harness.settings.presentation(of: key)?.slider,
+              case .number(let range) = try harness.settings.kind(of: key) else { continue }
+
+        // 上界要**明確補一格**，靠 `lowerBound + n * step` 走不到它：step 除不盡
+        // 值域時最後一格落在上界之前，而上界正是最容易出事的那一格。實測把
+        // `spotlight.margin` 的上界改成 200.5，只有補了這一格才紅。
+        //
+        // 反過來也不能讓它衝過頭。滑桿收在 `in:` 宣告的兩端裡，吐不出「上界再
+        // 加一格」的值；拿那種值來驗，會對「step 除不盡值域」這種**無害**的情況
+        // 誤報（實測 `teaser.pounceSpeed` 改 step 40 時就是這樣，那不是缺陷）。
+        var stops: [Double] = []
+        var raw = range.lowerBound
+        while raw < range.upperBound {
+            stops.append(raw)
+            raw += slider.step
+        }
+        stops.append(range.upperBound)
+
+        let factor = pow(10.0, Double(slider.fractionDigits))
+        for (index, stop) in stops.enumerated() {
+            let quantised = (stop * factor).rounded() / factor
+            // 先算出結果再進 `#expect`：訊息要讀 `errors[key]`，那是這次
+            // submit 才寫進去的。
+            let accepted = harness.store.submit(key, number: quantised)
+            #expect(accepted, """
+                \(key) 第 \(index) 格：\(stop) 量化成 \(quantised)，落在 \(range) 外\
+                （\(harness.store.snapshot.errors[key] ?? "沒有錯誤訊息")）。\
+                step \(slider.step) 只量化到 \(slider.fractionDigits) 位，\
+                而值域端點比它細。
+                """)
+        }
+
+        // 沒有中間格的話，上面那圈只驗了頭尾兩個端點——對這個 key 而言它是空的，
+        // 而畫面上那條軌道也只有頭尾可停。
+        #expect(slider.step < range.upperBound - range.lowerBound,
+                "\(key) 的 step \(slider.step) 不比整個 \(range) 窄，軌道沒有中間格")
+    }
+}
+
+// MARK: - 進階視窗的分組
+
+/// 分組是**重新排過的同一批 key**，所以「不重不漏」是它唯一的完整性條件：
+/// 漏一個就是那一列在畫面上不存在，重複一個就是同一個設定出現在兩組
+/// ——後者拖動其中一份，另一份不會跟著動。
+///
+/// 第二句**不是獨立的覆蓋**：`declaredKeys` 不可能有重複（真有的話
+/// `SettingsUseCase.init` 的 `Dictionary(uniqueKeysWithValues:)` 會先 trap），
+/// 所以第一句成立時第二句必然成立。留著是為了**訊息**——實測讓 `window.level`
+/// 落進每一組，兩句一起紅，而第一句吐的是兩串長陣列要人自己比對。
+@Test func advancedSectionsCoverExactlyTheAdvancedKeys() {
+    let useCase = SettingsUseCase(store: StubStore(),
+                                  catalog: StubCatalog(logicalHeight: 100))
+    let listed = SettingsForm.advancedSections(useCase).flatMap { $0.rows.map(\.key) }
+    #expect(listed.sorted() == SettingsForm.advancedKeys.sorted(), "不重不漏")
+    #expect(listed.count == Set(listed).count, "同一個 key 出現在兩組")
+}
+
+/// 兩件不同的事，所以分成兩個斷言。
+///
+/// 前一句是 `advancedGroups` 自己的合約：畫面順序就是 `CaseIterable` 的順序
+/// （`AdvancedGroup` 的註解），而這個函式必須照那個順序回。把 `allCases` 反過來
+/// 跑實測只有這一句會紅——分組全部還在、每一組也都還有 key，錯的只有順序。
+///
+/// 後一句問的是**註冊表**：有沒有哪個分組沒人用。它不是前一句的副作用——
+/// 沒有它的話，一個沒人用的分組會紅在「順序」那一句上，而讀到那句話的人
+/// 會跑去查 `advancedGroups` 的排序，真正該改的地方在註冊表。
+///
+/// 沒人用的分組**判為錯誤**而不是放行：到得了它的只有兩種手動編輯——加了 case
+/// 還沒配 key，或把某組最後一個 key 升上 `windowKeys` 卻留著空 case——兩種都是
+/// 沒做完的改動，而畫面上的後果是一個底下什麼都沒有的標題。
+@Test func advancedSectionsAreOrderedAndNonEmpty() {
+    let useCase = SettingsUseCase(store: StubStore(),
+                                  catalog: StubCatalog(logicalHeight: 100))
+    let groups = SettingsForm.advancedSections(useCase)
+    #expect(groups.map(\.group) == AdvancedGroup.allCases, "順序要與 CaseIterable 一致")
+
+    let orphans = groups.filter { $0.rows.isEmpty }.map(\.group)
+    #expect(orphans.isEmpty, "這些分組沒有任何 key 用它：\(orphans)")
+}
+
+/// 同一組內的順序來自**註冊表的宣告順序**，不是 key 的字典序。
+///
+/// 斷言用標題而不是 key，因為要看的就是它讀起來對不對：字典序會排成
+/// 命中半徑 → 撲擊速度 → 撲擊觸發速度 → 後退距離 → 潛行距離 → 潛行逾時，
+/// 也就是效果排在觸發它的原因前面，而使用者是照著這個順序一格一格試的。
+@Test func rowsWithinAGroupFollowTheRegistryNotTheAlphabet() throws {
+    let useCase = SettingsUseCase(store: StubStore(),
+                                  catalog: StubCatalog(logicalHeight: 100))
+    let teaser = try #require(
+        SettingsForm.advancedSections(useCase).first { $0.group == .teaser })
+    #expect(teaser.rows.map(\.presentation.title)
+            == ["潛行距離", "潛行逾時", "撲擊觸發速度", "撲擊速度", "命中半徑", "後退距離"],
+            "逗貓棒那組要照 潛行 → 撲擊 → 命中 → 後退 的因果順序")
+}
+
+/// 每一列的欄位都是**各自算的**。寫成常數的話畫面上整欄會一致地錯，
+/// 而一致的錯看起來像對的（整排都不顯示還原鍵、或整排都顯示）。
+///
+/// 走 `reload()` 而不是直接呼叫 `advancedSections`：View 讀的是快照，
+/// 漏接那一行的話函式再正確畫面也是空的——兩個 `#require` 就是那條線的守衛，
+/// 快照沒填的話它們先掛。
+@Test @MainActor func theSnapshotCarriesEveryAdvancedRowWithItsOwnState() throws {
+    let harness = FormHarness()
+    try harness.settings.set("spotlight.margin", to: "48")   // 預設是 24
+    harness.store.reload()
+
+    let rows = harness.store.snapshot.advancedSections.flatMap(\.rows)
+
+    let edited = try #require(rows.first { $0.key == "spotlight.margin" })
+    #expect(edited.isAtDefault == false, "剛改過的那一列不該說自己是預設")
+    #expect(edited.presentation.title == "邊界留白")
+    #expect(edited.kind == .number(0...200))
+
+    let untouched = try #require(rows.first { $0.key == "spotlight.feather" })
+    #expect(untouched.isAtDefault, "沒動過的那一列跟著鄰居一起變成「改過」了")
+}
+
+// MARK: - 進階視窗的「全部還原」
+
+/// 範圍語意：按鈕在進階視窗裡，就只能動進階那 15 項。連帶還原主視窗的 pack、
+/// 快捷鍵與聚光燈設定會很意外，而 `resetAll()` 正是那樣。
+@Test func resetAdvancedLeavesTheMainWindowKeysUntouched() throws {
+    let useCase = SettingsUseCase(store: StubStore(),
+                                  catalog: StubCatalog(logicalHeight: 100))
+    try useCase.set("cat.speed", to: "1500")          // 進階
+    try useCase.set("cat.scale", to: "1.5")           // 主視窗
+    try useCase.set("hotkey.summon", to: "⌃⇧K")       // 主視窗
+
+    SettingsForm.resetAdvanced(useCase)
+
+    #expect(try useCase.isAtDefault("cat.speed"), "進階項應被還原")
+    #expect(try !useCase.isAtDefault("cat.scale"), "主視窗的 cat.scale 不該被動")
+    #expect(try useCase.get("hotkey.summon") == "⌃⇧K", "主視窗的快捷鍵不該被動")
+}
+
+/// 先把**每一個**進階 key 都弄髒，再還原。
+///
+/// 原本只弄髒三個 key 就迴圈斷言全部——沒被弄髒的那些本來就在預設值上，
+/// 那些斷言無論 `resetAdvanced` 有沒有碰它們都會過。實測：把實作的迴圈改成
+/// `where key != "spotlight.feather"`，整包全綠；同形的 `!= "cat.speed"`
+/// 會紅（所以突變本身有效，那個綠是真的洞）。名字說全部，證明的是三個。
+///
+/// 探針**推導**而不是手抄字面值：這裡只有兩種 kind（數字與 choice），
+/// 一條規則比一張表小。與 Task 2 的 `everyKeyCanTellThatItHasBeenChanged`
+/// 相反是對的——那條跨五種 kind（含 hotkey 與 packID），規則會比表大。
+///
+/// 兩道防呆，因為「探針剛好等於預設」正是這條測試要修的那種靜默失效：
+/// 挑完探針先確認它與現值不同，寫完再整批確認**沒有一項**還在預設上。
+/// 後者才是完整的守衛——有些 key 的預設是衍生的（`wake.threshold` 跟著
+/// `rehunt.threshold` 動，見 `SettingsUseCase.isAtDefault` 的註解），
+/// 所以「寫入當下不同」不蘊含「全部寫完之後仍然不同」。
+@Test func resetAdvancedClearsEveryAdvancedKey() throws {
+    let useCase = SettingsUseCase(store: StubStore(),
+                                  catalog: StubCatalog(logicalHeight: 100))
+
+    for key in SettingsForm.advancedKeys {
+        let probe: String
+        switch try useCase.kind(of: key) {
+        case .number(let range):
+            guard case .number(let now) = try useCase.value(key) else {
+                Issue.record("\(key) 宣告成數字，讀回來的卻不是"); return
+            }
+            // 挑另一端：預設坐在下界時就用上界，其餘一律用下界。
+            let pick = now == range.lowerBound ? range.upperBound : range.lowerBound
+            try #require(pick != now, "\(key) 的探針等於預設，這一列會變成恆真句")
+            probe = String(pick)
+        case .choice(let allowed):
+            guard case .text(let now) = try useCase.value(key) else {
+                Issue.record("\(key) 宣告成 choice，讀回來的卻不是"); return
+            }
+            probe = try #require(allowed.first { $0 != now },
+                                 "\(key) 只有一個合法值，弄不髒它")
+        case .boolean, .hotkey, .packID:
+            // 停下而不是偷偷跳過：規則沒涵蓋的 kind 要先決定怎麼弄髒它，
+            // 略過它等於把這條測試退回它原本那個恆真的樣子。
+            Issue.record("\(key) 的 kind 不在這條規則的涵蓋範圍內"); return
+        }
+        try useCase.set(key, to: probe)
+    }
+
+    for key in SettingsForm.advancedKeys {
+        #expect(try !useCase.isAtDefault(key), "\(key) 沒被弄髒，它下面那個斷言是恆真的")
+    }
+
+    SettingsForm.resetAdvanced(useCase)
+
+    for key in SettingsForm.advancedKeys {
+        #expect(try useCase.isAtDefault(key), "\(key) 沒被還原")
+    }
+}
+
+/// 還原鍵按下去要收拾三樣東西：值、草稿、紅字。
+///
+/// 後兩樣不是順手——`reload()` **刻意不清**它們（它的註解說明了為什麼：重讀的
+/// 觸發者常常是 CLI），所以沒有人清的話，欄位會繼續顯示使用者按 ↺ 之前打的字，
+/// 而紅字會指著一個已經被還原掉的值。
+///
+/// `snapshot.values` 那一句就是 `reload()` 的守衛：值只有重讀才會進快照，
+/// 漏掉那一行的話畫面停在 1500，而磁碟上已經是預設值。
+@Test @MainActor func revertingAKeyAlsoDropsTheDraftAndTheComplaint() throws {
+    let harness = FormHarness()
+    try harness.settings.set("cat.speed", to: "1500")
+    harness.store.reload()
+    // 造出「打了字、被拒絕」的那個狀態：草稿與紅字同時在。
+    #expect(harness.store.submit("cat.speed", "99999") == false)
+    #expect(harness.store.snapshot.drafts["cat.speed"] == "99999")
+    #expect(harness.store.snapshot.errors["cat.speed"] != nil)
+    #expect(harness.changeNotifications == 0, "被拒絕的寫入不該通知")
+
+    // 另一個 key 也弄成同樣的狀態。還原一列**只能動那一列**——
+    // 把兩行 removeValue 寫成 removeAll 是很自然的手滑，而在補這幾行之前
+    // 那個突變不會讓任何測試轉紅（批次那條路有守衛，單鍵這條沒有）。
+    #expect(harness.store.submit("cat.scale", "9") == false)
+    #expect(harness.store.snapshot.drafts["cat.scale"] == "9")
+    #expect(harness.store.snapshot.errors["cat.scale"] != nil)
+
+    harness.store.reset("cat.speed")
+
+    #expect(try harness.settings.isAtDefault("cat.speed"), "值沒有被還原")
+    #expect(harness.store.snapshot.drafts["cat.speed"] == nil, "欄位還顯示他按 ↺ 之前打的字")
+    #expect(harness.store.snapshot.errors["cat.speed"] == nil, "紅字指著一個已經不存在的值")
+    #expect(harness.store.snapshot.drafts["cat.scale"] == "9", "還原一列不該清掉別列的草稿")
+    #expect(harness.store.snapshot.errors["cat.scale"] != nil, "還原一列不該清掉別列的紅字")
+    #expect(harness.store.snapshot.values["cat.speed"] == .number(900), "沒有重讀，畫面停在舊值")
+    #expect(harness.changeNotifications == 1, "還原是一種變更，要通知一次")
+}
+
+/// 範圍語意在 store 這一層的樣子：值、草稿、紅字**三樣都**只能動進階那些。
+///
+/// 主視窗那一半特別容易被未來的編輯弄壞——把清除迴圈換成
+/// `snapshot.drafts.removeAll()` 看起來更乾淨，而它會靜默清掉使用者正在
+/// 主視窗修的那個欄位。所以這裡對 `cat.scale` 的三個斷言是正向的：它們要求
+/// 那些東西**還在**。
+@Test @MainActor func revertingTheAdvancedPaneLeavesTheMainWindowAlone() throws {
+    let harness = FormHarness()
+    try harness.settings.set("cat.speed", to: "1500")   // 進階
+    try harness.settings.set("cat.scale", to: "1.5")    // 主視窗
+    harness.store.reload()
+    #expect(harness.store.submit("cat.speed", "99999") == false)
+    #expect(harness.store.submit("cat.scale", "9") == false)
+
+    harness.store.resetAdvanced()
+
+    #expect(try harness.settings.isAtDefault("cat.speed"), "進階項的值沒有被還原")
+    #expect(harness.store.snapshot.drafts["cat.speed"] == nil, "進階項的草稿沒被清掉")
+    #expect(harness.store.snapshot.errors["cat.speed"] == nil, "進階項的紅字沒被清掉")
+    #expect(harness.store.snapshot.values["cat.speed"] == .number(900), "沒有重讀，畫面停在舊值")
+
+    #expect(try !harness.settings.isAtDefault("cat.scale"), "主視窗的值被連帶還原了")
+    #expect(harness.store.snapshot.drafts["cat.scale"] == "9", "主視窗的草稿被連帶清掉了")
+    #expect(harness.store.snapshot.errors["cat.scale"] != nil, "主視窗的紅字被連帶清掉了")
+
+    #expect(harness.changeNotifications == 1, "整批只通知一次")
 }

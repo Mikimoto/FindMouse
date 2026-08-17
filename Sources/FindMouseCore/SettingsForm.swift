@@ -30,29 +30,90 @@ public enum SettingsForm {
 
     /// 「進階設定…」要列的其餘項目。**推導而不是手抄**：
     /// 手抄的清單在有人往註冊表加設定時會靜默過時，而少列一項不會有任何訊號。
+    ///
+    /// 順序是註冊表的**宣告順序**，所以這裡讀 `registry` 而不是 `declaredKeys`。
+    /// 後者的字典序會把逗貓棒那組排成「命中半徑 → 撲擊速度 → 撲擊觸發速度 →
+    /// 後退距離 → 潛行距離 → 潛行逾時」——效果排在觸發它的原因前面，而作者在
+    /// 註冊表裡寫下的是因果順序（潛行 → 撲擊 → 命中 → 後退）。
+    /// `rowsWithinAGroupFollowTheRegistryNotTheAlphabet` 釘住它。
+    ///
+    /// **`declaredKeys` 不動**：它的字典序是 `config get` 列表的樣子，是另一回事。
     public static var advancedKeys: [String] {
-        SettingsUseCase.declaredKeys.filter { !windowKeys.contains($0) }
+        SettingsUseCase.registry.map(\.key).filter { !windowKeys.contains($0) }
     }
 
-    /// 「進階設定…」的一列：可以直接貼進終端機的命令，加上值域說明。
-    public struct AdvancedEntry: Sendable, Equatable {
+    /// 進階視窗的一列。
+    ///
+    /// 進階視窗（`AdvancedSettingsRootView`）畫的就是這個。
+    ///
+    /// 沒有 `range`：值域說明由 `text(for: kind)` 當場算，而 `kind` 就在同一個
+    /// 結構裡。存一份衍生欄位只是多一個會與來源分岔的地方。
+    public struct AdvancedRow: Sendable, Equatable {
         public let key: String
-        /// 帶**當前值**的整行命令——貼上去執行等於原地不動，改一個數字就是新設定。
-        /// 附當前值而不是佔位符，是因為調手感的人要先知道現在是多少。
-        public let command: String
-        public let range: String
+        public let presentation: AdvancedPresentation
+        public let kind: SettingKind
+        /// false 時那一列才顯示還原鍵
+        public let isAtDefault: Bool
     }
 
-    public static func advancedEntries(_ settings: SettingsUseCase) -> [AdvancedEntry] {
-        advancedKeys.compactMap { key in
-            // 兩個 try? 都不會是 nil：key 來自 declaredKeys。真的變成 nil 時
-            // 少列一項，而 `advancedEntriesCoverEveryCLIOnlyKey` 會抓到。
-            guard let value = try? settings.get(key),
-                  let kind = try? settings.kind(of: key) else { return nil }
-            return AdvancedEntry(key: key,
-                                 command: "findmouse config set \(key) \(value)",
-                                 range: text(for: kind))
+    public struct AdvancedSection: Sendable, Equatable {
+        public let group: AdvancedGroup
+        public let rows: [AdvancedRow]
+    }
+
+    /// 依 `AdvancedGroup.allCases` 的順序分組——那個順序就是畫面順序。
+    /// 組內順序見 `advancedKeys`（註冊表的宣告順序，`filter` 原樣保留它）。
+    ///
+    /// **沒有任何 key 用的分組不濾掉**，即使那會讓畫面多一個底下空無一物的標題。
+    /// 曾經寫成濾掉，實測拿掉那一行整批測試全綠：分組來自靜態註冊表，呼叫端換掉
+    /// store 或 catalog 都影響不到它，所以沒有人造得出空組，那一行是走不到、也
+    /// 無法被證明有效的程式碼。守衛改放在 `advancedSectionsAreOrderedAndNonEmpty`
+    /// ——它在註冊表長出沒人用的分組時會紅，而且說得出是哪一個。與
+    /// `SliderSpec.decimals(of:)` 對指數形式的處置同一個判斷。
+    ///
+    /// **列先一次建好再分組**，不是每組各掃一遍 `advancedKeys`：後者會把
+    /// `advancedKeys` 求值五次，而它每次都重建整份 `registry`（連同每個 spec 的
+    /// closure，見 `presentation(of:)` 的註解）。省下來的是那四次重建與四輪
+    /// 字典查詢；`isAtDefault` 兩種寫法都只跑每個 key 一次，因為舊版的分組條件
+    /// 排在那兩個查詢**之前**就短路了。
+    ///
+    /// 三個 `guard` 是另一回事：key 來自註冊表，三個查詢都不會落空
+    /// （`presentation` 的完整性另有 `everyAdvancedKeyHasPresentation` 守）。
+    /// 真的落空時那一列會安靜消失，而 `advancedSectionsCoverExactlyTheAdvancedKeys`
+    /// 會抓到。
+    public static func advancedSections(_ settings: SettingsUseCase) -> [AdvancedSection] {
+        let rows = advancedKeys.compactMap { key -> AdvancedRow? in
+            guard let presentation = settings.presentation(of: key),
+                  let kind = try? settings.kind(of: key),
+                  let isDefault = try? settings.isAtDefault(key) else { return nil }
+            return AdvancedRow(key: key, presentation: presentation, kind: kind,
+                               isAtDefault: isDefault)
         }
+        return AdvancedGroup.allCases.map { group in
+            AdvancedSection(group: group, rows: rows.filter { $0.presentation.group == group })
+        }
+    }
+
+    /// 還原**只有**進階那 15 項。
+    ///
+    /// 刻意不呼叫 `SettingsUseCase.resetAll()`：那會連主視窗的 pack、快捷鍵與
+    /// 聚光燈一起還原，而按鈕在進階視窗裡。CLI 的 `config reset --all` 語意不變。
+    ///
+    /// `try?`：key 全部來自 `advancedKeys`（推導自註冊表），而 `reset` 只在
+    /// `spec(key)` 查不到時拋（`SettingsUseCase.reset`），所以拋不出來；
+    /// 真的拋了也不該讓剩下的項目半途停下。
+    ///
+    /// **逐項呼叫是刻意的，不是沒想過。** 每一次 `reset` 都是一輪
+    /// 讀 config → clear → `save`（而 `save` 寫回全部 20 個鍵），所以這裡是
+    /// 14 次完整寫入而不是 1 次（`window.level` 是 external，走另一條）。
+    /// 量過：**1.377 ms**（20 次取樣的中位數，真 `UserDefaults` suite），
+    /// 換成 `resetAll()` 那種讀一次存一次的形狀是 0.028 ms。49 倍，但這是
+    /// 使用者按一次鈕跑一次的路徑，而 1.4 ms 不到一個 frame 的十分之一——
+    /// 為它加一支 `reset(keys:)` 是拿一個新的 API 換一個量不出來的差別。
+    /// 順序無關：`clear` 移除的是覆寫，衍生值（`wake.threshold` 是 3×
+    /// `rehunt.threshold`）在讀的時候才算，所以中途狀態不影響最終結果。
+    public static func resetAdvanced(_ settings: SettingsUseCase) {
+        for key in advancedKeys { try? settings.reset(key) }
     }
 
     /// 值域的一句話說明。數字沿用 `SettingsUseCase` 的數字格式（整數印整數），
@@ -246,7 +307,7 @@ public final class SettingsFormStore {
         public var packNotice: String?
         /// 非 nil 時設定視窗要彈確認框。
         public var packConfirmation: PendingPackImport?
-        public var advanced: [SettingsForm.AdvancedEntry] = []
+        public var advancedSections: [SettingsForm.AdvancedSection] = []
 
         public init() {}
 
@@ -334,7 +395,7 @@ public final class SettingsFormStore {
                 if let value = try? settings.value(key) { values[key] = value }
             }
             snapshot.values = values
-            snapshot.advanced = SettingsForm.advancedEntries(settings)
+            snapshot.advancedSections = SettingsForm.advancedSections(settings)
         }
         snapshot.currentPackID = currentPackID()
         snapshot.packs = PackChoice.choices(packs: packs(), current: snapshot.currentPackID,
@@ -429,6 +490,50 @@ public final class SettingsFormStore {
         guard let settings = settings(),
               case .number(let current)? = try? settings.value(key) else { return }
         submit(key, number: current + delta)
+    }
+
+    /// 還原一個 key。
+    ///
+    /// 草稿與紅字一併清掉——`reload()` **刻意不清**它們（見它的註解：重讀的觸發者
+    /// 常常是別人，清掉會在使用者眼前重置他正在修的欄位）。但這一次的觸發者就是
+    /// 使用者自己按的還原鍵，留著草稿的話欄位仍顯示他剛打的字、紅字仍指著一個
+    /// 已經被還原掉的值，畫面與狀態分岔。
+    ///
+    /// **還原是一種變更，所以照樣通知 `onChanged`。** CLI 那條路已經先遇到這題
+    /// 並留了字：`RequestRouter.configReset` 對 `reset` 與 `set` 各接一次，
+    /// 註解寫「只接一條的話『改壞了想 reset 回來』會失效——而那正是使用者最需要它
+    /// 當場生效的時刻」。兩條路走的是同一個 `AppDelegate.settingsDidChange()`，
+    /// 這裡不接的話，同一個還原從 CLI 下去會生效、從 ↺ 按下去不會。
+    ///
+    /// 那一輪不會白白重裝快捷鍵：`AppDelegate` 用 `installedSummon`／
+    /// `installedTeaser` 記住現在註冊著的那一組，spec 沒變就不動它。
+    public func reset(_ key: String) {
+        guard let settings = settings() else { return }
+        // 這裡不能照抄 `resetAdvanced` 那個裸 `try?`：那支的 key 全部來自
+        // `advancedKeys`，這支收的是任意字串。未知 key 讓 `reset` 拋錯之後，
+        // 值沒有被還原，卻照樣清掉草稿、重讀、通知——三個副作用建立在一件
+        // 沒發生的事情上。拋了就什麼都不做。
+        guard (try? settings.reset(key)) != nil else { return }
+        snapshot.drafts.removeValue(forKey: key)
+        snapshot.errors.removeValue(forKey: key)
+        reload()
+        onChanged()
+    }
+
+    /// 還原進階那 15 項。範圍與按鈕所在的視窗一致，不碰主視窗那 8 項——
+    /// 理由見 `SettingsForm.resetAdvanced`，通知的理由見 `reset(_:)`。
+    ///
+    /// `onChanged()` 整批只發一次，與 `RequestRouter` 對 `config reset --all`
+    /// 的處置相同——它要的是「設定變了，重新套用一次」，不是逐項各來一輪。
+    public func resetAdvanced() {
+        guard let settings = settings() else { return }
+        SettingsForm.resetAdvanced(settings)
+        for key in SettingsForm.advancedKeys {
+            snapshot.drafts.removeValue(forKey: key)
+            snapshot.errors.removeValue(forKey: key)
+        }
+        reload()
+        onChanged()
     }
 
     /// Toggle 的反轉。基準同樣取當下讀到的值，理由同 `step`。

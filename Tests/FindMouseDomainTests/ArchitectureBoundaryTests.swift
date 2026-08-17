@@ -225,7 +225,11 @@ struct ArchitectureBoundaryTests {
     @Test func swiftUIStaysInTheSettingsWindow() throws {
         let importers = try Self.filesImporting("SwiftUI", inTarget: "FindMouseApp")
         // 一個都沒有的話這條測試會空洞地通過，而它守的正是「別讓 SwiftUI 擴散」
-        #expect(importers == ["SettingsWindow.swift"],
+        //
+        // **精確比對不是 `contains`**：放寬成 `contains` 之後，新檔案帶進 SwiftUI
+        // 就不會有任何訊號，這條測試也就不再守任何東西。要加檔案就回來登記一行
+        // ——那個「必須回來登記」就是它的全部作用。
+        #expect(importers == ["AdvancedSettingsWindow.swift", "SettingsWindow.swift"],
                 "SwiftUI 只給設定視窗；overlay 是純 AppKit ＋ CALayer（spec 第 7.4 節）：\(importers)")
     }
 

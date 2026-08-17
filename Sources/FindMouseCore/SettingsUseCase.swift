@@ -62,6 +62,87 @@ public enum SettingsError: Error, Sendable, Equatable {
     case outOfRange(key: String, value: Double, range: ClosedRange<Double>)
 }
 
+/// 進階設定視窗那一列要顯示的東西。
+///
+/// **只有 `SettingsForm.advancedKeys` 需要。** 主視窗那 8 項的標題寫在 View 裡，
+/// 因為它們的版面各自不同（滑桿／stepper／勾選／快捷鍵欄）；registry 再放一份
+/// 就是兩份會漂掉的字串。缺漏由 `everyAdvancedKeyHasPresentation` 守。
+public struct AdvancedPresentation: Sendable, Equatable {
+    public let title: String
+    public let group: AdvancedGroup
+    /// nil ＝ 無單位（比例類，例如 `spotlight.feather`）
+    public let unit: String?
+    /// nil ＝ 不是數字。`window.level` 是 choice，畫 picker 沒有滑桿。
+    public let slider: SliderSpec?
+
+    public struct SliderSpec: Sendable, Equatable {
+        public let step: Double
+        /// 量化位數。0 就是取整。
+        ///
+        /// 需要量化是量出來的：即使 `Slider` 帶了 `step`，它給的仍是
+        /// `1.2999999999`，而那個字串會原封不動出現在 `config get` 裡。
+        ///
+        /// **理由留在這裡，不指向做量化的那個 View。** 這個交叉引用已經三度
+        /// 指到搬走的符號（`scaleRow` → `sliderRow` → 現在的滑軌本體），
+        /// 因為量化發生在 View 而理由住在 Core，兩邊的重構節奏本來就不同步；
+        /// 而理由與「誰呼叫它」無關，寫在這裡就不必再追著誰跑。
+        public let fractionDigits: Int
+
+        /// **位數從 `step` 推導，不另外收一個參數。**
+        ///
+        /// 兩個各自填的旋鈕可以互相矛盾，而那個矛盾**沒有任何測試看得見**：
+        /// `step: 0.05` 配 0 位的話現行測試全綠，但滑桿拉到頂會把 0.95 量化成
+        /// 1.0——超出宣告的 `0...0.95`，於是寫入被 `SettingsUseCase` 拒絕，
+        /// 症狀是「軌道最右邊那一格拉不動」。推導讓它不可能發生，
+        /// 而不只是讓它可被偵測。
+        public init(step: Double) {
+            self.step = step
+            self.fractionDigits = Self.decimals(of: step)
+        }
+
+        /// `step` 寫下來時有幾位小數。
+        ///
+        /// 走字串而不是「反覆乘 10 再與 `rounded()` 比」，**理由不是那個迴圈會爆**
+        /// ——實測它對現行五個 step 都在 0–2 圈內收斂（0.05 是 2 圈），並不會出事。
+        /// 真正的理由是兩者**回答的是不同問題**：`String(Double)` 給最短往返表示法，
+        /// 也就是「這個字面值當初是怎麼寫的」；那個迴圈給的是「這個二進位值實際上
+        /// 精確到第幾位」。0.07 兩者分別是 2 與 **17**（實測）。我們要的是前者：
+        /// `fractionDigits` 存在的目的是把滑桿的值量化回**作者想要的精度**，
+        /// 不是浮點數碰巧帶著的精度。
+        ///
+        /// 代價寫明：指數形式沒有小數點，所以 `5e-05` 這裡會回 0（該迴圈回 5，
+        /// 反而是對的）。**不在這裡加分支**——那會是走不到的程式碼；守衛放在
+        /// `sliderDigitsFollowFromTheStep`，它拿註冊表實際用到的 step 去比對，
+        /// 有人哪天寫了指數形式就會紅。
+        private static func decimals(of step: Double) -> Int {
+            let text = String(step)
+            guard let dot = text.firstIndex(of: ".") else { return 0 }
+            let fraction = text[text.index(after: dot)...]
+            // `"10.0"` 的小數部分是 `"0"`——那是整數，不是一位小數
+            return fraction == "0" ? 0 : fraction.count
+        }
+    }
+}
+
+/// 進階視窗的分組。`CaseIterable` 的順序就是畫面上的順序。
+///
+/// **刻意不給 `String` raw value**：沒有人讀它，而帶著一個沒人讀的 raw value
+/// 等於在邀請下一個人把它持久化——那會讓改 case 名字變成破壞相容性的事。
+/// 畫面要的是 `title`，`ForEach` 要的是合成出來的 `Hashable`。
+public enum AdvancedGroup: Sendable, CaseIterable {
+    case catMotion, chase, spotlight, teaser, window
+
+    public var title: String {
+        switch self {
+        case .catMotion: return "貓咪動作"
+        case .chase:     return "追擊距離"
+        case .spotlight: return "聚光燈"
+        case .teaser:    return "逗貓棒"
+        case .window:    return "視窗"
+        }
+    }
+}
+
 /// 一個 key 的完整宣告：型別 ＋ 怎麼讀怎麼寫怎麼還原。
 ///
 /// 三者綁在同一筆資料裡，是為了讓「新增一個設定」只需要動一處。
@@ -70,6 +151,8 @@ public struct SettingSpec {
     public let key: String
     public let kind: SettingKind
     let storage: Storage
+    /// 只有進階 key 有。nil 代表它由主視窗自己畫。
+    public let advanced: AdvancedPresentation?
 
     /// 存在 `BehaviorConfig`（19 項）還是外層字串（4 項）。
     enum Storage {
@@ -99,7 +182,8 @@ public struct SettingEntry: Sendable, Equatable {
 
 private let arriveRadiusBounds = Double(BehaviorConfig.arriveRadiusRange.lowerBound)...Double(BehaviorConfig.arriveRadiusRange.upperBound)
 
-/// spec 第 9 節的 23 個設定項：讀、寫、值域驗證、還原。
+/// spec 第 9 節的 23 個設定項：讀、寫、值域驗證、還原，
+/// 外加進階視窗那 15 項的展示資料（標題、分組、單位、滑桿規格）。
 ///
 /// CLI 與設定視窗走同一個實例，所以值域只有一份。
 public final class SettingsUseCase {
@@ -119,6 +203,15 @@ public final class SettingsUseCase {
 
     public func kind(of key: String) throws -> SettingKind {
         try spec(key).kind
+    }
+
+    /// 進階展示資料。不在註冊表或不是進階 key 都回 nil。
+    ///
+    /// 與 `kind(of:)` 一樣走 `specs` 字典而不是 `registry`：後者是 computed，
+    /// 每次取用都重建 23 個 spec 連同它們的 closure，而進階視窗每畫一次
+    /// 每一列都會問一次。
+    public func presentation(of key: String) -> AdvancedPresentation? {
+        specs[key]?.advanced
     }
 
     public func get(_ key: String) throws -> String {
@@ -167,6 +260,37 @@ public final class SettingsUseCase {
             store.save(config)
         case .external:
             store.setString(nil, forKey: key)
+        }
+    }
+
+    /// 這個 key 現在的值是不是等於**現在的**預設。
+    ///
+    /// 不能改問「鍵在不在 store 裡」：除了 override 欄位與字串型 key
+    /// ——那些才是「nil 就移除鍵」——`SettingsGateway.save` 對 domain 欄位
+    /// 一律無條件全寫，所以存過任何一次之後，鍵一定在。
+    ///
+    /// 預設用既有的 `clear` ＋ `read` 算，不另建預設表——`wake.threshold` 與
+    /// `arrive.radius` 的預設是衍生的（後者還隨 pack 體高與 `cat.scale` 變），
+    /// 常數表必然分岔。
+    ///
+    /// 對呼叫端的後果：**改一列可能翻掉另一列的答案**。`rehunt.threshold` 動了，
+    /// 一個明確寫過的 `wake.threshold` 就可能從「是預設」變成「不是」；`cat.scale`
+    /// 與換 pack 對 `arrive.radius` 同理。所以任何一次變更之後要重算**每一列**，
+    /// 不是只重算剛編輯的那一列。
+    public func isAtDefault(_ key: String) throws -> Bool {
+        let spec = try self.spec(key)
+        switch spec.storage {
+        case .domain(let domain):
+            // store 與體高都只讀一次：`SettingsGateway.config` 是每次重新解一遍
+            // UserDefaults 的 computed property，兩邊各讀各的等於允許基準與現值
+            // 來自不同的快照。
+            let current = store.config
+            let height = catalog.logicalHeight
+            var probe = current
+            domain.clear(&probe)
+            return domain.read(probe, height) == domain.read(current, height)
+        case .external(let fallback):
+            return (store.string(forKey: key) ?? fallback) == fallback
         }
     }
 
@@ -284,10 +408,12 @@ public final class SettingsUseCase {
                             c.spotlightTrigger = t
                         }
                     },
-                    clear: { c in c.spotlightTrigger = BehaviorConfig().spotlightTrigger }))),
+                    clear: { c in c.spotlightTrigger = BehaviorConfig().spotlightTrigger })),
+                advanced: nil),
             external("hotkey.summon", .hotkey, defaultValue: HotkeySpec.defaultSummonText),
             external("hotkey.teaser", .hotkey, defaultValue: HotkeySpec.defaultTeaserText),
-            cg("rehunt.threshold", 40...1000, \.rehuntThreshold),
+            cg("rehunt.threshold", 40...1000, \.rehuntThreshold,
+               advanced: adv("重新追擊距離", .chase, unit: "pt", step: 10)),
             SettingSpec(
                 key: "wake.threshold",
                 // 0 是合法值：它的語意是「任何移動都叫醒」，不是「停用喚醒」
@@ -297,9 +423,13 @@ public final class SettingsUseCase {
                     write: { v, c in
                         if case .number(let d) = v { c.wakeThresholdOverride = CGFloat(d) }
                     },
-                    clear: { c in c.wakeThresholdOverride = nil }))),
-            cg("cat.speed", 200...3000, \.catSpeed),
-            cg("cat.turnRate", 90...1800, \.catTurnRate),
+                    clear: { c in c.wakeThresholdOverride = nil })),
+                // 標題與單位都不得暗示它是開關——0 的語意是「任何移動都叫醒」
+                advanced: adv("醒來距離", .chase, unit: "pt", step: 10)),
+            cg("cat.speed", 200...3000, \.catSpeed,
+               advanced: adv("移動速度", .catMotion, unit: "pt/s", step: 10)),
+            cg("cat.turnRate", 90...1800, \.catTurnRate,
+               advanced: adv("轉向速度", .catMotion, unit: "°/s", step: 10)),
             SettingSpec(
                 key: "arrive.radius",
                 // 範圍取自 Domain：衍生預設也夾在同一個範圍內，只能有一份定義
@@ -309,47 +439,77 @@ public final class SettingsUseCase {
                     write: { v, c in
                         if case .number(let d) = v { c.arriveRadiusOverride = CGFloat(d) }
                     },
-                    clear: { c in c.arriveRadiusOverride = nil }))),
-            cg("spotlight.dimOpacity", 0...0.95, \.spotlightDimOpacity),
-            cg("spotlight.margin", 0...200, \.spotlightMargin),
-            cg("spotlight.feather", 0.2...0.95, \.spotlightFeather),
-            cg("teaser.stalkRange", 80...800, \.teaserStalkRange),
-            seconds("teaser.stalkTimeout", 0.5...20, \.teaserStalkTimeout),
-            cg("teaser.pounceTriggerSpeed", 50...3000, \.teaserPounceTriggerSpeed),
-            cg("teaser.pounceSpeed", 500...6000, \.teaserPounceSpeed),
-            cg("teaser.hitRadius", 10...300, \.teaserHitRadius),
-            cg("teaser.retreatDistance", 30...800, \.teaserRetreatDistance),
+                    clear: { c in c.arriveRadiusOverride = nil })),
+                advanced: adv("抵達半徑", .chase, unit: "pt", step: 5)),
+            cg("spotlight.dimOpacity", 0...0.95, \.spotlightDimOpacity,
+               advanced: adv("變暗程度", .spotlight, step: 0.05)),
+            cg("spotlight.margin", 0...200, \.spotlightMargin,
+               advanced: adv("邊界留白", .spotlight, unit: "pt", step: 5)),
+            cg("spotlight.feather", 0.2...0.95, \.spotlightFeather,
+               advanced: adv("邊緣羽化", .spotlight, step: 0.05)),
+            cg("teaser.stalkRange", 80...800, \.teaserStalkRange,
+               advanced: adv("潛行距離", .teaser, unit: "pt", step: 10)),
+            seconds("teaser.stalkTimeout", 0.5...20, \.teaserStalkTimeout,
+                    advanced: adv("潛行逾時", .teaser, unit: "秒", step: 0.5)),
+            cg("teaser.pounceTriggerSpeed", 50...3000, \.teaserPounceTriggerSpeed,
+               advanced: adv("撲擊觸發速度", .teaser, unit: "pt/s", step: 10)),
+            cg("teaser.pounceSpeed", 500...6000, \.teaserPounceSpeed,
+               advanced: adv("撲擊速度", .teaser, unit: "pt/s", step: 50)),
+            cg("teaser.hitRadius", 10...300, \.teaserHitRadius,
+               advanced: adv("命中半徑", .teaser, unit: "pt", step: 5)),
+            cg("teaser.retreatDistance", 30...800, \.teaserRetreatDistance,
+               advanced: adv("後退距離", .teaser, unit: "pt", step: 10)),
             external("window.level", .choice(["overlay", "screenSaver", "floating"]),
-                     defaultValue: "overlay"),
+                     defaultValue: "overlay",
+                     advanced: adv("疊放層級", .window)),
         ]
     }
 
     private static func cg(_ key: String, _ range: ClosedRange<Double>,
-                           _ path: WritableKeyPath<BehaviorConfig, CGFloat>) -> SettingSpec {
+                           _ path: WritableKeyPath<BehaviorConfig, CGFloat>,
+                           advanced: AdvancedPresentation? = nil) -> SettingSpec {
         SettingSpec(key: key, kind: .number(range), storage: .domain(.init(
             read: { c, _ in .number(Double(c[keyPath: path])) },
             write: { v, c in if case .number(let d) = v { c[keyPath: path] = CGFloat(d) } },
-            clear: { c in c[keyPath: path] = BehaviorConfig()[keyPath: path] })))
+            clear: { c in c[keyPath: path] = BehaviorConfig()[keyPath: path] })),
+                    advanced: advanced)
     }
 
     private static func seconds(_ key: String, _ range: ClosedRange<Double>,
-                                _ path: WritableKeyPath<BehaviorConfig, TimeInterval>) -> SettingSpec {
+                                _ path: WritableKeyPath<BehaviorConfig, TimeInterval>,
+                                advanced: AdvancedPresentation? = nil) -> SettingSpec {
         SettingSpec(key: key, kind: .number(range), storage: .domain(.init(
             read: { c, _ in .number(c[keyPath: path]) },
             write: { v, c in if case .number(let d) = v { c[keyPath: path] = d } },
-            clear: { c in c[keyPath: path] = BehaviorConfig()[keyPath: path] })))
+            clear: { c in c[keyPath: path] = BehaviorConfig()[keyPath: path] })),
+                    advanced: advanced)
     }
 
     private static func flag(_ key: String,
-                             _ path: WritableKeyPath<BehaviorConfig, Bool>) -> SettingSpec {
+                             _ path: WritableKeyPath<BehaviorConfig, Bool>,
+                             advanced: AdvancedPresentation? = nil) -> SettingSpec {
         SettingSpec(key: key, kind: .boolean, storage: .domain(.init(
             read: { c, _ in .flag(c[keyPath: path]) },
             write: { v, c in if case .flag(let b) = v { c[keyPath: path] = b } },
-            clear: { c in c[keyPath: path] = BehaviorConfig()[keyPath: path] })))
+            clear: { c in c[keyPath: path] = BehaviorConfig()[keyPath: path] })),
+                    advanced: advanced)
     }
 
     private static func external(_ key: String, _ kind: SettingKind,
-                                 defaultValue: String) -> SettingSpec {
-        SettingSpec(key: key, kind: kind, storage: .external(defaultValue: defaultValue))
+                                 defaultValue: String,
+                                 advanced: AdvancedPresentation? = nil) -> SettingSpec {
+        SettingSpec(key: key, kind: kind, storage: .external(defaultValue: defaultValue),
+                    advanced: advanced)
+    }
+
+    /// 展示資料的縮寫。「有沒有滑桿」與「量化幾位」都由**給不給 `step`／給多少**
+    /// 決定，沒有第二個開關可以填成互相矛盾的組合；
+    /// `sliderSpecExistsExactlyForNumberKinds` 守它與型別一致。
+    private static func adv(_ title: String, _ group: AdvancedGroup,
+                            unit: String? = nil,
+                            step: Double? = nil) -> AdvancedPresentation {
+        AdvancedPresentation(
+            title: title, group: group, unit: unit,
+            slider: step.map { .init(step: $0) })
     }
 }

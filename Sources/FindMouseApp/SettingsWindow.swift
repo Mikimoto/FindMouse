@@ -9,52 +9,75 @@ import SwiftUI
 
 /// 設定視窗（spec 第 9 節那張表 UI 欄打 ✓ 的 8 項）。
 ///
-/// **這是全專案唯一用 SwiftUI 的地方**（`ArchitectureBoundaryTests`
-/// 的 `swiftUIStaysInTheSettingsWindow` 釘住）。overlay 維持純 AppKit ＋ CALayer，
+/// 它同時持有**進階設定視窗**（`AdvancedSettingsRootView`，其餘那些 key）。
+/// 兩個視窗一個 controller、一個 `model`：這樣「值變了」只要通知一次，
+/// 而兩邊可以同時開著看同一份狀態。
+///
+/// **SwiftUI 只出現在這裡與 `AdvancedSettingsWindow.swift`**（`ArchitectureBoundaryTests`
+/// 的 `swiftUIStaysInTheSettingsWindow` 用檔名白名單釘住這兩個）。
+/// overlay 維持純 AppKit ＋ CALayer，
 /// 因為那裡有 spec 第 7.4 節的每帧預算，而這個視窗一秒鐘畫不到一次。
 ///
 /// 所有判斷都在 `SettingsFormStore`（Core，有測試）。這一層剩下版面配置，
 /// 而版面配置本來就只能用眼睛驗——`FindMouseApp` 沒有測試 target。
 @MainActor
-final class SettingsWindowController: NSObject, NSWindowDelegate {
+final class SettingsWindowController {
 
     private let model: SettingsViewModel
-    private var window: NSWindow?
+    private let hosted: HostedWindow
+    /// 進階設定視窗。與主視窗**共用同一個 `model`**，所以 CLI 改了值之後
+    /// `AppDelegate.settingsDidChange()` 那一次 `reload()` 兩邊一起更新，
+    /// 不必各自監聽。
+    private let advanced: HostedWindow
 
     init(store: SettingsFormStore, loginItem: LoginItemGateway) {
-        model = SettingsViewModel(store: store, loginItem: loginItem)
+        let model = SettingsViewModel(store: store, loginItem: loginItem)
+        self.model = model
+        // 提交範圍是 `advancedKeys` 而不是 `windowKeys`：這個視窗畫的就是那 15 項，
+        // 關掉時要接住的也只有它們。理由與下面主視窗那段同一條。
+        let advanced = HostedWindow(
+            title: "FindMouse 進階設定",
+            onWillClose: {
+                for key in SettingsForm.advancedKeys { model.commitDraft(key) }
+            },
+            content: { NSHostingController(rootView: AdvancedSettingsRootView(model: model)) })
+        self.advanced = advanced
+        // 兩個回呼捕的都是這個**區域變數**而不是 `self`：它們只需要 model，
+        // 繞過 self 就沒有「controller → HostedWindow → 回呼 → controller」這個環，
+        // 也就不必寫 `[weak self]`——視窗由 `HostedWindow` 獨佔持有、它又由
+        // controller 獨佔持有，controller 沒了視窗就跟著沒了，關閉回呼不可能在
+        // self 已死時抵達；寫了也只是多一條走不到的靜默分支，
+        // 而下面那段註解說的正是「不要靜默地丟掉使用者打的字」。
+        //
+        // 視窗本身仍然是延遲建立的（`HostedWindow.show()` 才生），這裡只是先把
+        // 「要怎麼生」記下來。
+        hosted = HostedWindow(
+            title: "FindMouse 設定",
+            onWillClose: {
+                // 打了字但沒按 Enter 就把視窗關掉——把還沒提交的都提交掉。
+                //
+                // 為什麼要這個而不是只靠失焦（`SettingsRootView` 的 `onChange(of: focused)`）：
+                // 關視窗時焦點變化不保證會走到那條路，而「我明明打了，關掉再開卻沒生效」
+                // 是完全沒有訊號的資料遺失。這裡重複提交是安全的——`commitDraft` 對
+                // 「沒有草稿」與「草稿等於現值」都是 no-op（`leavingAnUntouchedFieldWritesNothing`）。
+                //
+                // 非法值在這裡照樣被拒絕、照樣不寫入；使用者下次打開會看到那個紅字。
+                for key in SettingsForm.windowKeys { model.commitDraft(key) }
+            },
+            content: {
+                NSHostingController(rootView: SettingsRootView(model: model, openAdvanced: {
+                    // 與下面 `show()` 同一條理由：打開之前先重讀，
+                    // 上次關掉之後 CLI 可能改過任何一個值。
+                    model.reload()
+                    advanced.show()
+                }))
+            })
     }
 
     func show() {
         // 每次打開都重讀：上次關掉之後 CLI 可能改過任何一個值
         model.reload()
-        if window == nil {
-            let hosting = NSHostingController(rootView: SettingsRootView(model: model))
-            let created = NSWindow(contentViewController: hosting)
-            created.title = "FindMouse 設定"
-            created.styleMask = [.titled, .closable]
-            // 關掉再打開要是同一個視窗。少了這行，關閉會釋放它而下次
-            // `makeKeyAndOrderFront` 打在已釋放的物件上。
-            created.isReleasedWhenClosed = false
-            created.delegate = self
-            created.center()
-            window = created
-        }
-        // `.accessory` 政策的 app 不會自動變成前景，不叫的話視窗收不到鍵盤輸入
-        NSApp.activate()
-        window?.makeKeyAndOrderFront(nil)
-    }
-
-    /// 打了字但沒按 Enter 就把視窗關掉——把還沒提交的都提交掉。
-    ///
-    /// 為什麼要這個而不是只靠失焦（`SettingsRootView` 的 `onChange(of: focused)`）：
-    /// 關視窗時焦點變化不保證會走到那條路，而「我明明打了，關掉再開卻沒生效」
-    /// 是完全沒有訊號的資料遺失。這裡重複提交是安全的——`commitDraft` 對
-    /// 「沒有草稿」與「草稿等於現值」都是 no-op（`leavingAnUntouchedFieldWritesNothing`）。
-    ///
-    /// 非法值在這裡照樣被拒絕、照樣不寫入；使用者下次打開會看到那個紅字。
-    func windowWillClose(_ notification: Notification) {
-        for key in SettingsForm.windowKeys { model.commitDraft(key) }
+        hosted.show()
     }
 
     /// 值被別人改了（CLI 的 `config set`／`config reset`）。
@@ -152,6 +175,11 @@ final class SettingsViewModel: ObservableObject {
     func submit(_ key: String, number: Double) { store.submit(key, number: number); publish() }
     func step(_ key: String, by delta: Double) { store.step(key, by: delta); publish() }
     func toggle(_ key: String) { store.toggle(key); publish() }
+    // 這兩支與其他 forward 一樣只有「呼叫 store、發佈」：清草稿、清紅字、重讀、
+    // 通知 `AppDelegate` 都在 store 裡（`SettingsFormStore.reset`），
+    // 在這一層再做一次等於把有測試的判斷抄一份到沒有測試的地方。
+    func reset(_ key: String) { store.reset(key); publish() }
+    func resetAdvanced() { store.resetAdvanced(); publish() }
     func choosePack(_ id: String) { store.choosePack(id); publish() }
     func packSwapConcluded() { store.packSwapConcluded(); publish() }
     func importPacks(_ urls: [URL]) { store.importPacks(from: urls); publish() }
@@ -167,7 +195,9 @@ final class SettingsViewModel: ObservableObject {
 private struct SettingsRootView: View {
 
     @ObservedObject var model: SettingsViewModel
-    @State private var showAdvanced = false
+    /// 打開進階設定視窗。視窗由 `SettingsWindowController` 持有，
+    /// View 只負責發出這個要求——它不該知道視窗是怎麼生出來的。
+    let openAdvanced: () -> Void
     /// 哪個文字欄有焦點。`nil` 代表都沒有。
     @FocusState private var focused: String?
     /// 複製版本字串後的短暫回饋。1.5 秒後自己復原。
@@ -341,20 +371,22 @@ private struct SettingsRootView: View {
 
     // MARK: - 數值
 
-    /// 範圍取自 `SettingKind`，不在這裡寫第二份 0.5...2.0（spec 第 9 節：值域只有一份）。
-    private var scaleRow: some View {
+    /// 滑軌 ＋ 欄位。標題欄寬與兩個控制項的組合是**主視窗的**版面；
+    /// 進階視窗的列要多畫 key 與 ↺，所以它自己組一次，共用的是
+    /// `SettingSlider` 與 `SettingField` 這兩塊控制項本體。
+    private func sliderRow(_ key: String, title: String,
+                           slider: AdvancedPresentation.SliderSpec,
+                           width: CGFloat = 64) -> some View {
         HStack(alignment: .firstTextBaseline) {
-            Text("貓的大小").frame(width: 150, alignment: .leading)
-            if case .number(let range)? = model.kind(of: "cat.scale") {
-                Slider(value: Binding(
-                    get: { model.snapshot.number("cat.scale") ?? range.lowerBound },
-                    // 量化到兩位小數：slider 給的是 1.2999999999，那個字串
-                    // 會原封不動出現在 `config get` 裡
-                    set: { model.submit("cat.scale", number: ($0 * 100).rounded() / 100) }
-                ), in: range, step: 0.05)
-            }
-            editableField("cat.scale", width: 64)
+            Text(title).frame(width: 150, alignment: .leading)
+            SettingSlider(model: model, key: key, slider: slider, label: title)
+            SettingField(model: model, key: key, label: title, width: width, focused: $focused)
         }
+    }
+
+    private var scaleRow: some View {
+        sliderRow("cat.scale", title: "貓的大小",
+                  slider: AdvancedPresentation.SliderSpec(step: 0.05))
     }
 
     /// 用 `onIncrement`／`onDecrement` 而不是 `Stepper(value:in:)`：後者的加減
@@ -363,7 +395,7 @@ private struct SettingsRootView: View {
     private func stepperRow(_ key: String, title: String, unit: String) -> some View {
         HStack(alignment: .firstTextBaseline) {
             Text(title).frame(width: 150, alignment: .leading)
-            editableField(key, width: 64)
+            SettingField(model: model, key: key, label: title, width: 64, focused: $focused)
             Stepper {
                 Text(unit)
             } onIncrement: {
@@ -372,35 +404,6 @@ private struct SettingsRootView: View {
                 model.step(key, by: -1)
             }
             Spacer()
-        }
-    }
-
-    /// 三種列共用的那一小塊：文字欄 ＋ 下面一行（有錯誤是紅字，沒有是值域提示）。
-    ///
-    /// **共用的是欄位不是整列**——滑軌列有滑軌、stepper 列有加減鈕、hotkey 列
-    /// 兩者都沒有，外層本來就不一樣；而紅框、錯誤字、提示這三件事三種列一模一樣，
-    /// 各寫一份的話改一邊會忘另外兩邊。
-    ///
-    /// **不在這裡 parse 也不比範圍**：值域住在 `SettingsUseCase`（spec 第 9 節），
-    /// UI 再驗一次就是第二份。特別是不用 `TextField(value:format:)`——它會自己
-    /// 解析並**夾值**，與 spec 第 8 節「超出範圍一律拒絕、不 clamp」相反，
-    /// 而默默改掉使用者給的值比明確失敗更難查。
-    private func editableField(_ key: String, width: CGFloat? = nil) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
-            TextField("", text: Binding(get: { model.snapshot.text(key) },
-                                        set: { model.draft(key, $0) }))
-                .monospacedDigit()
-                .frame(width: width)
-                .focused($focused, equals: key)
-                .onSubmit { model.commitDraft(key) }
-                .overlay(
-                    RoundedRectangle(cornerRadius: 5)
-                        .stroke(.red, lineWidth: model.snapshot.errors[key] == nil ? 0 : 2))
-            if let problem = model.snapshot.errors[key] {
-                Text(problem).font(.caption).foregroundStyle(.red)
-            } else {
-                rangeHint(key)
-            }
         }
     }
 
@@ -414,26 +417,19 @@ private struct SettingsRootView: View {
         }
     }
 
-    /// 兩選一。選項來自 `SettingKind.choice`——寫死兩個 case 的話，
-    /// spec 哪天多一個觸發時機，這裡會靜默少一個選項。
-    private var triggerRow: some View {
+    /// 標題欄 ＋ `SettingChoice`。與 `sliderRow` 同一個分工：
+    /// 這一層是主視窗的版面，控制項本體共用。
+    private func choiceRow(_ key: String, title: String,
+                           labels: [String: String]) -> some View {
         HStack {
-            Text("聚光燈時機").frame(width: 150, alignment: .leading)
-            if case .choice(let options)? = model.kind(of: "spotlight.trigger") {
-                Picker("", selection: Binding(
-                    get: { model.snapshot.text("spotlight.trigger") },
-                    set: { model.submit("spotlight.trigger", $0) }
-                )) {
-                    ForEach(options, id: \.self) { option in
-                        // 沒有對應中文標籤時退回 rawValue，而不是漏掉這個選項
-                        Text(Self.triggerLabels[option] ?? option).tag(option)
-                    }
-                }
-                .pickerStyle(.radioGroup)
-                .labelsHidden()
-            }
+            Text(title).frame(width: 150, alignment: .leading)
+            SettingChoice(model: model, key: key, labels: labels, label: title)
             Spacer()
         }
+    }
+
+    private var triggerRow: some View {
+        choiceRow("spotlight.trigger", title: "聚光燈時機", labels: Self.triggerLabels)
     }
 
     private static let triggerLabels = [
@@ -444,49 +440,29 @@ private struct SettingsRootView: View {
     // MARK: - 快捷鍵
 
     /// 最小版的錄製欄位：文字欄 ＋ 失焦／Enter 時驗證，與兩個數值欄同一塊
-    /// （`editableField`）。
+    /// （`SettingField`）。
     ///
     /// **不在這裡呼叫 `HotkeySpec(text)` 判一次再決定要不要送**：值域住在
     /// `SettingsUseCase`（spec 第 9 節），UI 再驗一次就是第二份。
     private func hotkeyRow(_ key: String, title: String) -> some View {
         HStack(alignment: .firstTextBaseline) {
             Text(title).frame(width: 150, alignment: .leading)
-            editableField(key)
-        }
-    }
-
-    @ViewBuilder
-    private func rangeHint(_ key: String) -> some View {
-        if let kind = model.kind(of: key) {
-            Text(SettingsForm.text(for: kind)).font(.caption).foregroundStyle(.secondary)
+            SettingField(model: model, key: key, label: title, focused: $focused)
         }
     }
 
     // MARK: - 進階
 
-    /// 其餘 15 項只給命令，不給控制項（spec 第 9 節的理由：那些是上線後調手感用的，
-    /// 而調手感用 CLI 比 UI 好——一行連改多個值再看效果）。
+    /// 其餘那些設定搬去自己的視窗（`AdvancedSettingsRootView`）。
     ///
-    /// 清單是從註冊表推導的，不是抄的：有人加了新設定就會自動出現在這裡。
+    /// **不再是原地展開的清單**：那份清單只給得出 `config set …` 的命令字串，
+    /// 而它們是調手感用的——調手感要看著貓拉滑桿，而不是抄命令去終端機打。
+    /// 換成獨立視窗還有一個原地展開給不了的好處：它可以與主視窗**同時開著**，
+    /// 兩邊都不必為了看另一邊而關掉。
     private var advancedSection: some View {
-        DisclosureGroup("進階設定…", isExpanded: $showAdvanced) {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 8) {
-                    ForEach(model.snapshot.advanced, id: \.key) { entry in
-                        VStack(alignment: .leading, spacing: 1) {
-                            Text(entry.command)
-                                .font(.system(.caption, design: .monospaced))
-                                .textSelection(.enabled)
-                            Text("範圍 \(entry.range)")
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
-                        }
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                    }
-                }
-                .padding(.top, 6)
-            }
-            .frame(height: 200)
+        HStack {
+            Button("進階設定…") { openAdvanced() }
+            Spacer()
         }
     }
 
@@ -516,6 +492,140 @@ private struct SettingsRootView: View {
                     copiedStamp = true
                     DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { copiedStamp = false }
                 }
+        }
+    }
+}
+
+// MARK: - 兩個視窗共用的控制項
+
+// 這三塊是**控制項本體**，不含標題欄。兩個視窗的列長得不一樣（主視窗是
+// 「標題 ＋ 控制項」，進階視窗多了 key、單位與 ↺），共用整列的話其中一邊
+// 一定要靠參數去關掉另一邊的東西；共用到控制項為止就沒有這個問題，
+// 而會漂掉的東西（紅框、量化公式、選項來源）剛好都在控制項裡。
+//
+// 它們是 internal 而不是 private：`AdvancedSettingsWindow.swift` 要用。
+
+/// 文字欄 ＋ 下面一行（有錯誤是紅字，沒有是值域提示）。
+///
+/// **共用的是欄位不是整列**——滑軌列有滑軌、stepper 列有加減鈕、hotkey 列
+/// 兩者都沒有，外層本來就不一樣；而紅框、錯誤字、提示這三件事三種列一模一樣，
+/// 各寫一份的話改一邊會忘另外兩邊。
+///
+/// **不在這裡 parse 也不比範圍**：值域住在 `SettingsUseCase`（spec 第 9 節），
+/// UI 再驗一次就是第二份。特別是不用 `TextField(value:format:)`——它會自己
+/// 解析並**夾值**，與 spec 第 8 節「超出範圍一律拒絕、不 clamp」相反，
+/// 而默默改掉使用者給的值比明確失敗更難查。
+///
+/// **焦點收 `FocusState<String?>.Binding` 而不是自己開一個 `@FocusState`。**
+/// 提交時機掛在根 view 的單一 `onChange(of: focused)` 上（理由寫在那裡），
+/// 每個欄位自帶焦點狀態的話那條就看不到欄位之間的切換了。
+///
+/// **`label` 沒有預設值**：它畫不出來（標題是同一列的 `Text` 畫的，欄位自己
+/// 只有框），所以漏給的唯一症狀是 VoiceOver 唸「文字欄」而畫面完全正常——
+/// 沒有任何人看得出來。設成必填讓編譯器擋住，這是本檔三個控制項共用的做法。
+struct SettingField: View {
+
+    @ObservedObject var model: SettingsViewModel
+    let key: String
+    let width: CGFloat?
+    /// 唸給 VoiceOver 的名字。呼叫端傳的是**它同一列已經在畫的那個字串**，
+    /// 所以不是第二份事實。
+    let label: String
+    @FocusState.Binding var focused: String?
+
+    init(model: SettingsViewModel, key: String, label: String, width: CGFloat? = nil,
+         focused: FocusState<String?>.Binding) {
+        self.model = model
+        self.key = key
+        self.width = width
+        self.label = label
+        self._focused = focused
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            // `TextField` 的 label 留空是刻意的（標題在同一列左邊，畫兩次會重複），
+            // 但空 label 不會讓 VoiceOver 去認旁邊那個 `Text`——要明講。
+            TextField("", text: Binding(get: { model.snapshot.text(key) },
+                                        set: { model.draft(key, $0) }))
+                .accessibilityLabel(label)
+                .monospacedDigit()
+                .frame(width: width)
+                .focused($focused, equals: key)
+                .onSubmit { model.commitDraft(key) }
+                .overlay(
+                    RoundedRectangle(cornerRadius: 5)
+                        .stroke(.red, lineWidth: model.snapshot.errors[key] == nil ? 0 : 2))
+            if let problem = model.snapshot.errors[key] {
+                Text(problem).font(.caption).foregroundStyle(.red)
+            } else if let kind = model.kind(of: key) {
+                Text(SettingsForm.text(for: kind)).font(.caption).foregroundStyle(.secondary)
+            }
+        }
+    }
+}
+
+/// 滑軌本體。範圍取自 `SettingKind`，不在這裡寫第二份（spec 第 9 節：值域只有一份）。
+///
+/// **收 `SliderSpec` 而不是 `step` 與位數兩個參數**：兩個各自填的旋鈕可以互相
+/// 矛盾，而那個矛盾沒有任何測試看得見（症狀寫在 `AdvancedPresentation.SliderSpec`
+/// 的註解）。`SliderSpec` 的位數是從 step 推導的，所以傳不進不一致的一組。
+/// 註冊表的 `AdvancedPresentation.slider` 解開之後就是這個型別；
+/// `cat.scale` 是主視窗的，沒有 presentation，就地從它的 step 生一個。
+struct SettingSlider: View {
+
+    @ObservedObject var model: SettingsViewModel
+    let key: String
+    let slider: AdvancedPresentation.SliderSpec
+    /// 同 `SettingField.label`。`Slider(value:in:step:)` 這個 init **沒有 label
+    /// 參數**，所以不補的話 VoiceOver 只唸得出值、唸不出這是什麼的值。
+    let label: String
+
+    var body: some View {
+        if case .number(let range)? = model.kind(of: key) {
+            let factor = pow(10.0, Double(slider.fractionDigits))
+            Slider(value: Binding(
+                get: { model.snapshot.number(key) ?? range.lowerBound },
+                // 量化到 `fractionDigits` 位：slider 給的是 1.2999999999，
+                // 那個字串會原封不動出現在 `config get` 裡。
+                // 公式與 `everySliderStopIsAValueTheValidatorAccepts` 同一條，
+                // **但那條不是這一支的測試**：它只掃 `advancedKeys`，所以
+                // `cat.scale` 走這一支時完全不在它的涵蓋內；而即使是它掃得到的
+                // 那些 key，它釘的也是註冊表的 step 與值域相容，
+                // 不是這一支真的照這個公式量化。
+                set: { model.submit(key, number: ($0 * factor).rounded() / factor) }
+            ), in: range, step: slider.step)
+            .accessibilityLabel(label)
+        }
+    }
+}
+
+/// 兩選一以上的選項。選項來自 `SettingKind.choice`——寫死在這裡的話，
+/// spec 哪天多一個選項，這裡會靜默少一個。
+struct SettingChoice: View {
+
+    @ObservedObject var model: SettingsViewModel
+    let key: String
+    /// rawValue → 中文標籤。
+    let labels: [String: String]
+    /// 同 `SettingField.label`。`.labelsHidden()` 只藏畫面上的 label，
+    /// 它藏的是那個空字串——所以無障礙那一側同樣要明講。
+    let label: String
+
+    var body: some View {
+        if case .choice(let options)? = model.kind(of: key) {
+            Picker("", selection: Binding(
+                get: { model.snapshot.text(key) },
+                set: { model.submit(key, $0) }
+            )) {
+                ForEach(options, id: \.self) { option in
+                    // 沒有對應中文標籤時退回 rawValue，而不是漏掉這個選項
+                    Text(labels[option] ?? option).tag(option)
+                }
+            }
+            .pickerStyle(.radioGroup)
+            .labelsHidden()
+            .accessibilityLabel(label)
         }
     }
 }

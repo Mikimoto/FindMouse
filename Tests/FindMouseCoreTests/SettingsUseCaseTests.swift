@@ -390,3 +390,86 @@ private func settingsError(_ body: () throws -> Void) -> SettingsError? {
     #expect(try settings.get("pack.id") == "mycat",
             "出廠預設不是 mycat——陌生人裝完會看到開發用的色塊而不是貓")
 }
+
+/// 產品的基本情境：全新安裝不該有任何一列亮著 ↺。
+///
+/// **它只守這一個方向。** 23 個 key 全部斷言 true，所以 `isAtDefault` 寫成
+/// `return true` 也照樣通過——突變實測過，它不在轉紅的名單裡。另一個方向在
+/// `everyKeyCanTellThatItHasBeenChanged`，兩條要一起看才有意義。
+@Test func untouchedKeysAreAtDefault() throws {
+    let useCase = makeUseCase()
+    for key in SettingsUseCase.declaredKeys {
+        #expect(try useCase.isAtDefault(key), "\(key) 沒動過卻不算預設")
+    }
+}
+
+/// 每個 key 各自的探測值：合法、而且不等於它的預設。
+///
+/// 手寫 23 個字面值而不是從 `kind` 推，**不是**因為循環——`isAtDefault` 根本不看
+/// `kind`，推出來的探測值不會讓它自我印證，而且探測值選錯（不小心等於預設）
+/// 會在下面那條的 `!isAtDefault` 當場紅，不會靜默通過。理由是划不划算：
+/// 一條要涵蓋五種 kind 的推導規則比 23 個字面值還長也更難讀，而下面那條的
+/// `sorted() == declaredKeys` 會逼第 24 個 key 的作者親手挑一個值，
+/// 不是從一條他沒讀過的規則繼承一個。
+private let probeValues: [(key: String, value: String)] = [
+    ("pack.id", "fluffy-orange"),
+    ("cat.scale", "1.5"),
+    ("rest.duration", "20"),
+    ("sleep.duration", "9"),
+    ("spotlight.enabled", "false"),
+    ("spotlight.trigger", "everyHunt"),
+    ("hotkey.summon", "⌃⌥C"),
+    ("hotkey.teaser", "⌃⌥C"),
+    ("rehunt.threshold", "200"),
+    ("wake.threshold", "500"),
+    ("cat.speed", "1500"),
+    ("cat.turnRate", "720"),
+    ("arrive.radius", "120"),
+    ("spotlight.dimOpacity", "0.5"),
+    ("spotlight.margin", "48"),
+    ("spotlight.feather", "0.4"),
+    ("teaser.stalkRange", "400"),
+    ("teaser.stalkTimeout", "5"),
+    ("teaser.pounceTriggerSpeed", "800"),
+    ("teaser.pounceSpeed", "3000"),
+    ("teaser.hitRadius", "90"),
+    ("teaser.retreatDistance", "300"),
+    ("window.level", "floating"),
+]
+
+/// `untouchedKeysAreAtDefault` 的對照組。
+///
+/// 那一條把 23 個 key 全部斷言成 true，所以 `isAtDefault` 直接寫 `return true`
+/// 也會通過——它單獨看是恆真的。這條供另一個方向：每個 key 都要能說出
+/// 「這個我動過」，而 reset 之後要說得回來。少了它，一個「答案永遠不變」的 key
+/// （例如 `clear` 寫錯欄位）在 23 個裡不會有任何訊號。
+@Test func everyKeyCanTellThatItHasBeenChanged() throws {
+    #expect(probeValues.map(\.key).sorted() == SettingsUseCase.declaredKeys,
+            "新增 key 卻沒給探測值——那個 key 就只剩單向斷言")
+
+    for (key, probe) in probeValues {
+        // 每個 key 一個乾淨的 use case：`rehunt.threshold` 會動到
+        // `wake.threshold` 的衍生預設，共用一份就會讓後面的 key 從被污染的狀態出發
+        let settings = makeUseCase()
+        try settings.set(key, to: probe)
+        #expect(try !settings.isAtDefault(key), "\(key) 設成 \(probe) 之後仍算預設")
+
+        try settings.reset(key)
+        #expect(try settings.isAtDefault(key), "\(key) reset 之後應該回到預設")
+    }
+}
+
+/// `wake.threshold` 的預設是 3× `rehunt.threshold`。所以「是不是預設」不是與
+/// 常數比——改了 rehunt 之後，一個**明確寫過**的 wake 值可能剛好等於新的衍生
+/// 預設，也可能從相等變成不等。這條釘住那個連動。
+@Test func isAtDefaultTracksDerivedDefaults() throws {
+    let useCase = makeUseCase()
+    let derived = try useCase.get("wake.threshold")
+    // 斷言而不是寫在註解裡：只釘連動的話，倍率改成 4 這條照樣全過
+    #expect(derived == "480", "3 × 預設 rehunt.threshold 160")
+    try useCase.set("wake.threshold", to: derived)     // 明確寫入「剛好等於預設」的值
+    #expect(try useCase.isAtDefault("wake.threshold"), "值等於衍生預設時應算預設")
+
+    try useCase.set("rehunt.threshold", to: "200")     // 衍生預設變成 600
+    #expect(try !useCase.isAtDefault("wake.threshold"), "衍生預設變了，480 就不再是預設")
+}
