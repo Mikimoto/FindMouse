@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  只有一個鍵，而且刻意如此。
+
+  每加一個 entitlement 都要說得出「哪一個實測失敗需要它」——沒有那個實測，
+  加進來的就是一個沒人知道能不能拿掉的權限，而它會一直留著。
+  2026-08-17 的六個沙盒前提量下來，沒有任何一個需要額外的 entitlement：
+
+  - 讀被雙擊／拖進來的檔案 → LaunchServices 與拖放各自發 sandbox extension，
+    不需要 files.user-selected（見 spec 前提 3）
+  - control socket → 綁在自己的容器裡（前提 2、5）
+  - 開機啟動 → SMAppService 在沙盒下正常，連自己的 bundle 都讀得到（前提 6）
+  - Carbon 熱鍵、NSEvent.mouseLocation、overlay → 2026-08-10 驗過，
+    spec 第 13 節的「零系統權限」在沙盒下依然成立
+
+  唯一**刻意不加**的是舊 pack 目錄的讀取權：那要靠使用者透過 NSOpenPanel
+  自己授權（spec D-2），不是靠一個常駐的 entitlement。
+-->
+<plist version="1.0">
+<dict>
+    <key>com.apple.security.app-sandbox</key>
+    <true/>
+</dict>
+</plist>

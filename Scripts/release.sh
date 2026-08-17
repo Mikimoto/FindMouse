@@ -352,12 +352,30 @@ say "5／12 簽章"
 #
 # --timestamp 是 notarize 的硬性要求，不是可選的保險；
 # --options runtime 是 hardened runtime，同樣是 notarize 的門檻。
+#
+# **entitlements 只給主 bundle，不給巢狀的。** 沙盒是 process 層級的屬性，
+# 由被執行的那個主執行檔的簽章決定；資源 bundle 不會被執行，給了它也不會生效，
+# 反而多一份要維護的宣告。
 while IFS= read -r nested; do
     [[ -n "${nested}" ]] || continue
     codesign --force --options runtime --timestamp --sign "${IDENTITY}" "${nested}"
 done < <(/usr/bin/find "${APP}/Contents/Resources" -maxdepth 1 -name '*.bundle' 2>/dev/null)
-codesign --force --options runtime --timestamp --sign "${IDENTITY}" "${APP}"
-ok "已簽 ${IDENTITY}"
+codesign --force --options runtime --timestamp \
+    --entitlements "${ROOT}/Scripts/FindMouse.entitlements" \
+    --sign "${IDENTITY}" "${APP}"
+ok "已簽 ${IDENTITY}（含 app-sandbox）"
+
+# 立刻斷言，不要留到第 11 步。`--entitlements` 哪天被拿掉的話，後面每一條驗收
+# 都照樣過——簽章有效、notarize 會過、Gatekeeper 也接受，只是出貨了一個沒有
+# 沙盒的版本，而那件事從產物外觀完全看不出來。
+ENT="$(mktemp)"
+codesign -d --entitlements - --xml "${APP}" >"${ENT}" 2>/dev/null || true
+if ! plutil -p "${ENT}" 2>/dev/null | grep -q '"com.apple.security.app-sandbox" => 1'; then
+    rm -f "${ENT}"
+    die "簽好的 .app 讀不到 com.apple.security.app-sandbox。這份產物沒有沙盒，不能發出去。"
+fi
+rm -f "${ENT}"
+ok "app-sandbox 確認在簽章裡"
 
 say "6／12 notarize .app（第一次等 Apple）"
 # **兩個產物都要各自送審一次，因為票是按 cdhash 發的。**
