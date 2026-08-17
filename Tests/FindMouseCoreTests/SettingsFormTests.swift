@@ -326,7 +326,7 @@ private let specWindowKeys = [
     #expect(try harness.settings.get("cat.scale") == "1")
 }
 
-/// 回送在 hotkey 欄位一樣會發生——`editableField` 是三種列共用的那一塊，
+/// 回送在 hotkey 欄位一樣會發生——`SettingField` 是三種列共用的那一塊，
 /// 只守數值欄的話另外兩種列照樣靜默。
 @Test @MainActor func theEchoAfterARejectedHotkeyKeepsTheComplaintToo() {
     let harness = FormHarness()
@@ -961,8 +961,11 @@ private let specWindowKeys = [
 /// 走的線（`SettingsWindow` → `model.submit(_:number:)` → 這裡 → `render` →
 /// `set`），中間的 `render` 也在受測範圍內。自己拼字串等於把 `render` 抄一份。
 ///
-/// **量化公式在這裡是抄的**（進階視窗還沒寫）。所以它釘的是「註冊表的 step
-/// 與值域互相相容」，不是「視窗真的照這個公式量化」——後者要等那個視窗存在。
+/// **量化公式在這裡是抄的。** 產品碼那一份在 `SettingSlider`（兩個視窗共用），
+/// 而 `FindMouseApp` 沒有測試 target，所以它跑不到這裡來——**進階視窗做出來
+/// 並沒有改變這件事**：共用的是公式，不是涵蓋。所以這條釘的仍然只是「註冊表的
+/// step 與值域互相相容」，不是「視窗真的照這個公式量化」。要補上後者，得等
+/// App 有測試 target，或那段量化搬進 Core。
 @Test @MainActor func everySliderStopIsAValueTheValidatorAccepts() throws {
     let harness = FormHarness()
     for key in SettingsForm.advancedKeys {

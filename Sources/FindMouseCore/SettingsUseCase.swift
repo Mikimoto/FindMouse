@@ -80,8 +80,12 @@ public struct AdvancedPresentation: Sendable, Equatable {
         /// 量化位數。0 就是取整。
         ///
         /// 需要量化是量出來的：即使 `Slider` 帶了 `step`，它給的仍是
-        /// `1.2999999999`，而那個字串會原封不動出現在 `config get` 裡
-        /// （`SettingsWindow.sliderRow` 的註解）。
+        /// `1.2999999999`，而那個字串會原封不動出現在 `config get` 裡。
+        ///
+        /// **理由留在這裡，不指向做量化的那個 View。** 這個交叉引用已經三度
+        /// 指到搬走的符號（`scaleRow` → `sliderRow` → 現在的滑軌本體），
+        /// 因為量化發生在 View 而理由住在 Core，兩邊的重構節奏本來就不同步；
+        /// 而理由與「誰呼叫它」無關，寫在這裡就不必再追著誰跑。
         public let fractionDigits: Int
 
         /// **位數從 `step` 推導，不另外收一個參數。**

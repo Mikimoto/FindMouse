@@ -11,7 +11,8 @@ import AppKit
 ///
 /// **內容的型別是 `NSViewController` 而不是 SwiftUI 的 view。**
 /// `import SwiftUI` 由 `ArchitectureBoundaryTests.swiftUIStaysInTheSettingsWindow`
-/// 用**檔名白名單**釘住（目前只有 `SettingsWindow.swift`），所以這個共用層不能碰
+/// 用**檔名白名單**釘住（目前是 `SettingsWindow.swift` 與
+/// `AdvancedSettingsWindow.swift`），所以這個共用層不能碰
 /// `NSHostingController`——呼叫端自己包好送進來就行，這裡只管視窗。
 /// 順帶省掉在 `AnyView`（型別抹除）與泛型參數（跟著跑到每個持有者身上）之間二選一。
 ///

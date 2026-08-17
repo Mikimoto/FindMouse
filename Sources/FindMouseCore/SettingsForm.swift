@@ -65,9 +65,10 @@ public enum SettingsForm {
 
     /// 進階視窗的一列。
     ///
-    /// **目前還沒有任何 View 讀它**——現在畫在設定視窗裡的那個「進階設定…」
-    /// 摺疊區走的是 `advancedEntries`（每列一行可複製的命令）。兩者會並存到
-    /// 進階視窗做完為止，屆時這兩份一起收掉。
+    /// 進階視窗（`AdvancedSettingsRootView`）畫的就是這個。
+    ///
+    /// 舊的那份 `advancedEntries`（每列一行可複製的命令）還在，但**已經沒有 View
+    /// 讀它**了——它與 `Snapshot.advanced` 一起收掉是下一個任務的事，不是忘了。
     ///
     /// 沒有 `range`：值域說明由 `text(for: kind)` 當場算，而 `kind` 就在同一個
     /// 結構裡。存一份衍生欄位只是多一個會與來源分岔的地方。
