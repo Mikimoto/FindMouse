@@ -33,6 +33,9 @@ SciPy 裝在它上面，讓 mise 換一個 python 進來會讓素材管線立刻
   全綠，整批結果不可採信。
 - 架構的 import 允許清單由 `Tests/FindMouseDomainTests/ArchitectureBoundaryTests.swift`
   強制。它擋不住刻意規避（一行兩個 import、跨行），那不是它的目的。
+  **`swiftUIStaysInTheSettingsWindow` 是精確相等**（不是 contains）：新增一個 import
+  SwiftUI 的檔案就編得過但測試紅，要回去那條清單登記檔名。放寬成 contains 之後
+  SwiftUI 擴散就不再有任何訊號，那條測試也就不守任何東西了。
 
 ## 會咬人的地方
 
