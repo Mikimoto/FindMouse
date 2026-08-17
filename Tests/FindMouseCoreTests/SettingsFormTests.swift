@@ -944,6 +944,67 @@ private let specWindowKeys = [
     #expect(unpinned.isEmpty, "註冊表用了沒被釘住的 step：\(unpinned)")
 }
 
+/// 滑桿吐得出來的每一格，`set` 都必須收得下。
+///
+/// 兩個獨立的決定湊在一起才有這個危險：值要量化（`Slider` 帶了 `step` 仍給
+/// `1.2999999999`），而 `set` **拒絕超出值域的值、不 clamp**（spec 第 9 節）。
+/// 量化把值推出值域的話，使用者只是拉一下滑桿就吃一行紅字，而那一格他永遠
+/// 拉不到——UI 吐出自己的驗證器不收的值。
+///
+/// **這條與 `sliderDigitsFollowFromTheStep` 不重疊。** 那條只問「digits 是不是
+/// 從 step 推出來的」，它對值域一無所知；推導正確而**值域端點比 step 細**時
+/// 它照樣綠。實測：`spotlight.dimOpacity` 的 step 從 0.05 改成 0.1、並照那條
+/// 的要求把 `0.1: 1` 補進它那張表（digits 仍是正確的 1），0.95 這個上界量化成
+/// 1.0，全 suite 只有這條紅。
+///
+/// 走 `store.submit(key, number:)` 而不是直接 `settings.set`：那才是滑桿實際
+/// 走的線（`SettingsWindow` → `model.submit(_:number:)` → 這裡 → `render` →
+/// `set`），中間的 `render` 也在受測範圍內。自己拼字串等於把 `render` 抄一份。
+///
+/// **量化公式在這裡是抄的**（進階視窗還沒寫）。所以它釘的是「註冊表的 step
+/// 與值域互相相容」，不是「視窗真的照這個公式量化」——後者要等那個視窗存在。
+@Test @MainActor func everySliderStopIsAValueTheValidatorAccepts() throws {
+    let harness = FormHarness()
+    for key in SettingsForm.advancedKeys {
+        guard let slider = harness.settings.presentation(of: key)?.slider,
+              case .number(let range) = try harness.settings.kind(of: key) else { continue }
+
+        // 上界要**明確補一格**，靠 `lowerBound + n * step` 走不到它：step 除不盡
+        // 值域時最後一格落在上界之前，而上界正是最容易出事的那一格。實測把
+        // `spotlight.margin` 的上界改成 200.5，只有補了這一格才紅。
+        //
+        // 反過來也不能讓它衝過頭。滑桿收在 `in:` 宣告的兩端裡，吐不出「上界再
+        // 加一格」的值；拿那種值來驗，會對「step 除不盡值域」這種**無害**的情況
+        // 誤報（實測 `teaser.pounceSpeed` 改 step 40 時就是這樣，那不是缺陷）。
+        var stops: [Double] = []
+        var raw = range.lowerBound
+        while raw < range.upperBound {
+            stops.append(raw)
+            raw += slider.step
+        }
+        stops.append(range.upperBound)
+
+        let factor = pow(10.0, Double(slider.fractionDigits))
+        for (index, stop) in stops.enumerated() {
+            let quantised = (stop * factor).rounded() / factor
+            // 先算出結果再進 `#expect`：訊息要讀 `errors[key]`，那是這次
+            // submit 才寫進去的。
+            let accepted = harness.store.submit(key, number: quantised)
+            #expect(accepted, """
+                \(key) 第 \(index) 格：\(stop) 量化成 \(quantised)，落在 \(range) 外\
+                （\(harness.store.snapshot.errors[key] ?? "沒有錯誤訊息")）。\
+                step \(slider.step) 只量化到 \(slider.fractionDigits) 位，\
+                而值域端點比它細。
+                """)
+        }
+
+        // 沒有中間格的話，上面那圈只驗了頭尾兩個端點——對這個 key 而言它是空的，
+        // 而畫面上那條軌道也只有頭尾可停。
+        #expect(slider.step < range.upperBound - range.lowerBound,
+                "\(key) 的 step \(slider.step) 不比整個 \(range) 窄，軌道沒有中間格")
+    }
+}
+
 // MARK: - 進階視窗的分組
 
 /// 分組是**重新排過的同一批 key**，所以「不重不漏」是它唯一的完整性條件：
