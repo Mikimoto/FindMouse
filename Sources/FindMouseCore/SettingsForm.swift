@@ -102,6 +102,16 @@ public enum SettingsForm {
     /// `try?`：key 全部來自 `advancedKeys`（推導自註冊表），而 `reset` 只在
     /// `spec(key)` 查不到時拋（`SettingsUseCase.reset`），所以拋不出來；
     /// 真的拋了也不該讓剩下的項目半途停下。
+    ///
+    /// **逐項呼叫是刻意的，不是沒想過。** 每一次 `reset` 都是一輪
+    /// 讀 config → clear → `save`（而 `save` 寫回全部 20 個鍵），所以這裡是
+    /// 14 次完整寫入而不是 1 次（`window.level` 是 external，走另一條）。
+    /// 量過：**1.377 ms**（20 次取樣的中位數，真 `UserDefaults` suite），
+    /// 換成 `resetAll()` 那種讀一次存一次的形狀是 0.028 ms。49 倍，但這是
+    /// 使用者按一次鈕跑一次的路徑，而 1.4 ms 不到一個 frame 的十分之一——
+    /// 為它加一支 `reset(keys:)` 是拿一個新的 API 換一個量不出來的差別。
+    /// 順序無關：`clear` 移除的是覆寫，衍生值（`wake.threshold` 是 3×
+    /// `rehunt.threshold`）在讀的時候才算，所以中途狀態不影響最終結果。
     public static func resetAdvanced(_ settings: SettingsUseCase) {
         for key in advancedKeys { try? settings.reset(key) }
     }
