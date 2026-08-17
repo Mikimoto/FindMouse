@@ -86,7 +86,11 @@ notarize() {
     log="$(mktemp)"
     xcrun notarytool submit "${target}" --keychain-profile "${PROFILE}" --wait 2>&1 \
         | tee "${log}" || true
-    id="$(grep -Eo '[0-9a-f]{8}-([0-9a-f]{4}-){3}[0-9a-f]{12}' "${log}" | head -1)"
+    # `|| true` 不是防禦性裝飾：`set -euo pipefail` 下 grep 沒中會讓**這一行的賦值**
+    # 回非零，整支當場死掉——實測 exit 1 且**零輸出**。而它就在 `status: Accepted`
+    # 判定之前，所以症狀是「notarize 明明成功，腳本卻無聲無息地結束」。
+    # 抓不到就讓 id 是空字串，交給下面的 `${id:-未知}`。
+    id="$(grep -Eo '[0-9a-f]{8}-([0-9a-f]{4}-){3}[0-9a-f]{12}' "${log}" | head -1 || true)"
     # 不拿 exit code 當判準。notarytool 對「命令自己失敗」是有紀律的（實測：profile
     # 不存在回 69、檔案不存在回 64、合約過期回 403 且非零），但「送出成功、而 Apple
     # 判 Invalid」會不會也回非零，本專案**還沒有樣本**。看它印出來的 status 在兩種
@@ -150,7 +154,7 @@ verify_dmg() {
         # 2026-08-17 實測 v0.5.0：dmg 有票、裡面的 .app 沒有，
         # 而 `stapler validate` 對兩者的 exit code 分得開（0 / 65）。
         check "stapler validate app（拖出來那份也要有票）" \
-              stapler validate "${app}" || rc=1
+              xcrun stapler validate "${app}" || rc=1
         # Apple 自己的發布就緒檢查，與上一條獨立：它讀的是整份 bundle 的多項條件，
         # 而且**不吃 Gatekeeper 的評估快取**（spctl 那兩條會）。同日實測對沒票的
         # .app 回 exit 70 並明寫 `Notary Ticket Missing / Severity: Fatal`，
@@ -166,7 +170,7 @@ verify_dmg() {
     check "spctl dmg（使用者實際遇到的那一關）" \
           spctl -a --no-cache -vvv -t open --context context:primary-signature "${dmg}" || rc=1
     check "stapler validate（票沒釘上，使用者離線就被擋）" \
-          stapler validate "${dmg}" || rc=1
+          xcrun stapler validate "${dmg}" || rc=1
 
     hdiutil detach "${mnt}" -quiet >/dev/null 2>&1 \
         || hdiutil detach "${mnt}" -force -quiet >/dev/null 2>&1 || true
@@ -379,7 +383,7 @@ xcrun stapler staple "${APP}"
 # 的 .app，而那個 dmg 自己的票會讓 9／12 與 10／12 看起來一切正常。
 # 票寫進 `Contents/CodeResources`，不在簽章封印範圍內——實測釘票前後 cdhash
 # 逐字相同，`codesign --verify --deep --strict` 仍回 valid。
-check "stapler validate app（票真的釘上去了）" stapler validate "${APP}" \
+check "stapler validate app（票真的釘上去了）" xcrun stapler validate "${APP}" \
     || die "票沒釘上 .app。繼續下去會打出一個內含無票 .app 的 dmg。"
 
 say "8／12 打包 dmg"
