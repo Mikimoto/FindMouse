@@ -57,12 +57,29 @@ expect() {
     else bad "${what}（期望 ${wanted}，實際 ${actual}）"; fi
 }
 
+# bundle id 從 Info.plist 讀而不是寫死。下面三個東西都要它：socket 路徑、
+# 使用者 pack 目錄、以及 defaults 的 domain。寫死的話它們會各自漂掉。
+BUNDLE_ID="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "${ROOT}/Scripts/Info.plist")"
+[[ -n "${BUNDLE_ID}" ]] || {
+    echo "讀不到 ${ROOT}/Scripts/Info.plist 的 CFBundleIdentifier。"
+    echo "先跑 plutil -lint Scripts/Info.plist 看它是不是壞了；檔案沒壞就是那個 key 不見了，補回去。"
+    exit 1
+}
+# App 的沙盒容器。**沙盒之後這是 App 唯一寫得進去的地方**，所以下面兩個路徑
+# 都從這裡長出來。
+CONTAINER="${HOME}/Library/Containers/${BUNDLE_ID}/Data"
+
 # 用自己的 socket 路徑跑，不要碰使用者真正在用的那個。
 #
 # App 與 CLI 都讀 FINDMOUSE_SOCKET（共用 FindMouseWire 的 ControlSocket.path），
 # 而 `open --env` 可以把環境變數傳進 .app。這樣 e2e 就不必 killall 使用者的
 # 實例、也不會搶走它的 socket——之前那些 killall 體操是因為兩邊都寫死路徑。
-export FINDMOUSE_SOCKET="/tmp/fm-e2e-$$.sock"
+#
+# **不能再用 `/tmp`**（2026-08-17 實測：沙盒下在 `/tmp` bind 回 errno 1／EPERM，
+# 而不沙盒時成功——是沙盒擋的，不是權限或路徑問題）。所以隔離改在容器裡做：
+# **同一個容器內靠檔名隔離仍然成立，靠目錄隔離不成立**——App 只寫得進自己的容器，
+# 而它與使用者那個實例共用同一個容器，所以只能靠檔名不同來分開。
+export FINDMOUSE_SOCKET="${CONTAINER}/fm-e2e-$$.sock"
 
 # socket 隔離得了，**設定隔離不了**：`SettingsGateway` 用 `UserDefaults.standard`
 # （`SettingsGateway.swift:15`），domain 是 .app 的 bundle id，沒有環境變數可以改。
@@ -73,21 +90,24 @@ export FINDMOUSE_SOCKET="/tmp/fm-e2e-$$.sock"
 # 釘住是因為「剛啟動載入的是 test-blocks」這類斷言否則會跟著使用者上次選了什麼
 # 而變——失敗的原因與被測物無關（實測踩過：使用者在設定視窗把 rest.duration
 # 調成 5，寫死出廠值 10 的那條斷言就紅了）。
-# 從 Info.plist 讀而不是寫死。這兩個值一旦漂掉，症狀是「e2e 去寫一個沒人讀的
-# domain」——App 讀到的還是使用者自己的設定，於是下面「載入的是內建 pack」那條
-# 會紅，而紅的原因與被測物完全無關（實測：使用者的 pack.id 是 mycat）。
-DEFAULTS_DOMAIN="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "${ROOT}/Scripts/Info.plist")"
-[[ -n "${DEFAULTS_DOMAIN}" ]] || {
-    echo "讀不到 ${ROOT}/Scripts/Info.plist 的 CFBundleIdentifier。"
-    echo "先跑 plutil -lint Scripts/Info.plist 看它是不是壞了；檔案沒壞就是那個 key 不見了，補回去。"
-    exit 1
-}
+# 與 socket、pack 目錄同一個來源（上面那個 BUNDLE_ID）。一旦漂掉，症狀是
+# 「e2e 去寫一個沒人讀的 domain」——App 讀到的還是使用者自己的設定，於是下面
+# 「載入的是內建 pack」那條會紅，而紅的原因與被測物完全無關（實測：使用者的
+# pack.id 是 mycat）。
+#
+# 沙盒之後 `defaults` 這一側**不必改**：cfprefsd 認得容器，對同一個 domain
+# 的讀寫兩邊都會被重導過去（2026-08-17 實測，連 `defaults read` 都跟著重導）。
+DEFAULTS_DOMAIN="${BUNDLE_ID}"
 SAVED_PACK_ID="$(defaults read "${DEFAULTS_DOMAIN}" pack.id 2>/dev/null || true)"
 defaults write "${DEFAULTS_DOMAIN}" pack.id -string "test-blocks"
 
 # 使用者放自己 pack 的地方（`PackCatalogRepository.userPacksDirectory`）。
 # 這裡面可能有使用者自己的東西，所以只記下**自己造的 id**，收工只刪這些。
-USER_PACKS="${HOME}/Library/Application Support/FindMouse/Packs"
+#
+# **沙盒之後這條路徑在容器裡。** `userPacksDirectory` 走的是
+# `applicationSupportDirectory`，而沙盒把它重導進容器——沒跟著改的話 cleanup 會
+# 去刪一個空的舊路徑、**靜默地什麼都沒刪**，而 e2e 每跑一次就在容器裡多留兩套。
+USER_PACKS="${CONTAINER}/Library/Application Support/FindMouse/Packs"
 CREATED_PACK_IDS=""
 # 要在收工時刪掉的暫存目錄。**掛在 trap 上而不是各段自己 rm**：中途失敗
 # （任何一條 expect 讓腳本提早結束）時，段落結尾那行 rm 根本走不到。

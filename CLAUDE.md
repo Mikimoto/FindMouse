@@ -48,9 +48,16 @@
   測試前要斷言零個實例，不能「殺完就當作乾淨」；`pgrep -f <路徑片段>` 比
   `pgrep -x <名字>` 可靠（bundle 內執行檔名與 SwiftPM 產物名不同）。
   **但「零個實例」不是唯一的路**——身分既然是 socket，給不同的 socket 就是不同的
-  身分：`open -n --env "FINDMOUSE_SOCKET=/tmp/xxx.sock" <某個.app>` 可以與使用者
-  自己那份（`/Applications`，常常正在跑）共存，`e2e.sh:131` 的 `launch_app` 就是
-  這樣做的。要驗開發建置時**不要去殺使用者的實例**。
+  身分，可以與使用者自己那份（`/Applications`，常常正在跑）共存，`e2e.sh` 的
+  `launch_app` 就是這樣做的。要驗開發建置時**不要去殺使用者的實例**。
+
+  **那條路徑不能放 `/tmp`。** 沙盒下在 `/tmp` bind 回 `errno 1`（EPERM，2026-08-17
+  實測；不沙盒時成功，所以是沙盒擋的）。要放進 App 自己的容器：
+
+      open -n --env "FINDMOUSE_SOCKET=$HOME/Library/Containers/tw.com.deepthought.findmouse/Data/dev-$$.sock" <某個.app>
+
+  **同一個容器內靠檔名隔離仍然成立，靠目錄隔離不成立**——App 只寫得進自己的容器，
+  而所有實例共用同一個容器（容器以 bundle id 為鍵），所以只能靠檔名分開。
   收工要照 e2e 那兩支的分工：`launch_app`（`e2e.sh:131`）用 before/after 的 `pgrep`
   差集記下**自己啟動的 pid**，`kill_started`（`:99`）只殺那些、並等到它們真的不在了
   才繼續。（那個差集有個已知邊界：它會收養 `open` 之後 2 秒內出現的**任何**實例，
