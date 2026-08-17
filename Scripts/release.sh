@@ -103,10 +103,11 @@ notarize() {
 }
 
 verify_dmg() {
-    # `req` 要 local。原本它沒宣告、名字又和後半段存 submission id 的那個變數
-    # 撞在一起，兩個都是全域。今天沒事只因為執行順序剛好（驗收跑在最後一次用到
-    # submission id 之後）；哪天有人在結尾的成功訊息裡多印一次 id，印出來的會是
-    # codesign 的 requirement 字串——而那看起來只是「訊息怪怪的」，不像 bug。
+    # `req` 要 local。它曾經沒宣告，而當時存 submission id 的那個變數也是全域、
+    # 名字還撞在一起；沒出事只因為執行順序剛好。那個特定的撞法現在不存在了
+    # （submission id 收進 `notarize()` 成了 local `id`），但這一行留著——
+    # 這支腳本裡每個函式都會被呼叫兩次以上，靠「順序剛好」活著的東西遲早會死，
+    # 而症狀是印出一個怪字串，看起來不像 bug。
     local dmg="$1" mnt app rc=0 req
     mnt="$(mktemp -d)"
     hdiutil attach "${dmg}" -readonly -nobrowse -mountpoint "${mnt}" >/dev/null 2>&1 \
