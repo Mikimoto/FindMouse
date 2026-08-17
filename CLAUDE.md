@@ -59,8 +59,21 @@
   `build/FindMouse.app`，連另一個 session 的實例一起殺，正是這條要避免的事。
 - **`/Applications/FindMouse.app` 現在由 Homebrew cask 管**（2026-08-14 起）。
   兩個後果：驗 cask 時不要裝進 `/Applications`（用
-  `brew install --cask --appdir="$(mktemp -d)"`，否則「裝好了」與「本來就在」外觀相同，
-  而且會蓋掉使用者正在跑的那份）；以及**永遠不要跑 `brew uninstall --cask --zap`**
+  `brew fetch --cask <tap>/findmouse`——它下載並驗 sha256 但**不安裝**，2026-08-17
+  實測快取檔的雜湊與本機建的 dmg、cask 宣告的值三者相同，這已經是「tap 送出去的
+  東西對不對」的完整答案）。
+
+  **不要用 `brew install --cask --appdir="$(mktemp -d)"` 當沙盒。** 那條路只在
+  cask **沒裝過**時是安全的；已經裝了的話 brew 把它當**升級**，會先
+  `Removing App '/Applications/FindMouse.app'` 再把新版放進 `--appdir`，接著你
+  為了收拾而跑的 `uninstall` 就把那份也清掉——使用者最後一個 app 都沒有，而且
+  正在跑的那個 process 從此指著一個被刪掉的 bundle（`pack list` 回空陣列，
+  因為它連自己的內建 pack 都讀不到了）。2026-08-17 實際造成過一次，
+  復原是 `brew install --cask <tap>/findmouse` 重裝，然後請使用者重開 App。
+  真的要驗「裝進去長什麼樣」就直接 `brew upgrade --cask findmouse`——它結束在
+  一個好的狀態，而不是一個要你自己收拾的狀態。
+
+  以及**永遠不要跑 `brew uninstall --cask --zap`**
   ——`zap` 的路徑是絕對路徑，會刪掉使用者真正的 `~/Library/Application Support/FindMouse/`
   （他自己裝的 pack）與 `~/Library/Preferences/tw.com.deepthought.findmouse.plist`
   （全部設定），而 `brew uninstall` **沒有 `--dry-run`** 可以先看（實測回
