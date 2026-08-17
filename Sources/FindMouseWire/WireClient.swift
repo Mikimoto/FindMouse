@@ -41,8 +41,7 @@ public enum ControlSocket {
     /// 為什麼是容器根而不是容器裡的 `Application Support`：`sun_path` 只有 104
     /// bytes，而後者實測 119（前者 81）。長度不是風格問題，是能不能 bind 的問題。
     public static var containerData: String {
-        let home = passwdHome()
-        return "\(home)/Library/Containers/\(bundleID)/Data"
+        "\(realHome)/Library/Containers/\(bundleID)/Data"
     }
 
     public static var path: String {
@@ -64,7 +63,12 @@ public enum ControlSocket {
     /// 真家目錄。`getpwuid` 失敗時退回 `NSHomeDirectory()`——那是沒有 passwd
     /// 記錄的極端情況，退回去至少讓非沙盒的情境還能動，而沙盒情境本來就會被
     /// `isInOwnContainer` 抓到。
-    private static func passwdHome() -> String {
+    ///
+    /// **公開是因為 pack 的舊家也只能從這裡算。** 沙盒之後
+    /// `applicationSupportDirectory` 指向容器（那正是新家），而「使用者升級之前
+    /// 的圖組住在哪」在沙盒裡沒有第二個問法——見
+    /// `PackCatalogRepository.legacyUserPacksDirectory`。
+    public static var realHome: String {
         guard let pw = getpwuid(getuid()), let dir = pw.pointee.pw_dir else {
             return NSHomeDirectory()
         }

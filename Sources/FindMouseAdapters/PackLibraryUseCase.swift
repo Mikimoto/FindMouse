@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import Foundation
+import FindMouseCore
 import FindMouseDomain
 import FindMouseWire
 
@@ -243,6 +244,69 @@ public struct PackLibraryUseCase {
             return .failed(code: .packInvalid, message: "刪不掉：\(error.localizedDescription)")
         }
         return .removed(id: id)
+    }
+
+    // MARK: - 從沙盒之前的位置搬移
+
+    /// 把使用者在**沙盒之前**放的圖組整批搬進容器。
+    ///
+    /// 為什麼要一支專門的：`install` 一次收一個來源，而舊目錄底下是一整批。
+    /// 逐一走 `install` 是刻意的——每一套都得過同一組值域、衝突與錯誤分類
+    /// （CLAUDE.md：匯入的判斷只有一份）。
+    ///
+    /// - Parameter source: 使用者在 `NSOpenPanel` 裡**選中**的那個目錄。授權跟著
+    ///   這個 URL 走，所以呼叫端不可以改用自己組出來的等價路徑——沙盒下容器外是
+    ///   「`stat` 成功、內容 EPERM」，那樣會安靜地搬出零套（2026-08-17 探針前提 1）。
+    /// - Parameter legacyDirectory: 舊家的正規位置。**只**用來判斷要不要落下
+    ///   「已經搬過」的記號：使用者在面板裡逛去別的地方時不落記號，那一列提示
+    ///   才不會在他選錯資料夾之後永遠消失。
+    /// - Returns: 直接回 Core 的型別。`install`／`remove` 之所以先回 Adapters 型別
+    ///   再由 `AppDelegate` 翻譯，是因為 CLI 那條路需要 wire 錯誤碼；搬移沒有 CLI
+    ///   入口（它要的是一個檔案面板），多一層只是多一份要同步的東西。
+    public func migrate(from source: URL, legacyDirectory: URL) -> PackMigrationResult {
+        var result = PackMigrationResult()
+
+        let entries = (try? FileManager.default.contentsOfDirectory(
+            at: source, includingPropertiesForKeys: [.isDirectoryKey])) ?? []
+
+        // 排序理由與 `PackCatalogRepository.scan` 同一條：`contentsOfDirectory`
+        // 沒有順序保證，而搬移結果那句話會逐一列出 id。
+        for entry in entries.sorted(by: { $0.lastPathComponent < $1.lastPathComponent }) {
+            // 只看目錄。舊家底下的檔案（`.DS_Store`、使用者順手留的 zip）餵給
+            // `install` 只會換來一句對他毫無意義的「這個來源裡沒有 pack.json」，
+            // 而那會淹掉真正搬不成的那幾套。
+            guard (try? entry.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true
+            else { continue }
+
+            switch install(source: entry, force: false) {
+            case let .installed(id):
+                result.installed.append(id)
+            case let .needsConfirmation(id, _):
+                // **不自動覆蓋。** 搬移是補救，不該把使用者已經裝在新家的那一套
+                // 換成舊的——他要的話還有拖放那條路，而且那條會先問他。
+                result.skipped.append(.init(name: entry.lastPathComponent,
+                                            reason: "新家已經有一套「\(id)」了，沒有覆蓋它。"))
+            case let .failed(_, message):
+                result.skipped.append(.init(name: entry.lastPathComponent, reason: message))
+            }
+        }
+
+        if source.standardizedFileURL == legacyDirectory.standardizedFileURL {
+            markLegacyMigrationDone()
+        }
+        return result
+    }
+
+    /// 落下「已經走過搬移」的記號。理由在
+    /// `PackCatalogRepository.migrationMarker(in:)`。
+    ///
+    /// 目錄可能還不存在（全新容器，而使用者一套都沒裝成功）。不建的話記號寫不進去，
+    /// 那一列提示下次啟動又回來——而使用者剛剛明明處理過了。
+    private func markLegacyMigrationDone() {
+        let dir = packsDirectory()
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        FileManager.default.createFile(
+            atPath: PackCatalogRepository.migrationMarker(in: dir).path, contents: nil)
     }
 
     /// `ExtractedTree.Failure` → 繁中句子。訊息要講出「有幾套」這種數字，

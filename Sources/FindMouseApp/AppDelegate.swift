@@ -339,7 +339,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 // Finder 什麼都不會發生，而使用者的結論是「這個按鈕壞了」。
                 try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
                 NSWorkspace.shared.activateFileViewerSelecting([dir])
+            },
+            legacyPacksNeedMigration: { PackCatalogRepository.legacyPacksNeedMigration() },
+            migrateLegacyPacks: { [weak self] in
+                guard let self else { return nil }
+                return self.runLegacyPackMigration()
             })
+    }
+
+    /// 開檔案面板要授權，然後把舊位置的圖組搬進容器。
+    ///
+    /// **面板本身就是授權**：沙盒下 `NSOpenPanel` 由 powerbox 代跑，使用者按下
+    /// 「選取」等於發一張 sandbox extension 給那個 URL，之後才讀得到裡面的東西。
+    /// 自己組一個等價路徑丟給 `migrate` 會安靜地搬出零套——沙盒下容器外是
+    /// 「`stat` 成功、內容 EPERM」（2026-08-17 探針前提 1）。
+    ///
+    /// **不要對面板回的 URL 寫 `guard startAccessingSecurityScopedResource()`。**
+    /// 同一批探針量到它對拖放來的 URL 回 `false` 而檔案照樣讀得到（回 false 的
+    /// 意思是「這不是 bookmark」，不是「你沒有權限」），寫成守衛會讓某些入口
+    /// 靜默失效。這裡連呼叫都不呼叫。
+    private func runLegacyPackMigration() -> PackMigrationResult? {
+        let legacy = PackCatalogRepository.legacyUserPacksDirectory
+        let panel = NSOpenPanel()
+        panel.directoryURL = legacy
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = false
+        panel.prompt = "授權並搬移"
+        panel.message = "選取舊版的圖組資料夾（已經幫你指好了），FindMouse 才有權限讀它。"
+        // 選單列 App 平常不是前景，面板會開在別人後面而看起來像「按了沒反應」。
+        NSApp.activate()
+        guard panel.runModal() == .OK, let chosen = panel.url else { return nil }
+        return packLibrary.migrate(from: chosen, legacyDirectory: legacy)
     }
 
     /// 匯入／移除的決策鏈。與 `RequestRouter` 內部那一份是**同一個型別、同一組

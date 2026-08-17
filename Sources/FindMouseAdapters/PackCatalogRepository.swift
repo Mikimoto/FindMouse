@@ -3,6 +3,7 @@
 
 import Foundation
 import FindMouseDomain
+import FindMouseWire
 
 /// 掃出所有可用的 pack（spec 第 6.1 節的兩個位置）。
 ///
@@ -15,6 +16,50 @@ public enum PackCatalogRepository {
         let base = FileManager.default.urls(for: .applicationSupportDirectory,
                                             in: .userDomainMask)[0]
         return base.appendingPathComponent("FindMouse/Packs")
+    }
+
+    /// 沙盒**之前** pack 住的地方。
+    ///
+    /// 不能用 `applicationSupportDirectory` 算：沙盒下它**已經**指向容器，
+    /// 而那正是新家。舊家只有從真家目錄算得出來——`getpwuid` 不被沙盒重導
+    /// （見 `ControlSocket.realHome`）。
+    ///
+    /// 非沙盒建置下這個值與 `userPacksDirectory` 逐字相同，那不是 bug：
+    /// 那時本來就只有一個家。偵測器因此也不會誤報，理由見
+    /// `legacyPacksNeedMigration(legacy:packsDirectory:)`。
+    public static var legacyUserPacksDirectory: URL {
+        URL(fileURLWithPath: ControlSocket.realHome)
+            .appendingPathComponent("Library/Application Support/FindMouse/Packs")
+    }
+
+    /// 「使用者已經走過一次搬移」的記號。
+    ///
+    /// 需要它，是因為**搬完之後偵測器仍然為真**：舊目錄還在那裡，而我們照樣讀不到
+    /// 它——powerbox 發的授權只活在那一個 process 裡，下次開 App 就沒了。沒有這個
+    /// 記號的話，那一列提示每次啟動都回來，而按下去只會換得「三套都已經有了」。
+    ///
+    /// 用檔案而不是設定鍵：它描述的是**這個容器**的狀態，容器沒了它就該跟著沒。
+    /// 開頭的點讓 `scan` 自然略過它（那裡只認得出目錄裡的 `pack.json`）。
+    static func migrationMarker(in packsDirectory: URL) -> URL {
+        packsDirectory.appendingPathComponent(".legacy-migration-done")
+    }
+
+    /// 舊目錄在那裡、我們讀不到它、而且使用者還沒走過搬移。
+    ///
+    /// **前兩個條件缺一不可**（2026-08-17 探針）：沙盒下容器外的目錄是
+    /// 「`fileExists` 成功、內容 EPERM」這個不對稱，所以只看 `fileExists` 會在
+    /// 非沙盒建置一律為真（那時舊家就是新家、讀得到），只看 `isReadableFile`
+    /// 則分不出「根本沒有舊目錄」與「有但讀不到」——前者是全新安裝的正常狀態。
+    static func legacyPacksNeedMigration(legacy: URL, packsDirectory: URL) -> Bool {
+        let fm = FileManager.default
+        guard fm.fileExists(atPath: legacy.path) else { return false }
+        guard !fm.isReadableFile(atPath: legacy.path) else { return false }
+        return !fm.fileExists(atPath: migrationMarker(in: packsDirectory).path)
+    }
+
+    public static func legacyPacksNeedMigration() -> Bool {
+        legacyPacksNeedMigration(legacy: legacyUserPacksDirectory,
+                                 packsDirectory: userPacksDirectory)
     }
 
     /// 真實環境：內建優先，使用者的排後面。

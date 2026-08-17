@@ -644,3 +644,90 @@ private func libraryOverRealScan(_ packs: URL) -> PackLibraryUseCase {
     #expect(!message.contains("沒有 pack.json"),
             "這正是要避免的那句話：它把權限問題說成內容問題")
 }
+
+// MARK: - 從沙盒之前的位置搬移
+
+/// 搬移把舊目錄底下的**每一套**都裝進去，並且不會被雜物絆倒。
+///
+/// 雜物是刻意放的：舊家底下一定有 `.DS_Store`，而使用者常常還留著當初的 zip。
+/// 沒有那道「只看目錄」的過濾時，它們各自換來一句「這個來源裡沒有 pack.json」，
+/// 而那三句會把真正搬不成的那一套淹掉。
+@Test func migratingALegacyFolderInstallsEveryPackInside() throws {
+    let root = try tempDir()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let legacy = root.appendingPathComponent("legacy")
+    try FileManager.default.createDirectory(at: legacy, withIntermediateDirectories: true)
+    _ = try makeSource(id: "alpha", in: legacy)
+    _ = try makeSource(id: "beta", in: legacy)
+    FileManager.default.createFile(atPath: legacy.appendingPathComponent(".DS_Store").path,
+                                   contents: Data("垃圾".utf8))
+    FileManager.default.createFile(atPath: legacy.appendingPathComponent("old.zip").path,
+                                   contents: Data("不是 pack".utf8))
+
+    let packs = root.appendingPathComponent("Packs")
+    let library = PackLibraryUseCase(packsDirectory: { packs }, installedPacks: { [] })
+    let report = library.migrate(from: legacy, legacyDirectory: legacy)
+
+    #expect(report.installed == ["alpha", "beta"])
+    #expect(report.skipped.isEmpty, "檔案不該變成搬不成的一筆：\(report.skipped)")
+    for id in ["alpha", "beta"] {
+        #expect(FileManager.default.fileExists(
+            atPath: packs.appendingPathComponent("\(id)/pack.json").path))
+    }
+}
+
+/// 新家已經有同 id 時**不覆蓋**，而且要說得出是哪一套。
+///
+/// 斷言目的地的內容原封不動，理由與 `aCollidingIDAsksBeforeTouchingAnything`
+/// 同一條：只看回傳值的話，「先覆蓋再回報跳過」照樣會通過。
+@Test func migrationNeverOverwritesWhatIsAlreadyInTheNewHome() throws {
+    let root = try tempDir()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let legacy = root.appendingPathComponent("legacy")
+    try FileManager.default.createDirectory(at: legacy, withIntermediateDirectories: true)
+    _ = try makeSource(id: "cat", version: "1.0", in: legacy)
+
+    let packs = root.appendingPathComponent("Packs")
+    let installed = packs.appendingPathComponent("cat")
+    try FileManager.default.createDirectory(at: installed, withIntermediateDirectories: true)
+    try Data("新家原本的".utf8).write(to: installed.appendingPathComponent("pack.json"))
+
+    let library = PackLibraryUseCase(packsDirectory: { packs },
+                                     installedPacks: { [summary("cat", builtIn: false)] })
+    let report = library.migrate(from: legacy, legacyDirectory: legacy)
+
+    #expect(report.installed.isEmpty)
+    #expect(report.skipped.count == 1)
+    #expect(report.skipped.first?.name == "cat")
+    #expect(report.skipped.first?.reason.contains("cat") == true,
+            "訊息要指名是哪一套：\(report.skipped)")
+    let survived = try String(contentsOf: installed.appendingPathComponent("pack.json"),
+                              encoding: .utf8)
+    #expect(survived == "新家原本的", "新家那一份被覆蓋了")
+}
+
+/// 「已經搬過」的記號**只在使用者真的選了舊資料夾時**才落下。
+///
+/// 兩個方向都要釘。少了「選別的地方就不落記號」那一邊，使用者在面板裡逛去
+/// 錯的資料夾按下選取之後，那一列提示會永遠消失——而他一套都還沒搬到。
+@Test func theDoneMarkerFollowsWhichFolderTheUserPicked() throws {
+    let root = try tempDir()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let legacy = root.appendingPathComponent("legacy")
+    let elsewhere = root.appendingPathComponent("somewhere-else")
+    for dir in [legacy, elsewhere] {
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    }
+
+    let packs = root.appendingPathComponent("Packs")
+    let marker = PackCatalogRepository.migrationMarker(in: packs)
+    let library = PackLibraryUseCase(packsDirectory: { packs }, installedPacks: { [] })
+
+    _ = library.migrate(from: elsewhere, legacyDirectory: legacy)
+    #expect(FileManager.default.fileExists(atPath: marker.path) == false,
+            "選的不是舊資料夾，不該記成已經搬過")
+
+    _ = library.migrate(from: legacy, legacyDirectory: legacy)
+    #expect(FileManager.default.fileExists(atPath: marker.path),
+            "選了舊資料夾就要記下來，否則那一列提示每次啟動都回來")
+}

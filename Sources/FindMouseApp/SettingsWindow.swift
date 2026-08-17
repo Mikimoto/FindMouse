@@ -188,6 +188,7 @@ final class SettingsViewModel: ObservableObject {
     func removePack(_ id: String) { store.removePack(id); publish() }
     // 沒有 publish()：它不改任何狀態，只是叫 Finder 開一個視窗。
     func revealPacks() { store.revealPacks() }
+    func migrateLegacyPacks() { store.migrateLegacyPacks(); publish() }
 
     private func publish() { snapshot = store.snapshot }
 }
@@ -308,6 +309,23 @@ private struct SettingsRootView: View {
                 }
                 Spacer()
                 Button("顯示資料夾") { model.revealPacks() }
+            }
+
+            // 舊版（還沒沙盒）放的圖組卡在容器外面。
+            //
+            // 排在清單正下方而不是最底下：使用者打開這裡的理由就是「我的圖組不見
+            // 了」，答案要在他第一眼看到的地方。搬完之後 `reload()` 會讓它消失。
+            if model.snapshot.legacyPacksNeedMigration {
+                HStack(alignment: .firstTextBaseline) {
+                    Text("舊版放的圖組還在原本的位置，這一版沒有權限讀它。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Spacer()
+                    Button("搬過來…") { model.migrateLegacyPacks() }
+                        .controlSize(.small)
+                }
+                .accessibilityElement(children: .combine)
             }
 
             // 每套拿得掉的 pack 一列移除鈕。**清單而不是「移除當前選取」**：
