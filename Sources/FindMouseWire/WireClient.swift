@@ -51,6 +51,19 @@ public enum ControlSocket {
         return "\(containerData)/control.sock"
     }
 
+    /// 沙盒**之前** socket 綁的地方。
+    ///
+    /// 只拿來**認**，不拿來連（CLI 與舊 App 的 wire 契約沒有相容路徑）。存在的
+    /// 意義是把「App 沒在跑」與「App 在跑，但它是升級前的那一版」分開——兩者的
+    /// 下一步完全不同，而少了這個判別，後者會拿到一句「沒在執行」，
+    /// 使用者看著選單列上那隻貓完全無法理解。
+    ///
+    /// **`FINDMOUSE_SOCKET` 覆寫時這個判別不成立**，所以呼叫端在有覆寫時不該問它：
+    /// 那條路的兩端都是測試自己指定的，舊位置有沒有東西與它無關。
+    public static var legacyPath: String {
+        "\(realHome)/Library/Application Support/FindMouse/control.sock"
+    }
+
     /// 這個 process 是不是真的跑在自己的沙盒容器裡。
     ///
     /// App 用它自我檢查：不是的話（＝這份建置沒被簽成沙盒），它會綁在一個 CLI

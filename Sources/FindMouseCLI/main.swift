@@ -130,7 +130,15 @@ do {
     removeStaging()
     // 對應住在 Output.failure（CLICore），因為 exit code 的分岔是對外契約，
     // 而 main.swift 沒有任何測試碰得到。
-    let wire = Output.failure(for: error, socketPath: socketPath)
+    //
+    // 舊位置的 socket 只在**沒有覆寫**時才問：有 `FINDMOUSE_SOCKET` 時兩端都是
+    // 呼叫端自己指定的，舊位置有什麼與這次連不上完全無關，答進去只會讓 e2e
+    // 與測試看到一句莫名其妙的「你的 FindMouse 是舊版」。
+    let overridden = ProcessInfo.processInfo.environment["FINDMOUSE_SOCKET"] != nil
+    let wire = Output.failure(
+        for: error, socketPath: socketPath,
+        legacySocketPresent: !overridden
+            && FileManager.default.fileExists(atPath: ControlSocket.legacyPath))
     fail(wire.code, wire.message, json: parsed.json)
 } catch {
     removeStaging()

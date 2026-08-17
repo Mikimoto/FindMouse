@@ -78,3 +78,17 @@ private func infoPlistBundleID() throws -> String {
     setenv(key, "/tmp/fm-override-check.sock", 1)
     #expect(ControlSocket.path == "/tmp/fm-override-check.sock")
 }
+
+/// 舊位置**不是**從容器算的，而且不受 `FINDMOUSE_SOCKET` 影響。
+///
+/// 它是一個歷史事實（沙盒之前 `applicationSupportDirectory` 解到的地方），
+/// 拿現在的 API 去算會在沙盒下解到容器裡——那正是新位置，於是判別永遠成立，
+/// 每一次「App 沒在跑」都會被說成「你的 App 是舊版」。
+@Test func theLegacyPathIsTheRealHomeNotTheContainer() throws {
+    let real = try #require(String(validatingUTF8: getpwuid(getuid())!.pointee.pw_dir))
+    #expect(ControlSocket.legacyPath
+            == real + "/Library/Application Support/FindMouse/control.sock")
+    #expect(ControlSocket.legacyPath != ControlSocket.path)
+    #expect(!ControlSocket.legacyPath.hasPrefix(ControlSocket.containerData),
+            "舊位置若落在容器裡，這個判別就永遠成立")
+}
