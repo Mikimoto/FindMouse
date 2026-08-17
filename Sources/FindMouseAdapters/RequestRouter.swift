@@ -273,6 +273,25 @@ public final class RequestRouter {
             return encode(WireResponse<PackValidatePayload>(error: WireError(
                 code: .packNotFound, message: "讀不到 pack：\(path)")))
         }
+        // **存在不代表讀得到**，而這兩件事在沙盒下差很遠：容器外的路徑是
+        // 「`stat` 成功、內容 EPERM」（2026-08-17 探針前提 1）。少了這一道，下面
+        // 的 `packRoot` 看到的是一棵空樹，於是回報「這個來源裡沒有 pack.json」
+        // ——一句**與真相相反**的話：它說內容不對，實際上我們沒看到內容。
+        //
+        // 上面那段註解說「驗過的與裝進去的是同一個判定」，而
+        // `PackLibraryUseCase.install` 早就有這一道；少了它，同一個來源在兩條路
+        // 上會拿到兩種診斷，那句話就不再為真。
+        //
+        // 碼用 `packNotFound` 而不是 install 那邊的 `packSourceInvalid`：
+        // spec 第 8.5 節把「路徑不存在**或無法讀取**」都定為 exit 2，而
+        // `Output.exitCode(for:request:)` 只對 `pack.validate` ＋ `packNotFound`
+        // 那一組給 2。
+        guard FileManager.default.isReadableFile(atPath: source.path) else {
+            return encode(WireResponse<PackValidatePayload>(error: WireError(
+                code: .packNotFound,
+                message: "讀不到 \(path)（沒有權限）。FindMouse 只讀得到自己容器裡的東西"
+                       + "、以及你雙擊或拖進來的檔案；從命令列請用新版的 findmouse。")))
+        }
         let staging = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("fm-validate-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: staging) }
