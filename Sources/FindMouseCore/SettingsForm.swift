@@ -42,33 +42,9 @@ public enum SettingsForm {
         SettingsUseCase.registry.map(\.key).filter { !windowKeys.contains($0) }
     }
 
-    /// 「進階設定…」的一列：可以直接貼進終端機的命令，加上值域說明。
-    public struct AdvancedEntry: Sendable, Equatable {
-        public let key: String
-        /// 帶**當前值**的整行命令——貼上去執行等於原地不動，改一個數字就是新設定。
-        /// 附當前值而不是佔位符，是因為調手感的人要先知道現在是多少。
-        public let command: String
-        public let range: String
-    }
-
-    public static func advancedEntries(_ settings: SettingsUseCase) -> [AdvancedEntry] {
-        advancedKeys.compactMap { key in
-            // 兩個 try? 都不會是 nil：key 來自 declaredKeys。真的變成 nil 時
-            // 少列一項，而 `advancedEntriesCoverEveryCLIOnlyKey` 會抓到。
-            guard let value = try? settings.get(key),
-                  let kind = try? settings.kind(of: key) else { return nil }
-            return AdvancedEntry(key: key,
-                                 command: "findmouse config set \(key) \(value)",
-                                 range: text(for: kind))
-        }
-    }
-
     /// 進階視窗的一列。
     ///
     /// 進階視窗（`AdvancedSettingsRootView`）畫的就是這個。
-    ///
-    /// 舊的那份 `advancedEntries`（每列一行可複製的命令）還在，但**已經沒有 View
-    /// 讀它**了——它與 `Snapshot.advanced` 一起收掉是下一個任務的事，不是忘了。
     ///
     /// 沒有 `range`：值域說明由 `text(for: kind)` 當場算，而 `kind` 就在同一個
     /// 結構裡。存一份衍生欄位只是多一個會與來源分岔的地方。
@@ -104,7 +80,7 @@ public enum SettingsForm {
     /// 三個 `guard` 是另一回事：key 來自註冊表，三個查詢都不會落空
     /// （`presentation` 的完整性另有 `everyAdvancedKeyHasPresentation` 守）。
     /// 真的落空時那一列會安靜消失，而 `advancedSectionsCoverExactlyTheAdvancedKeys`
-    /// 會抓到——與 `advancedEntries` 同一個處理方式。
+    /// 會抓到。
     public static func advancedSections(_ settings: SettingsUseCase) -> [AdvancedSection] {
         let rows = advancedKeys.compactMap { key -> AdvancedRow? in
             guard let presentation = settings.presentation(of: key),
@@ -321,7 +297,6 @@ public final class SettingsFormStore {
         public var packNotice: String?
         /// 非 nil 時設定視窗要彈確認框。
         public var packConfirmation: PendingPackImport?
-        public var advanced: [SettingsForm.AdvancedEntry] = []
         public var advancedSections: [SettingsForm.AdvancedSection] = []
 
         public init() {}
@@ -410,7 +385,6 @@ public final class SettingsFormStore {
                 if let value = try? settings.value(key) { values[key] = value }
             }
             snapshot.values = values
-            snapshot.advanced = SettingsForm.advancedEntries(settings)
             snapshot.advancedSections = SettingsForm.advancedSections(settings)
         }
         snapshot.currentPackID = currentPackID()

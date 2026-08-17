@@ -102,27 +102,6 @@ private let specWindowKeys = [
     #expect(Set(SettingsForm.windowKeys).union(SettingsForm.advancedKeys) == Set(declared))
 }
 
-/// 兩件事：一項都不能掉（`advancedEntries` 裡的 `try?` 是靜默的），
-/// 而且總數是 spec 第 9 節的 15——後者不從 `advancedKeys` 推導，
-/// 不然清單算錯的時候這條會跟著錯。
-@Test func advancedEntriesCoverEveryCLIOnlyKey() {
-    let entries = SettingsForm.advancedEntries(
-        SettingsUseCase(store: StubStore(), catalog: StubCatalog()))
-    #expect(entries.count == 15)
-    #expect(entries.map(\.key) == SettingsForm.advancedKeys)
-}
-
-/// 命令要帶**當前值**：貼進終端機就是原地不動，改一個數字才是新設定。
-/// 印佔位符的話，調手感的人得先自己去 `config get` 一次。
-@Test func advancedCommandsCarryTheValueThatIsInEffectNow() throws {
-    let settings = SettingsUseCase(store: StubStore(), catalog: StubCatalog())
-    try settings.set("cat.speed", to: "1234")
-    let entry = try #require(SettingsForm.advancedEntries(settings)
-        .first { $0.key == "cat.speed" })
-    #expect(entry.command == "findmouse config set cat.speed 1234")
-    #expect(entry.range == "200–3000")
-}
-
 /// 值域說明沿用 `SettingsUseCase` 的數字格式，不另寫一份——
 /// 各印各的話同一個範圍在 CLI 是 `40–1000`、在設定視窗是 `40.0–1000.0`。
 @Test func rangeTextReadsTheSameWayTheCLIPrintsValues() {
@@ -625,12 +604,6 @@ private let specWindowKeys = [
     #expect(harness.store.snapshot.text("spotlight.trigger") == "onSummonOnly")
     // 數字型的 key 也要能拿到字串（Stepper 的標籤），格式與 CLI 一致
     #expect(harness.store.snapshot.text("rest.duration") == "10")
-}
-
-@Test @MainActor func theSnapshotCarriesTheFifteenAdvancedCommands() {
-    let harness = FormHarness()
-    harness.store.reload()
-    #expect(harness.store.snapshot.advanced.map(\.key) == SettingsForm.advancedKeys)
 }
 
 // MARK: - 換 pack
