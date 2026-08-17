@@ -5,7 +5,8 @@
 
   每加一個 entitlement 都要說得出「哪一個實測失敗需要它」——沒有那個實測，
   加進來的就是一個沒人知道能不能拿掉的權限，而它會一直留著。
-  2026-08-17 的六個沙盒前提量下來，沒有任何一個需要額外的 entitlement：
+
+  不需要的（2026-08-17 的六個沙盒前提逐條量過）：
 
   - 讀被雙擊／拖進來的檔案 → LaunchServices 與拖放各自發 sandbox extension，
     不需要 files.user-selected（見 spec 前提 3）
@@ -14,12 +15,22 @@
   - Carbon 熱鍵、NSEvent.mouseLocation、overlay → 2026-08-10 驗過，
     spec 第 13 節的「零系統權限」在沙盒下依然成立
 
-  唯一**刻意不加**的是舊 pack 目錄的讀取權：那要靠使用者透過 NSOpenPanel
-  自己授權（spec D-2），不是靠一個常駐的 entitlement。
+  需要的，只有一個：
+
+  - files.user-selected.read-only → **NSOpenPanel 是第三個機制**，powerbox 不吃
+    上面那兩張 extension。少了它，面板**不是報錯而是根本不出現**：
+    `runModal()` 當場回 .cancel、`url` 是 nil，與使用者按取消一個字都不差
+    （2026-08-17 實測，log 裡看得到 openAndSavePanelService 起來 4ms 後就
+    `xpc_connection_cancel()`）。搬移舊 pack 那條路（spec D-2）就是靠它，
+    而它由 `theOpenPanelEntitlementIsDeclared` 釘住。
+    read-only 而不是 read-write：我們只**讀**使用者選的資料夾，寫入一律
+    寫進自己的容器。
 -->
 <plist version="1.0">
 <dict>
     <key>com.apple.security.app-sandbox</key>
+    <true/>
+    <key>com.apple.security.files.user-selected.read-only</key>
     <true/>
 </dict>
 </plist>

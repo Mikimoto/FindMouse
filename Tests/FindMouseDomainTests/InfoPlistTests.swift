@@ -63,3 +63,32 @@ private func infoPlist() throws -> [String: Any] {
     }, "沒有任何 exported type 宣告 fmpack 這個副檔名")
     #expect(fmpack["UTTypeIdentifier"] as? String == "tw.com.deepthought.findmouse.fmpack")
 }
+
+/// `Scripts/FindMouse.entitlements` 的兩個鍵，各自守著一件會靜默失效的事。
+///
+/// 這個檔案與 `Info.plist` 同一種危險：`make-app.sh` 與 `release.sh` 只是把它交給
+/// `codesign`，沒有任何編譯期檢查，而拿掉一個鍵的後果**都不是錯誤訊息**。
+///
+/// - `app-sandbox`：拿掉的話 App 綁的 socket 不在容器裡，CLI 永遠回
+///   `APP_NOT_RUNNING` 而 App 一切正常。`make-app.sh` 簽完當場斷言一次，這裡
+///   是第二道（那一道擋不住「有人把這個鍵從檔案裡刪掉」——它讀的是簽出來的結果）。
+/// - `files.user-selected.read-only`：**NSOpenPanel 是第三個機制**，powerbox 不吃
+///   雙擊與拖放各自發的那張 extension。少了它面板根本不出現，`runModal()` 當場回
+///   `.cancel`、`url` 是 nil——與使用者按取消**一個字都不差**（2026-08-17 實測，
+///   log 裡 `openAndSavePanelService` 起來 4ms 後就被 `xpc_connection_cancel()`）。
+///   搬移舊 pack 那條路（`AppDelegate.runLegacyPackMigration`）就是靠它。
+///
+/// 用**精確相等**而不是「至少含這兩個」：多一個 entitlement 是安全面的擴權，
+/// 應該逼人回來這裡寫下理由，理由與 `swiftUIStaysInTheSettingsWindow` 同一條。
+@Test func theSandboxEntitlementsAreExactlyTheOnesWeCanJustify() throws {
+    let root = URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+    let raw = try Data(contentsOf: root.appendingPathComponent("Scripts/FindMouse.entitlements"))
+    let plist = try #require(
+        try PropertyListSerialization.propertyList(from: raw, format: nil) as? [String: Any])
+
+    let enabled = Set(plist.filter { ($0.value as? Bool) == true }.keys)
+    #expect(enabled == ["com.apple.security.app-sandbox",
+                        "com.apple.security.files.user-selected.read-only"],
+            "entitlement 清單變了。每一個都要說得出哪一個實測失敗需要它：\(enabled.sorted())")
+}
