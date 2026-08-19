@@ -172,7 +172,7 @@ findmouse pack install <路徑>     # .fmpack、.zip 或一個目錄
 findmouse pack remove <id>
 ```
 
-- 內建：`mycat`（出廠預設，就是那隻貓）、`test-blocks` 與 `test-blocks-tall`（開發用的色塊）
+- 內建：`mycat`（出廠預設，就是那隻貓）。只有這一套——開發用的色塊不出貨
 - 使用者的：`~/Library/Containers/tw.com.deepthought.findmouse/Data/Library/Application Support/FindMouse/Packs/<id>/`
 - 缺 flourish 只會降級，缺任一 teaser 則逗貓棒不可用，缺 core 則整套無效
 

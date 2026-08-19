@@ -29,6 +29,17 @@
 - **`FindMouseApp` 沒有測試 target**。那一層的東西只有 `e2e.sh` 驗得到。
 - **`e2e.sh` 有三種結果**，第三種是「無法判定」。某些斷言需要獨占游標，使用者
   在動滑鼠時它會如實說「沒證明」。把「無法判定」讀成通過就是自欺。
+- **跑 e2e 的那個終端機必須有「完全取用磁碟」。** 沒有的話 macOS 擋掉所有對
+  `~/Library/Containers/tw.com.deepthought.findmouse/` 的存取（**連 `ls` 都
+  `Operation not permitted`**），而 pack 的家就在裡面：`make_pack` 一路 EPERM，
+  收尾報一堆失敗，沒有一條與程式碼有關（2026-08-19 實測 49 過 36 敗）。
+  兩個判別訊號：訊息裡有 `Operation not permitted`，以及 `defaults read
+  tw.com.deepthought.findmouse pack.id` 回 `Domain ... not found`（`defaults`
+  走的是 cfprefsd，同樣被擋）。**這不是「無法判定」那一態**——它會如實印 ✗。
+  授權在「系統設定 → 隱私權與安全性 → 完全取用磁碟」，加的是終端機 App 本身
+  （本機是 Ghostty），改完要重開終端機。
+- **`mise run e2e` 的輸出不要接 `| tail`。** 它的 exit code 會變成 `tail` 的，
+  於是 `[e2e] ERROR task failed` 與 exit 0 同時出現。要壓縮就先落檔再讀。
 - **突變的判讀是三態**：紅（含 crash）／綠／編不過。`grep -c FAIL` 回 0 有兩種
   成因——全綠，與根本沒跑。每一批 `mutate.py` 會自動附 no-op 對照組，它若不是
   全綠，整批結果不可採信。
@@ -65,6 +76,26 @@
   在那個窗口內有別人啟動時不成立。
   **不要用 `pkill -f <路徑片段>`**——路徑片段是相對的，它會匹配**任何** worktree 的
   `build/FindMouse.app`，連另一個 session 的實例一起殺，正是這條要避免的事。
+- **出貨的 pack 只有 `mycat` 一套，而且是精確相等釘住的。** 開發用的色塊
+  2026-08-19 從 `Sources/FindMouseAdapters/Resources/Packs/` 搬到
+  `Tests/FindMouseAdaptersTests/Fixtures/`——0.2.0 就是連色塊一起出貨的，使用者
+  在圖組選單裡看得到，其中一套還顯示「缺少逗貓棒動作」。
+  `release.sh` 的守衛從「預設那套在不在」改成**目錄集合恰好等於
+  `PackDefaults.factory`**，所以多放一套進去會擋住發版，不是靜默出貨。
+  色塊搬走之後就沒有自然出現的反例了，`test-release.sh` 第 8 段因此是**永久的**
+  負向對照組：它對「組好的 `.app` 的拋棄式複本」種一個帶 `pack.json` 的誘餌
+  （用 `/usr/bin/ditto` 複製，不是 `cp -R`），並**先正面確認誘餌真的種進去**
+  才看守衛的反應。不要改成種進 `Sources/`——誘餌是 untracked，乾淨工作樹檢查會
+  先擋下來，紅的就變成「工作樹不乾淨」而不是精確相等那一條。
+  e2e 要色塊時自己用 `make_pack` 現做（`e2e-` 前綴，收工只刪自己造的）。
+- **圖示是建置產物，repo 裡沒有 `.icns`。** `Scripts/icon.svg` 是唯一來源，
+  `Scripts/make-icon.swift` 渲染 10 個尺寸再 `iconutil` 打包，由 `make-app.sh`
+  在**簽章之前**呼叫——排在後面的話 `codesign --verify` 會報 `resource added`，
+  而那個訊息一個字都不會提到圖示。檔名讀的是**已複製進 `.app` 的那份 plist**
+  的 `CFBundleIconFile`，不是 `Scripts/Info.plist`：出貨的是複本，而這支腳本與
+  `release.sh` 都會對複本下 PlistBuddy。
+  實測值得記的一件：**`NSImage` 在這個 macOS 上把 SVG 當向量畫**——直接畫 1024
+  的邊緣過渡是 0px，從 128 放大上去是 6px。所以不必準備多份點陣來源。
 - **每一種建置都是沙盒的**（v0.5.1 起）。`make-app.sh` 收尾會 ad-hoc 簽章並帶上
   `Scripts/FindMouse.entitlements`——不簽的話 e2e 從頭到尾都沒在測沙盒，而那正是
   它該測的東西。App 自己也會查（`ControlSocket.isInOwnContainer`），不在容器裡就在

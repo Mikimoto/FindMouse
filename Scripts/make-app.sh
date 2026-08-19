@@ -96,10 +96,14 @@ shopt -u nullglob
 # 所以 Info.plist 檔案是在的——讀不出 key 只剩兩種可能：plist 壞掉、或 key 真的
 # 不見了。兩種都表示剛組出來的那個 .app 帶著一份沒有 bundle id 的 Info.plist，
 # 它根本啟動不了。這時候安靜地少印一行提示，等於把一個壞掉的 .app 交出去。
-BUNDLE_ID="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "${ROOT}/Scripts/Info.plist")" || BUNDLE_ID=""
+#
+# 讀的是**剛複製進 .app 的那一份**，不是 Scripts/ 底下的來源。上面那段話講的是
+# 「剛組出來的那個 .app」，讀來源就量不到它——這支腳本與 release.sh 都會對那份
+# 複本下 PlistBuddy，把鍵弄掉的話來源看起來一切正常。理由與下面圖示那條同一個。
+BUNDLE_ID="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "${APP}/Contents/Info.plist")" || BUNDLE_ID=""
 [[ -n "${BUNDLE_ID}" ]] || {
-    echo "讀不到 ${ROOT}/Scripts/Info.plist 的 CFBundleIdentifier，剛組出來的 .app 會沒有 bundle id、啟動不了。" >&2
-    echo "先跑 plutil -lint Scripts/Info.plist 看它是不是壞了；檔案沒壞就是那個 key 不見了，補回去再重組。" >&2
+    echo "讀不到 ${APP}/Contents/Info.plist 的 CFBundleIdentifier，剛組出來的 .app 會沒有 bundle id、啟動不了。" >&2
+    echo "先跑 plutil -lint Scripts/Info.plist 看來源是不是壞了；來源沒壞就是複製或後續的 PlistBuddy 把那個鍵弄掉了。" >&2
     exit 1
 }
 
