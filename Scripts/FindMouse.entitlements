@@ -9,8 +9,12 @@
   釘成**精確相等**：加一個或少一個都會紅，逼人回來這裡寫下理由。
 
   1. com.apple.security.app-sandbox
-     整件事的目的。拿掉的話 App 綁的 socket 不在容器裡，CLI 永遠回
-     APP_NOT_RUNNING 而 App 一切正常——最難聯想的那種。
+     整件事的目的。**拿掉它不會讓任何東西報錯**——那正是它需要一條測試盯著的
+     理由。socket 不受影響：兩端都用 `ControlSocket.path`，它從 `getpwuid` 算起、
+     不被沙盒重導，而 `UnixSocketServer.start()` 還會自己把目錄建出來，所以 CLI
+     照樣連得上。真正變的是**資料的家**：`NSHomeDirectory()` 回到真家目錄，於是
+     pack 與設定讀寫的是沙盒之前的位置，而畫面上一切正常。唯一的訊號是 App
+     自己查的 `ControlSocket.isInOwnContainer`（2026-08-19 實測）。
 
   2. com.apple.security.files.user-selected.read-only
      **NSOpenPanel 是第三個機制**，powerbox 不吃雙擊與拖放各自發的那張

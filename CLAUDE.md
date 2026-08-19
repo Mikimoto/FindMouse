@@ -68,7 +68,13 @@
 - **每一種建置都是沙盒的**（v0.5.1 起）。`make-app.sh` 收尾會 ad-hoc 簽章並帶上
   `Scripts/FindMouse.entitlements`——不簽的話 e2e 從頭到尾都沒在測沙盒，而那正是
   它該測的東西。App 自己也會查（`ControlSocket.isInOwnContainer`），不在容器裡就在
-  選單列掛一筆降級提示，因為那時它綁的 socket CLI 永遠找不到、**而兩邊各自看起來都正常**。
+  選單列掛一筆降級提示。
+
+  **那個提示講的不是 socket。** CLI 照樣連得上——兩端都用 `ControlSocket.path`，
+  它從 `getpwuid` 算起、不被沙盒重導，而 `UnixSocketServer.start()` 還會自己把那個
+  目錄建出來。壞掉的是**資料的家**：非沙盒建置的 `NSHomeDirectory()` 是真家目錄，
+  於是 pack 與設定讀寫的是沙盒之前的位置。也就是說那份建置看起來一切正常，
+  卻在讀寫舊世界——拿它驗沙盒行為會得到一個什麼都沒驗到的綠。
 
   **entitlement 清單由測試釘成精確相等**（`theSandboxEntitlementsAreExactlyTheOnesWeCanJustify`）。
   加一個就紅，那是刻意的：每一個都要說得出「哪一個實測失敗需要它」。目前兩個，
