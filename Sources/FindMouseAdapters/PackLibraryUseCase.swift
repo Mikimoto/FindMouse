@@ -265,6 +265,7 @@ public struct PackLibraryUseCase {
     ///   入口（它要的是一個檔案面板），多一層只是多一份要同步的東西。
     public func migrate(from source: URL, legacyDirectory: URL) -> PackMigrationResult {
         var result = PackMigrationResult()
+        var somethingFailed = false
 
         // **列不出來就不要當成空的。**
         //
@@ -304,11 +305,25 @@ public struct PackLibraryUseCase {
                 result.skipped.append(.init(name: entry.lastPathComponent,
                                             reason: "新家已經有一套「\(id)」了，沒有覆蓋它。"))
             case let .failed(_, message):
+                somethingFailed = true
                 result.skipped.append(.init(name: entry.lastPathComponent, reason: message))
             }
         }
 
-        if source.standardizedFileURL == legacyDirectory.standardizedFileURL {
+        // **一套都沒搬成、而且是「出了事」時不落記號。**
+        //
+        // 理由與上面那條 early return 同一個：記號一落下
+        // `legacyPacksNeedMigration()` 從此永遠回 false，而那一列提示是進入這條路
+        // 的唯一入口。所以只在「再按一次也不會更好」時才落——有東西搬進去了，
+        // 或者每一套都是**刻意**略過（新家已經有了）。`install` 回 `.failed` 的
+        // 成因裡有磁碟滿、子目錄讀不到、rename 失敗這些重試會好的。
+        //
+        // 代價講明：舊資料夾裡若躺著一個永遠裝不起來的東西（半途失敗留下的
+        // `<id>.incoming`、使用者手放的雜物），那一列提示會一直回來。那是刻意的
+        // ——訊息逐筆說得出是哪一個資料夾與為什麼，清掉它就結束了；而反過來
+        // 那個錯誤方向是靜靜地把唯一的入口關掉。
+        if source.standardizedFileURL == legacyDirectory.standardizedFileURL,
+           !(result.installed.isEmpty && somethingFailed) {
             markLegacyMigrationDone()
         }
         return result

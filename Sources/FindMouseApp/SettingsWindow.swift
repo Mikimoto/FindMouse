@@ -327,9 +327,10 @@ private struct SettingsRootView: View {
                 }
                 // **不要 `.accessibilityElement(children: .combine)`。** 它把說明
                 // 與按鈕併成一個元素，按鈕就不再是自己能被聚焦、能直接按下的目標
-                // ——動作被降級成合併元素上的一個 accessibility action。而這個視窗
-                // 其餘同形狀的列（上面那個「顯示資料夾」）本來就沒有它，加在這裡
-                // 只是讓唯一一條給「圖組不見了」的人看的路，對 VoiceOver 最難按。
+                // ——動作被降級成合併元素上的一個 accessibility action。而**這個視窗
+                // 沒有任何一列用它**（上面那列雖然是 `Menu ＋ Spacer ＋ Button`、
+                // 形狀不同，但同樣把每個控制項留成各自可及），加在這裡只是讓唯一
+                // 一條給「圖組不見了」的人看的路，對 VoiceOver 最難按。
             }
 
             // 每套拿得掉的 pack 一列移除鈕。**清單而不是「移除當前選取」**：

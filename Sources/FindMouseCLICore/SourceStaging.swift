@@ -58,21 +58,21 @@ public enum SourceStaging {
             && fm.fileExists(atPath: containerData)
     }
 
-    /// **這一層刻意不擋「來源太大」。**
-    ///
-    /// 代價是真的：staging 先複製再問，而 App 的 `install` 先讀 `pack.json` 才動
-    /// 任何檔案，所以 `pack install ~/Movies` 這種手滑在 App 那邊是即刻拒絕，
-    /// 在這裡卻會遞迴複製整個資料夾。
-    ///
-    /// 試過在這裡加一道上限，量整棵樹——**那個守衛會拒絕 App 會接受的來源**：
-    /// `PackInstaller.install` 只量 `installableEntries(under: packRoot)`，夾帶的
-    /// 大檔案刻意不計（`aStrayOutsideThePackRootDoesNotCountTowardTheLimit` 釘住
-    /// 那個方向），而 `pack.validate` 那條路根本沒有上限。要在這裡量對，等於把
-    /// packRoot 的判定整套搬進 CLI。
-    ///
-    /// 保守估計的代價必須是多做一次無害的事，不能是拒絕合法輸入。所以寧可留著這個
-    /// 手滑代價，也不要一個會擋掉真 pack 的守衛——複製失敗或裝不成時 staging 目錄
-    /// 都會被刪掉，磁碟不會永久被佔住。
+    // **這一層刻意不擋「來源太大」。**
+    //
+    // 代價是真的：staging 先複製再問，而 App 的 `install` 先讀 `pack.json` 才動
+    // 任何檔案，所以 `pack install ~/Movies` 這種手滑在 App 那邊是即刻拒絕，
+    // 在這裡卻會遞迴複製整個資料夾。
+    //
+    // 試過在這裡加一道上限，量整棵樹——**那個守衛會拒絕 App 會接受的來源**：
+    // `PackInstaller.install` 只量 `installableEntries(under: packRoot)`，夾帶的
+    // 大檔案刻意不計（`aStrayOutsideThePackRootDoesNotCountTowardTheLimit` 釘住
+    // 那個方向），而 `pack.validate` 那條路根本沒有上限。要在這裡量對，等於把
+    // packRoot 的判定整套搬進 CLI。
+    //
+    // 保守估計的代價必須是多做一次無害的事，不能是拒絕合法輸入。所以寧可留著這個
+    // 手滑代價，也不要一個會擋掉真 pack 的守衛——複製失敗或裝不成時 staging 目錄
+    // 都會被刪掉，磁碟不會永久被佔住。
 
     /// 換掉路徑之後的請求。其餘欄位原樣保留（`--force` 就住在那裡面）。
     public static func rewritten(_ request: WireRequest, sourcePath: String) -> WireRequest {
@@ -97,16 +97,25 @@ public enum SourceStaging {
     /// 從 staging 目錄名解出 pid。不是我們的格式就回 nil。
     ///
     /// **只接受自己造得出來的形狀。** 唯一的產生者是 `getpid()`，所以那個形狀就是
-    /// 「十進位、大於 0、沒有前導零、沒有正負號」。
+    /// 「十進位、大於 0、沒有前導零、沒有正負號」。判準寫成 `String(pid) == digits`
+    /// 而不是逐字元檢查：來回一致一次涵蓋 `-1`、`+5`、`0001` 與任何前導零，
+    /// 而且下次 `Int32(_:)` 又多接受一種寫法時它不必跟著改。
     ///
-    /// 為什麼要這麼嚴：`Int32(_:)` 自己吃 `-1`、`+5`、`0001`，而 `kill` 對 0 與負值
-    /// 是**完全不同的語意**——`kill(0, 0)` 問的是呼叫端的整個 process group、
-    /// `kill(-1, 0)` 問的是所有送得到的 process，兩者都回 0（2026-08-19 實測）。
-    /// 於是一個叫 `fm-cli-0` 的目錄會被判成「主人還活著」而**永遠掃不掉**，
-    /// 而 `fm-cli-0001` 會被當成 pid 1（launchd，永遠在）——同一個下場。
+    /// **這條守的是契約，不是掃除效果。** 逐行重現掃除迴圈實測（2026-08-19）：
     ///
-    /// 判準寫成 `String(pid) == digits` 而不是逐字元檢查：來回一致自動涵蓋上面
-    /// 全部三種，而且下次 `Int32(_:)` 又多接受一種寫法時它不必跟著改。
+    /// | 目錄名 | 寬鬆解析 | 嚴格解析 |
+    /// |---|---|---|
+    /// | `fm-cli-0` | 留著（`kill(0,0)` 回 0） | 留著（解不出 pid） |
+    /// | `fm-cli-0001` | 留著（`kill(1,0)` 是 EPERM，不是 ESRCH） | 留著 |
+    /// | `fm-cli-01234`（死 pid） | **刪掉** | 留著 |
+    ///
+    /// 也就是說嚴格化一個都沒讓「掃得掉」，反而少掃一種。換到的是別的東西：
+    /// `Int32(_:)` 會把 `-1` 交出來當 pid，而這個值唯一的用途是餵給 `kill`。
+    /// 現在的呼叫端送信號 0（只做存在性檢查）所以無害，但下一個人把它改成真的
+    /// 信號時，`kill(-1, …)` 是「送給所有送得到的 process」——那個地雷值得現在拆。
+    ///
+    /// **不是我們造的那些目錄仍然沒有人清。** 要收那個缺口得換一種判準（例如
+    /// mtime 夠舊就掃），不在這支的職責裡。
     public static func pid(ofStagingDirectoryNamed name: String) -> Int32? {
         guard name.hasPrefix(stagingPrefix) else { return nil }
         let digits = String(name.dropFirst(stagingPrefix.count))

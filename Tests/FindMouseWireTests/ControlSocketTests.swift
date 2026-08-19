@@ -76,8 +76,12 @@ private func infoPlistBundleID() throws -> String {
     defer {
         if let saved { setenv(key, saved, 1) } else { unsetenv(key) }
     }
-    setenv(key, "/tmp/fm-override-check.sock", 1)
-    #expect(ControlSocket.path == "/tmp/fm-override-check.sock")
+    // **值不用 `/tmp`。** 這條只驗字串優先序、不會真的 bind，但沙盒下在 `/tmp`
+    // bind 回 EPERM（CLAUDE.md 記過），拿它當範例會讓讀的人以為那是可行的覆寫
+    // 目的地。用容器內的形狀，與 `e2e.sh` 實際的用法一致。
+    let override = ControlSocket.containerData + "/fm-override-check.sock"
+    setenv(key, override, 1)
+    #expect(ControlSocket.path == override)
 }
 
 /// 舊位置**不是**從容器算的，而且不受 `FINDMOUSE_SOCKET` 影響。

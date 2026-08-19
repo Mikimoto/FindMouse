@@ -701,6 +701,12 @@ private func libraryOverRealScan(_ packs: URL) -> PackLibraryUseCase {
     #expect(report.skipped.first?.name == "cat")
     #expect(report.skipped.first?.reason.contains("cat") == true,
             "訊息要指名是哪一套：\(report.skipped)")
+    // **刻意略過仍然算走完了。** 這裡與 `aFolderWhereEveryPackFailedIsNotMarkedDone`
+    // 是同一個判斷的兩邊：新家已經有了＝再按一次也不會更好，該落記號；
+    // 出了事＝重試可能會好，不落。
+    #expect(FileManager.default.fileExists(
+        atPath: PackCatalogRepository.migrationMarker(in: packs).path),
+        "每一套都是刻意略過時仍要落記號，否則那一列提示每次啟動都回來")
     let survived = try String(contentsOf: installed.appendingPathComponent("pack.json"),
                               encoding: .utf8)
     #expect(survived == "新家原本的", "新家那一份被覆蓋了")
@@ -760,4 +766,30 @@ private func libraryOverRealScan(_ packs: URL) -> PackLibraryUseCase {
     #expect(FileManager.default.fileExists(
         atPath: PackCatalogRepository.migrationMarker(in: packs).path) == false,
         "一套都沒搬卻落下記號，等於把那一列提示永久關掉")
+}
+
+/// **一套都沒搬成、而且是出了事，就不要落記號。**
+///
+/// 與 `anUnreadableLegacyFolderIsReportedInsteadOfMarkedDone` 同一個後果，走的是
+/// 另一條路：目錄列得出來，但每一套都 `install` 失敗（磁碟滿、子目錄讀不到、
+/// rename 失敗都會走到這裡）。落了記號就永遠關掉那一列提示，而它是進入這條路的
+/// 唯一入口，所以重試會好的情況不能落。
+@Test func aFolderWhereEveryPackFailedIsNotMarkedDone() throws {
+    let root = try tempDir()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let legacy = root.appendingPathComponent("legacy")
+    // 沒有 pack.json 的目錄——`install` 對它回 .failed。
+    try FileManager.default.createDirectory(
+        at: legacy.appendingPathComponent("not-a-pack"), withIntermediateDirectories: true)
+
+    let packs = root.appendingPathComponent("Packs")
+    let library = PackLibraryUseCase(packsDirectory: { packs }, installedPacks: { [] })
+
+    let report = library.migrate(from: legacy, legacyDirectory: legacy)
+
+    #expect(report.installed.isEmpty)
+    #expect(report.skipped.count == 1)
+    #expect(FileManager.default.fileExists(
+        atPath: PackCatalogRepository.migrationMarker(in: packs).path) == false,
+        "一套都沒搬成卻落記號，等於把唯一的入口靜靜關掉")
 }

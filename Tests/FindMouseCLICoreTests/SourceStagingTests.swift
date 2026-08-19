@@ -67,11 +67,12 @@ import FindMouseWire
     #expect(SourceStaging.pid(ofStagingDirectoryNamed: name) == 987)
 }
 
-/// `0` 與負數不是 pid，即使 `Int32(_:)` 解得出來。
+/// `0`、負數與前導零都不是 pid，即使 `Int32(_:)` 解得出來。
 ///
-/// 這條的後果不在解析而在**掃除**：`kill(0, 0)` 問的是呼叫端的整個 process group、
-/// `kill(-1, 0)` 問的是所有送得到的 process，兩者都回 0（2026-08-19 實測），
-/// 於是那種目錄永遠被判成「主人還活著」而掃不掉——正是掃除存在的理由要防的狀態。
+/// **這條守的不是掃除效果**（那三種形狀嚴格化前後都一樣掃不掉，見
+/// `SourceStaging.pid(ofStagingDirectoryNamed:)` 的表），是這個值的型別意義：
+/// 它唯一的用途是餵給 `kill`，而 `Int32(_:)` 會交出 `-1`——現在送的是信號 0
+/// 所以無害，改成真的信號時 `kill(-1, …)` 會送給所有送得到的 process。
 @Test func zeroAndNegativeNumbersAreNotPIDs() {
     #expect(SourceStaging.pid(ofStagingDirectoryNamed: "fm-cli-0") == nil)
     #expect(SourceStaging.pid(ofStagingDirectoryNamed: "fm-cli--1") == nil)
@@ -119,4 +120,3 @@ import FindMouseWire
         source: readable.path,
         containerData: root.appendingPathComponent("no-container").path) == false)
 }
-
