@@ -120,3 +120,20 @@ import FindMouseWire
         source: readable.path,
         containerData: root.appendingPathComponent("no-container").path) == false)
 }
+
+/// 來源的最後一段不是檔名時，複本的目的地會跑出 staging 目錄。
+///
+/// `URL(fileURLWithPath: "/a/b/..").lastPathComponent` 是 `".."`，接到 staging
+/// 目錄後面就指到所有 CLI 共用的 `<container>/Data/tmp`。目前那條路每次都乾淨
+/// 失敗，但原因是那個目錄一定已經存在、`copyItem` 對既有目的地一律拋——這條測試
+/// 釘的是**不要靠那個巧合**。
+@Test func aSourceWhoseLastSegmentIsNotAFileNameHasNoStagedName() {
+    #expect(SourceStaging.stagedFileName(for: "/a/b/c.fmpack") == "c.fmpack")
+    // 結尾斜線是正常的資料夾寫法，最後一段仍是檔名。
+    #expect(SourceStaging.stagedFileName(for: "/a/b/") == "b")
+
+    #expect(SourceStaging.stagedFileName(for: "/a/b/..") == nil)
+    #expect(SourceStaging.stagedFileName(for: "/a/b/../") == nil)
+    #expect(SourceStaging.stagedFileName(for: "/a/.") == nil)
+    #expect(SourceStaging.stagedFileName(for: "/") == nil)
+}

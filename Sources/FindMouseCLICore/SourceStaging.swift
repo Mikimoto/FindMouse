@@ -83,6 +83,26 @@ public enum SourceStaging {
                            command: request.command, args: args)
     }
 
+    /// 複本要用的檔名，來源的最後一段不是一個檔名就回 nil。
+    ///
+    /// **`lastPathComponent` 不保證是檔名。** `URL(fileURLWithPath: "/a/b/..")`
+    /// 的最後一段就是 `".."`（2026-08-19 實測），接到 staging 目錄後面會指到它的
+    /// **上一層**——也就是所有 CLI 共用的 `<container>/Data/tmp`。
+    ///
+    /// 那條路目前每一次都乾淨失敗，但原因是 `tmp` 一定已經被 `createDirectory`
+    /// 建出來了、而 `copyItem` 對既有目的地一律拋：**靠巧合而不是靠設計**，
+    /// 而且使用者拿到的是一句與真相無關的「File exists」。
+    ///
+    /// 驗的條件與 `PackInstaller.remove` 那道一樣（它同樣是「名字直接變成路徑
+    /// 組件」的處境）：擋 `..` 與含 `/` 的是怕跑到別的地方，擋 `""` 與 `"."`
+    /// 是因為它們會讓路徑指回**目錄自己**。
+    public static func stagedFileName(for source: String) -> String? {
+        let name = URL(fileURLWithPath: source).lastPathComponent
+        guard !name.isEmpty, !name.contains("/"), name != ".", name != ".."
+        else { return nil }
+        return name
+    }
+
     /// staging 目錄。**帶 pid 是為了讓收拾判得出「哪些是別人的」**——
     /// 同時跑兩個 CLI 不該互相刪。
     public static func stagingDirectory(container: String, pid: Int32) -> String {

@@ -95,7 +95,14 @@ if let source = SourceStaging.sourcePath(of: parsed.request),
 
     let dir = SourceStaging.stagingDirectory(container: ControlSocket.containerData,
                                              pid: getpid())
-    let staged = "\(dir)/\(URL(fileURLWithPath: source).lastPathComponent)"
+    // 目的地的檔名要真的是一個檔名，理由見 `SourceStaging.stagedFileName`。
+    // 這道排在 createDirectory 之前，所以擋下來時什麼都還沒建。
+    guard let stagedName = SourceStaging.stagedFileName(for: source) else {
+        fail(.packSourceInvalid,
+             "\(source) 的最後一段不是一個檔名。請指到 .fmpack 檔或圖組資料夾本身。",
+             json: parsed.json)
+    }
+    let staged = "\(dir)/\(stagedName)"
     do {
         try? FileManager.default.removeItem(atPath: dir)
         try FileManager.default.createDirectory(atPath: dir,
