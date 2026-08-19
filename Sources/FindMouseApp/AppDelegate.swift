@@ -255,10 +255,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // （2026-08-19 實測）。也就是說這份建置看起來一切正常，卻在讀寫舊世界
         // ——拿它驗沙盒行為會得到一個什麼都沒驗到的綠，而那正是最難聯想的那種。
         //
-        // 有 FINDMOUSE_SOCKET 覆寫時不檢查：那是 e2e 與開發時刻意指定的路徑，
-        // 兩端都吃同一個環境變數，不會錯開。
-        let overridden = ProcessInfo.processInfo.environment["FINDMOUSE_SOCKET"] != nil
-        if !overridden && !ControlSocket.isInOwnContainer {
+        // **`FINDMOUSE_SOCKET` 有沒有覆寫與這一條無關。** 這裡原本會在覆寫時跳過
+        // 檢查，理由是「兩端都吃同一個環境變數、socket 不會錯開」——那個理由跟著
+        // 上面那段一起作廢了：現在這條問的是資料的家，而覆寫只換 socket 的位置。
+        // 留著那個條件的後果剛好相反：e2e 與開發**一定**帶覆寫，於是最需要這個
+        // 提示的路徑正好是唯一看不到它的路徑。
+        //
+        // 拿掉不會製造雜訊：`make-app.sh` 收尾一律 ad-hoc 簽章帶 entitlements，
+        // 所以 e2e 跑的那份是沙盒的、`isInOwnContainer` 為真。會叫的只剩真的沒被
+        // 簽成沙盒的建置，而那正是我們想聽到的那一次。
+        if !ControlSocket.isInOwnContainer {
             log.error("這份建置沒有跑在沙盒容器裡（HOME=\(NSHomeDirectory(), privacy: .public)）")
             menuBar.reportDegradation(
                 "這份建置沒有沙盒簽章：圖組與設定讀寫的是沙盒之前的舊位置，"
