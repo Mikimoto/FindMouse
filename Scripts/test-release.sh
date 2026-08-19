@@ -120,12 +120,29 @@ fi
 
 # --- 4 -------------------------------------------------------------------
 step "4. 驗收會對壞產物說 no（負向對照組）"
-# 下面逐條點名的標籤是寫死的。verify_dmg() 日後多一條 check 而沒有跟著加進來，
-# 那條就會永遠不被檢查——所以先確認兩邊的數量對得上。
-N_CHECKS="$(grep -c '^ *check "' "${ROOT}/Scripts/release.sh")"
-[[ "${N_CHECKS}" -eq 6 ]] \
-    && ok "release.sh 裡剛好六條 check，與下面列舉的標籤數相符" \
-    || bad "release.sh 裡有 ${N_CHECKS} 條 check，但這裡只列舉了 6 個標籤——補上去，否則多的那條永遠不會被驗"
+# **標籤不再寫死，從 verify_dmg() 自己抽出來。**
+#
+# 原本這裡是一份手寫清單加一個「數量要等於 6」的守衛。那個守衛設計得對——它就是
+# 為了抓「verify_dmg 多一條 check 而這裡沒跟上」——而它也真的抓到了：#12 加了
+# stapler validate app 與 syspolicy_check 之後，這支腳本從那時起就一直是紅的，
+# 只是沒有人跑它。抓到了卻沒人看，等於沒抓到。
+#
+# 所以改成從來源抽，讓那一整類漂移不再可能發生，而不是再補一次清單。
+# 只抽 verify_dmg() 裡的：釘票之後那條 check 屬於第 7 步，--verify-only 走不到它，
+# 拿整份檔案去數必然對不上（實測 9 vs 8）。
+#
+# 巢狀那條的標籤含 `$(basename …)`，原始碼裡的字串與印出來的不同，
+# 所以在 `$(` 處截斷，用前綴比對。
+LABELS=()
+while IFS= read -r label; do
+    LABELS+=("${label}")
+done < <(awk '/^verify_dmg\(\)/,/^}/' "${ROOT}/Scripts/release.sh" \
+         | grep -oE '^ *check "[^"]*"' | sed 's/^ *check "//; s/"$//; s/\$(.*//')
+
+# 抽到 0 個的話，下面整個迴圈會**無聲通過**——那正是這支腳本要防的東西。
+[[ "${#LABELS[@]}" -ge 6 ]] \
+    && ok "從 verify_dmg() 抽出 ${#LABELS[@]} 條 check 的標籤" \
+    || bad "只從 verify_dmg() 抽到 ${#LABELS[@]} 條 check——抽取式壞了，下面的逐條點名等於沒做"
 
 # 拿一個沒簽過的 .app 包成 dmg。六條驗收會跑兩輪（原檔一輪、加了隔離屬性的
 # 副本一輪），十二條應該全部踩紅——實測 ad-hoc 產物：codesign 回 1、spctl 回 1、
@@ -159,15 +176,18 @@ if hdiutil create -volname "FindMouse bad" -srcfolder "${ROOT}/build/release" \
     [[ "${NESTED_BUNDLES}" -ge 1 ]] \
         || bad "build/release/FindMouse.app 裡找不到任何 *.bundle，巢狀那條驗收根本沒有對象（期望值會變成 0 次而自動通過）"
 
+    # 比對用**完整標籤**而不是關鍵字。原本寫 "stapler validate"，而它同時比中
+    # 「stapler validate（票沒釘上…）」與「stapler validate app（拖出來那份…）」，
+    # 於是數到 4、期望 2，紅在一個與事實無關的訊息上。
     MISSING=""
-    for label in "codesign --verify" "簽章者是我們" "巢狀 bundle 的簽章者也是我們" "spctl app" "spctl dmg" "stapler validate"; do
+    for label in "${LABELS[@]}"; do
         want=2
-        [[ "${label}" == "巢狀 bundle 的簽章者也是我們" ]] && want=$((2 * NESTED_BUNDLES))
-        n="$(echo "${OUT}" | grep -c "✗.*${label}")"
+        [[ "${label}" == 巢狀* ]] && want=$((2 * NESTED_BUNDLES))
+        n="$(echo "${OUT}" | grep -cF "${label}")"
         [[ "${n}" -eq "${want}" ]] || MISSING="${MISSING} ${label}(${n}次，期望 ${want})"
     done
     [[ -z "${MISSING}" ]] \
-        && ok "六條驗收各自報紅該有的次數（原檔一輪＋加隔離屬性一輪，巢狀那條 ×${NESTED_BUNDLES} 個 bundle）" \
+        && ok "${#LABELS[@]} 條驗收各自報紅該有的次數（原檔一輪＋加隔離屬性一輪，巢狀那條 ×${NESTED_BUNDLES} 個 bundle）" \
         || bad "有驗收沒跑到或次數不對：${MISSING}"
 else
     bad "造不出測試用的 dmg"
