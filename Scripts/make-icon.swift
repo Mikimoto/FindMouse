@@ -44,6 +44,15 @@ func render(_ image: NSImage, px: Int, to url: URL) throws {
     NSGraphicsContext.saveGraphicsState()
     defer { NSGraphicsContext.restoreGraphicsState() }
     NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
+    // **先清成全透明再畫。** 實測這個 buffer 本來就是零填的（2026-08-20：抽樣 19268
+    // 個全透明像素，RGB 非零的 0 個；連跑四次 icns 的 sha256 逐字相同），但那是
+    // AppKit 沒有保證的行為——`bitmapDataPlanes: nil` 只說「由物件配置記憶體」。
+    // 它若哪天不成立，症狀是出貨的圖示在透明處帶隨機雜點，而下面那段反向拆解
+    // **只數 rep 與尺寸、抓不到顏色**。實測種了雜點再 draw，19268 個透明像素會
+    // 全部帶著髒 RGB 活下來（`.sourceOver` 不覆寫 alpha=0 的底色）。
+    // 代價是一個 fill；用 `.copy` 而不是預設的 `.sourceOver`，後者對透明色是 no-op。
+    NSColor.clear.setFill()
+    NSRect(x: 0, y: 0, width: px, height: px).fill(using: .copy)
     image.draw(in: NSRect(x: 0, y: 0, width: px, height: px))
     guard let png = rep.representation(using: .png, properties: [:]) else {
         throw Failure("\(px)×\(px) 編不出 PNG")
