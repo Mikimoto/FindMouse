@@ -81,6 +81,12 @@ if let source = SourceStaging.sourcePath(of: parsed.request),
     let tmp = "\(ControlSocket.containerData)/tmp"
     for name in (try? FileManager.default.contentsOfDirectory(atPath: tmp)) ?? [] {
         guard let owner = SourceStaging.pid(ofStagingDirectoryNamed: name) else { continue }
+        // **名字對得上不夠，還要真的是目錄。** 這是一個會刪東西的迴圈，而我們造的
+        // staging 一律是目錄；一個同名的檔案不是我們的東西，不該被順手清掉。
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: "\(tmp)/\(name)",
+                                             isDirectory: &isDirectory),
+              isDirectory.boolValue else { continue }
         // kill(pid, 0) 只做存在性檢查，不送信號。ESRCH ＝ 那個 process 沒了。
         if kill(owner, 0) != 0 && errno == ESRCH {
             try? FileManager.default.removeItem(atPath: "\(tmp)/\(name)")
