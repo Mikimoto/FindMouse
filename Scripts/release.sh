@@ -326,18 +326,29 @@ DEFAULT_PACK="$(sed -nE 's/.*static let factory = "([a-z0-9-]+)".*/\1/p' \
 [[ "$(printf '%s\n' "${DEFAULT_PACK}" | grep -c .)" -eq 1 ]] \
     || die "從 SettingsUseCase.swift 讀不到唯一的出廠預設 pack id（讀到「${DEFAULT_PACK}」）。那行的寫法可能改了，去更新 release.sh 這段 sed。"
 
-SHIPPED="$(/usr/bin/find "${APP}" -type d -path '*/Packs/*' -name "${DEFAULT_PACK}" 2>/dev/null || true)"
-[[ -n "${SHIPPED}" ]] \
-    || die "出廠預設的 pack「${DEFAULT_PACK}」不在 .app 裡。使用者裝了會看到開發用的色塊而不是貓。內建 pack 要放在 Sources/FindMouseAdapters/Resources/Packs/ 底下才會被 SwiftPM 打包。"
+# **精確相等，不是「在不在」。** 舊版只問預設那套在不在，所以它的尾註得自己承認
+# 「不證明預設是對的那一套」——開發用的色塊也跟著出貨（`.copy("Resources/Packs")`
+# 複製整個目錄），使用者在圖組選單裡看得到，其中一套還顯示「缺少逗貓棒動作」。
+# 改成精確相等之後那個 caveat 自己消失了：多一套就紅。
+#
+# Packs 目錄的位置用 find 而不是寫死 bundle 名——那個名字由 make-app.sh 的
+# EXPECTED_BUNDLES 在管，寫死等於在這裡放第二份。
+PACKS_DIR="$(/usr/bin/find "${APP}" -type d -path '*/Resources/Packs' 2>/dev/null || true)"
+[[ "$(printf '%s\n' "${PACKS_DIR}" | grep -c .)" -eq 1 ]] \
+    || die "在 .app 裡找不到唯一的 Resources/Packs 目錄（找到「${PACKS_DIR}」）。內建 pack 要放在 Sources/FindMouseAdapters/Resources/Packs/ 底下才會被 SwiftPM 打包。"
+SHIPPED_PACKS="$(cd "${PACKS_DIR}" && /usr/bin/find . -mindepth 1 -maxdepth 1 -type d \
+    | sed 's|^\./||' | sort | paste -sd' ' -)"
+[[ "${SHIPPED_PACKS}" == "${DEFAULT_PACK}" ]] \
+    || die "出貨的內建 pack 應該恰好是「${DEFAULT_PACK}」，實際是「${SHIPPED_PACKS}」。多出來的那些使用者在圖組選單裡看得到——開發用的色塊不該出貨。"
+SHIPPED="${PACKS_DIR}/${DEFAULT_PACK}"
 [[ -f "${SHIPPED}/pack.json" ]] \
     || die "「${DEFAULT_PACK}」的目錄在 .app 裡，但沒有 pack.json——那不是一套能載入的 pack。"
 ok "出廠預設的 pack「${DEFAULT_PACK}」有跟著出貨"
-# 這條守衛只證明「預設那套在」，**不**證明「預設是對的那一套」——開發用的
-# test-blocks 也跟著出貨（`.copy("Resources/Packs")` 複製整個目錄，目前刻意不濾），
-# 所以預設若被改回 test-blocks，find 照樣找得到、這裡照樣放行。
-# 釘住預設值本身的是 SettingsUseCaseTests 的 factoryDefaultPackIsTheShippedCat()，
-# 而它蓋得到 App 的全新安裝路徑，是因為 AppDelegate 的退路讀的是同一個
-# `PackDefaults.factory` 而不是自己那份字面值。
+# 這條守衛現在**同時**證明兩件事：預設那套在，而且沒有別的東西跟著出貨。
+# 釘住「預設值本身是對的那一個」的是 SettingsUseCaseTests 的
+# factoryDefaultPackIsTheShippedCat()；釘住「那套 pack 的內容合格」的是
+# RealPackFilesTests 的 theFactoryPackIsValidWithFullCapabilities()。
+# 三條各守一件事，任一條單獨都不夠。
 
 # 圖示要真的在出貨的 .app 裡，而且要含所有尺寸。
 #

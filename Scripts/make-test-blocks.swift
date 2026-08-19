@@ -5,9 +5,12 @@
 // 產生 spec 第 6.6 節的 test-blocks pack 與三個刻意壞掉的 fixture。
 //
 // 用法：
-//   swift Scripts/make-test-blocks.swift Sources/FindMouseAdapters/Resources/Packs
 //   swift Scripts/make-test-blocks.swift Tests/FindMouseAdaptersTests/Fixtures
-//   swift Scripts/make-test-blocks.swift <根目錄> <id> [<體高> [<色相偏移> [<略過的動作...>]]]
+//   swift Scripts/make-test-blocks.swift <任一目錄> <id> [<體高> [<色相偏移> [<略過的動作...>]]]
+//
+// **不要輸出到 Sources/FindMouseAdapters/Resources/Packs。** 那是出貨範圍，而
+// release.sh 對它做精確相等比對（只准有 PackDefaults.factory 那一套），多一套會
+// 擋住發版。2026-08-19 以前色塊就住在那裡，使用者在圖組選單裡看得到。
 //
 // 輸出是要 commit 的：`Bundle.module` 的資源必須在建置時就存在，
 // 執行期才產生的檔案進不了 resource bundle。這支腳本不進 Package.swift，
@@ -131,7 +134,7 @@ func writePack(root: URL, id: String, side: Int = 64,
 let args = CommandLine.arguments
 guard args.count >= 2 else {
     print("用法：swift Scripts/make-test-blocks.swift <輸出根目錄> [<id> [<體高> [<色相偏移> [<略過的動作...>]]]]")
-    print("  只給根目錄，名為 Packs → 產出合格的 test-blocks")
+    print("  只給根目錄，名為 Packs → 產出合格的 test-blocks（沒有呼叫端；色塊不再出貨）")
     print("  只給根目錄，其他名稱   → 產出三個壞掉的 fixture")
     print("  再給 id                → 只產指名的那一套")
     exit(1)
