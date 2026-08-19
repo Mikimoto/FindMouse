@@ -339,6 +339,31 @@ ok "出廠預設的 pack「${DEFAULT_PACK}」有跟著出貨"
 # 而它蓋得到 App 的全新安裝路徑，是因為 AppDelegate 的退路讀的是同一個
 # `PackDefaults.factory` 而不是自己那份字面值。
 
+# 圖示要真的在出貨的 .app 裡，而且要含所有尺寸。
+#
+# **驗產物而不是驗意圖**，與上面那條出廠 pack 守衛同一個理由。`make-icon.swift`
+# 自己也做反向拆解，但那驗的是「產生器剛剛寫出來的那份」——這裡驗的是「組裝、
+# 複製、簽章之後留在 .app 裡的那份」，中間每一步都可能弄掉它。
+#
+# 讀 `.app` 裡那份 plist 而不是來源：出貨的是複本，而這支腳本對它下過 PlistBuddy
+# （版本戳）。驗複本才驗得到「組裝或後續編輯把這個鍵弄掉了」。
+ICON_NAME="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIconFile' "${APP}/Contents/Info.plist")" || ICON_NAME=""
+[[ -n "${ICON_NAME}" ]] || die "剛組出來那份 Info.plist 讀不到 CFBundleIconFile——.app 會用通用圖示而且不會有任何訊息。"
+SHIPPED_ICON="${APP}/Contents/Resources/${ICON_NAME}.icns"
+[[ -f "${SHIPPED_ICON}" ]] \
+    || die "圖示不在 .app 裡（找不到 ${SHIPPED_ICON}）。使用者會在 Finder、Dock、Spotlight 看到通用圖示，而且沒有任何錯誤訊息。"
+ICON_TMP="$(mktemp -d)"
+/usr/bin/iconutil -c iconset -o "${ICON_TMP}/back.iconset" "${SHIPPED_ICON}" \
+    || die "出貨的 ${ICON_NAME}.icns 拆不開——它不是一份合法的 icns。"
+ICON_REPS="$(/usr/bin/find "${ICON_TMP}/back.iconset" -name '*.png' | grep -c . || true)"
+[[ "${ICON_REPS}" -eq 10 ]] \
+    || die "出貨的圖示只有 ${ICON_REPS} 個尺寸，應該是 10 個。少尺寸的症狀是某些位置顯示放大的大圖，而檔案本身完全合法。"
+ICON_BIG_W="$(sips -g pixelWidth "${ICON_TMP}/back.iconset/icon_512x512@2x.png" 2>/dev/null | awk '/pixelWidth/{print $2}')"
+[[ "${ICON_BIG_W}" == "1024" ]] \
+    || die "圖示最大那張是 ${ICON_BIG_W}px，不是 1024。App Store 要 1024，而縮圖出來的假 1024 從檔名看不出來。"
+rm -rf "${ICON_TMP}"
+ok "圖示 ${ICON_NAME}.icns 有跟著出貨（10 個尺寸、最大 1024）"
+
 if [[ "${MODE}" == dry ]]; then
     say "--dry-run：本機那半段沒問題，停在簽章之前"
     echo "  ${APP}"

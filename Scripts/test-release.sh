@@ -257,6 +257,60 @@ plutil -p "${NOSANDBOX}" | grep -q "${SANDBOX_PRED}" \
     || ok "斷言擋下沒有 app-sandbox 的 entitlements"
 rm -f "${NOSANDBOX}"
 
+# --- 7 -------------------------------------------------------------------
+step "7. 圖示的守衛分得出有圖示與沒圖示（雙向對照組）"
+
+# **這一段的來歷**：這個 App 到 v0.5.1 都沒有圖示，而整條發布管線一次都沒有紅過
+# ——因為沒有任何一層在問這件事。所以新加的守衛必須自己證明它會紅，否則它只是
+# 一句好聽的話。
+#
+# 正向用 make-app.sh 的產物而不是 release.sh 的：後者要 Developer ID 憑證，
+# 而這支測試要能在沒有憑證的機器上跑完（與第 6 段同一個理由）。
+ICON_NAME_T="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIconFile' "${ROOT}/Scripts/Info.plist" 2>/dev/null || true)"
+if [[ -z "${ICON_NAME_T}" ]]; then
+    bad "Scripts/Info.plist 沒有 CFBundleIconFile，這一段沒有對象可驗"
+else
+    DEV_APP_I="${ROOT}/build/FindMouse.app"
+    [[ -d "${DEV_APP_I}" ]] || Scripts/make-app.sh >/dev/null 2>&1 || true
+    SHIPPED_I="${DEV_APP_I}/Contents/Resources/${ICON_NAME_T}.icns"
+
+    # 正向：真的產出來的那份要拆得開、10 個尺寸、最大 1024
+    if [[ -f "${SHIPPED_I}" ]]; then
+        B="$(mktemp -d)"
+        if /usr/bin/iconutil -c iconset -o "${B}/ok.iconset" "${SHIPPED_I}" 2>/dev/null; then
+            N="$(/usr/bin/find "${B}/ok.iconset" -name '*.png' | grep -c . || true)"
+            W="$(sips -g pixelWidth "${B}/ok.iconset/icon_512x512@2x.png" 2>/dev/null | awk '/pixelWidth/{print $2}')"
+            [[ "${N}" -eq 10 && "${W}" == "1024" ]] \
+                && ok "守衛認得一份完整的圖示（10 個尺寸、最大 1024）" \
+                || bad "守衛對一份真的完整圖示說不（數到 ${N} 個尺寸、最大 ${W}px）——release.sh 會擋住每一次發布"
+        else
+            bad "make-app.sh 產出的 icns 拆不開"
+        fi
+        rm -rf "${B}"
+    else
+        bad "建不出 ${SHIPPED_I}，這一段的正向對照組沒跑到"
+    fi
+
+    # 負向：只有一個尺寸的 icns。它是**合法的 icns**，所以「拆得開」那一關過得去
+    # ——會擋下它的只有數量那一關。這正是這個對照組要證明的事。
+    T="$(mktemp -d)"
+    mkdir -p "${T}/thin.iconset"
+    if [[ -f "${SHIPPED_I}" ]]; then
+        /usr/bin/iconutil -c iconset -o "${T}/full.iconset" "${SHIPPED_I}" 2>/dev/null || true
+        cp "${T}/full.iconset/icon_16x16.png" "${T}/thin.iconset/icon_16x16.png" 2>/dev/null || true
+    fi
+    if /usr/bin/iconutil -c icns -o "${T}/thin.icns" "${T}/thin.iconset" 2>/dev/null; then
+        NT="$(/usr/bin/iconutil -c iconset -o "${T}/back.iconset" "${T}/thin.icns" 2>/dev/null \
+              && /usr/bin/find "${T}/back.iconset" -name '*.png' | grep -c . || echo 0)"
+        [[ "${NT}" -eq 10 ]] \
+            && bad "只有一個尺寸的 icns 也被數成 10 個——那一關沒有鑑別力" \
+            || ok "守衛擋下只有 ${NT} 個尺寸的 icns"
+    else
+        bad "造不出只有一個尺寸的 icns，負向對照組沒跑到"
+    fi
+    rm -rf "${T}"
+fi
+
 step "結果"
 printf '  通過 %d、失敗 %d\n' "${PASS}" "${FAIL}"
 [[ "${FAIL}" -eq 0 ]]
