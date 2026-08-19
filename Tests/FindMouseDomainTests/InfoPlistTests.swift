@@ -104,6 +104,49 @@ private func infoPlist() throws -> [String: Any] {
     }
 }
 
+/// App Store 那份 entitlements 與 Developer ID 那份的關係，是「同樣的沙盒 ＋ 兩個
+/// 身分鍵」——不是兩份各自演化的清單。
+///
+/// **為什麼要把關係釘住，而不是分別釘兩份清單**：分別釘的話，兩邊各自「合法」地
+/// 漂開也不會紅。而沙盒姿態一旦分岔，**分岔的那一邊沒有人測得到**——e2e 跑的是
+/// Developer ID 那份，App Store 那份要等審查才知道。
+///
+/// `get-task-allow` 特別點名：它讓別的 process 附加 debugger，帶著它上傳一定被退，
+/// 而本機執行完全正常。這裡擋「有人把它寫進檔案」，`appstore.sh` 擋「簽出來的結果
+/// 裡有它」——後者才涵蓋得到「從別處被合成進來」。
+@Test func theAppStoreEntitlementsAreTheSameSandboxPlusTheStoreIdentity() throws {
+    func load(_ name: String) throws -> [String: Any] {
+        let raw = try Data(contentsOf: repoRoot().appendingPathComponent("Scripts/\(name)"))
+        return try #require(
+            try PropertyListSerialization.propertyList(from: raw, format: nil) as? [String: Any])
+    }
+    let dev = try load("FindMouse.entitlements")
+    let store = try load("FindMouse.appstore.entitlements")
+
+    let extra = Set(store.keys).subtracting(dev.keys)
+    #expect(extra == ["com.apple.application-identifier",
+                      "com.apple.developer.team-identifier"],
+            "App Store 那份多出來的鍵應該恰好是兩個身分鍵：\(extra.sorted())")
+    #expect(Set(dev.keys).subtracting(store.keys).isEmpty,
+            "App Store 那份少了 Developer ID 有的鍵：\(Set(dev.keys).subtracting(store.keys).sorted())")
+
+    // 共用的鍵要逐一相等。只比 key 的集合不夠——把 app-sandbox 在 App Store 那份
+    // 改成 <false/> 會全綠，而那是兩條通路沙盒姿態分岔最嚴重的形狀。
+    for key in dev.keys {
+        #expect((dev[key] as? Bool) == (store[key] as? Bool),
+                "\(key) 在兩份清單裡的值不一樣")
+    }
+
+    #expect(store["com.apple.security.get-task-allow"] == nil,
+            "get-task-allow 帶著上傳一定被退，而本機執行完全正常")
+    // 身分鍵的形狀：application-identifier 必須是 <TeamID>.<bundle id>。
+    let team = try #require(store["com.apple.developer.team-identifier"] as? String)
+    let appID = try #require(store["com.apple.application-identifier"] as? String)
+    let bundleID = try #require(try infoPlist()["CFBundleIdentifier"] as? String)
+    #expect(appID == "\(team).\(bundleID)",
+            "application-identifier 應該是 <TeamID>.<bundle id>，實際是「\(appID)」")
+}
+
 /// 圖示的宣告面。
 ///
 /// **這一條只驗宣告，不驗建置**——單元測試跑不到 `make-app.sh`。把兩個半邊釘在

@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  App Store 那條通路的 entitlements。
+
+  **它與 `FindMouse.entitlements` 的關係是「同樣的沙盒，加兩個身分鍵」**，
+  不是兩份各自演化的清單。`InfoPlistTests.theAppStoreEntitlementsAreTheSameSandboxPlusTheStoreIdentity`
+  把這件事釘成可執行的斷言：共用的鍵必須逐一相等、多出來的必須恰好是下面這兩個。
+
+  為什麼要這樣釘：兩條通路出貨的是同一份程式碼，沙盒姿態一旦分岔，**分岔的那一邊
+  不會有人測到**——e2e 跑的是 Developer ID 那份，而 App Store 那份要等審查才知道。
+
+  多出來的兩個鍵：
+
+  1. com.apple.application-identifier = <TeamID>.<bundle id>
+  2. com.apple.developer.team-identifier = <TeamID>
+
+  用 Xcode 建置時這兩個是它從描述檔自動合成進去的；手動 `codesign --entitlements`
+  沒有那個步驟，所以要自己寫。TeamID 取自簽章身分本身
+  （`Apple Distribution: DeepThought Co., Ltd. (JA387Z4D7Q)`），不是秘密——
+  它印在每一個簽過章的執行檔裡。
+
+  **還沒實測過**：本機沒有 Mac App Store 描述檔也沒有 Installer 憑證，所以「這兩個
+  鍵的內容與描述檔相符、上傳不被退」這件事本專案**一次都沒有驗過**。
+  `Scripts/appstore.sh` 會在簽章後斷言簽出來的結果含這四個鍵、且沒有
+  `get-task-allow`，那是本機驗得到的部分；剩下的要等第一次上傳。
+
+  刻意**沒有**的東西：
+
+  - com.apple.security.get-task-allow — 它讓別的 process 附加 debugger，
+    Xcode 的 debug 建置會加。**帶著它上傳一定被退**，而本機執行完全正常。
+    appstore.sh 因此把「它不在」當成一條斷言，不是靠「我們沒寫它」。
+  - com.apple.security.network.* — FindMouse 不連網。
+  - 任何 temporary-exception — 那一族在沙盒上開洞卻不長得像開關。
+-->
+<plist version="1.0">
+<dict>
+    <key>com.apple.application-identifier</key>
+    <string>JA387Z4D7Q.tw.com.deepthought.findmouse</string>
+    <key>com.apple.developer.team-identifier</key>
+    <string>JA387Z4D7Q</string>
+    <key>com.apple.security.app-sandbox</key>
+    <true/>
+    <key>com.apple.security.files.user-selected.read-only</key>
+    <true/>
+</dict>
+</plist>
