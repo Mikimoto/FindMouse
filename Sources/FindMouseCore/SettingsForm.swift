@@ -148,6 +148,33 @@ public enum PackActionResult: Sendable, Equatable {
     case failed(message: String)
 }
 
+/// 從沙盒之前的位置搬移圖組的結果。
+///
+/// **不是一串 `PackActionResult`**：搬移對使用者是一次動作、一句話，而他要知道的
+/// 是「搬進幾套、哪幾套沒搬成、為什麼」。攤成陣列的話那句話得由 View 自己組，
+/// 而 `FindMouseApp` 沒有測試 target。
+public struct PackMigrationResult: Sendable, Equatable {
+
+    /// 沒搬成的那一套。用**資料夾名**而不是 id：搬不成的原因常常正是讀不出 id。
+    public struct Skipped: Sendable, Equatable {
+        public let name: String
+        public let reason: String
+
+        public init(name: String, reason: String) {
+            self.name = name
+            self.reason = reason
+        }
+    }
+
+    public var installed: [String] = []
+    public var skipped: [Skipped] = []
+
+    public init(installed: [String] = [], skipped: [Skipped] = []) {
+        self.installed = installed
+        self.skipped = skipped
+    }
+}
+
 /// 等使用者回答的那個確認。**帶著來源**：按下「取代」時要用同一個來源重試，
 /// 而使用者按鈕的當下已經沒有別的地方記得它是哪個檔案了。
 public struct PendingPackImport: Sendable, Equatable {
@@ -307,6 +334,9 @@ public final class SettingsFormStore {
         public var packNotice: String?
         /// 非 nil 時設定視窗要彈確認框。
         public var packConfirmation: PendingPackImport?
+        /// 沙盒之前放的圖組還卡在舊位置，而這個建置讀不到它。
+        /// 為真時 pack 區要多一列提示與一個授權按鈕。
+        public var legacyPacksNeedMigration = false
         public var advancedSections: [SettingsForm.AdvancedSection] = []
 
         public init() {}
@@ -347,6 +377,12 @@ public final class SettingsFormStore {
     /// 與 `removePack(_:)` 這個方法同名會遮蔽，所以欄位另取名。
     private let removePackAction: @MainActor (String) -> PackActionResult
     private let revealPacksDirectory: @MainActor () -> Void
+    /// 舊位置還有讀不到的圖組嗎。每次 `reload()` 重問，不快取：使用者可能剛在
+    /// 這一輪授權過（那之後它就該是 false）。
+    private let legacyPacksNeedMigrationCheck: @MainActor () -> Bool
+    /// 讓使用者授權並搬移。**面板由呼叫端開**（Core 碰不到 AppKit），
+    /// 回 nil ＝ 他按了取消。
+    private let migrateLegacyPacksAction: @MainActor () -> PackMigrationResult?
 
     public private(set) var snapshot = Snapshot()
 
@@ -367,7 +403,13 @@ public final class SettingsFormStore {
                     = { _, _ in .failed(message: "這個建置沒有接上匯入") },
                 removePack: @escaping @MainActor (String) -> PackActionResult
                     = { _ in .failed(message: "這個建置沒有接上移除") },
-                revealPacksDirectory: @escaping @MainActor () -> Void = {}) {
+                revealPacksDirectory: @escaping @MainActor () -> Void = {},
+                // 預設「沒有舊圖組要搬」：漏接線的後果是那一列提示不出現，而它
+                // 本來就只對「從沙盒之前升級上來」的人出現。給 false 而不是給一個
+                // 會失敗的動作，是因為這一個是**問句**不是動作——問句的安全答案
+                // 是「沒有」，那樣使用者看到的畫面與全新安裝一模一樣。
+                legacyPacksNeedMigration: @escaping @MainActor () -> Bool = { false },
+                migrateLegacyPacks: @escaping @MainActor () -> PackMigrationResult? = { nil }) {
         self.settings = settings
         self.packs = packs
         self.currentPackID = currentPackID
@@ -376,6 +418,8 @@ public final class SettingsFormStore {
         self.installPack = installPack
         self.removePackAction = removePack
         self.revealPacksDirectory = revealPacksDirectory
+        self.legacyPacksNeedMigrationCheck = legacyPacksNeedMigration
+        self.migrateLegacyPacksAction = migrateLegacyPacks
     }
 
     /// 控制項的範圍取自這裡（slider 的 `in:`、兩選一的選項），
@@ -400,6 +444,9 @@ public final class SettingsFormStore {
         snapshot.currentPackID = currentPackID()
         snapshot.packs = PackChoice.choices(packs: packs(), current: snapshot.currentPackID,
                                             pending: snapshot.pendingPackID)
+        // 每次重讀都重問。搬完之後這一輪就會變 false，那一列提示跟著消失——
+        // 「按了之後那行還在」與「按了沒反應」在畫面上分不出來。
+        snapshot.legacyPacksNeedMigration = legacyPacksNeedMigrationCheck()
     }
 
     /// 打字中：只記草稿，**不寫入也不驗**。
@@ -640,6 +687,47 @@ public final class SettingsFormStore {
 
     /// 在 Finder 裡打開使用者的 pack 目錄。
     public func revealPacks() { revealPacksDirectory() }
+
+    /// 使用者按了「搬移舊版圖組」。
+    ///
+    /// 回 nil ＝ 他在面板上按了取消。**那時一個字都不要動**：留一句「取消了」是在
+    /// 回答他沒問的問題，而清掉既有的提示會把上一個動作的結果抹掉。
+    public func migrateLegacyPacks() {
+        guard let result = migrateLegacyPacksAction() else { return }
+        snapshot.packConfirmation = nil
+        // 順序與 `apply` 一致：先重讀（新搬進來的那幾套要出現在清單上，
+        // 而那一列提示也要在同一次更新裡消失），再蓋上這一次的訊息。
+        reload()
+        snapshot.packNotice = Self.notice(for: result)
+    }
+
+    /// 搬移結果 → 一句話。
+    ///
+    /// 三種形狀都要說得出口，而且**不能長得一樣**：全成功、一套都沒搬進來、
+    /// 以及混合。只說「完成」的話，「搬好了三套」與「三套都撞名所以沒動」
+    /// 在畫面上一模一樣，而使用者的下一步完全不同。
+    static func notice(for result: PackMigrationResult) -> String {
+        if result.installed.isEmpty && result.skipped.isEmpty {
+            return "這個資料夾裡沒有圖組。"
+        }
+        var parts: [String] = []
+        parts.append(result.installed.isEmpty
+            ? "沒有搬進任何圖組。"
+            : "搬好了 \(result.installed.count) 套："
+                + result.installed.joined(separator: "、") + "。")
+        // **略過的要收口。** 使用者選到家目錄那種地方時，`migrate` 會對每一個
+        // 子目錄各試一次，於是這裡會串出幾十句話塞進同一行提示——而愈長的提示
+        // 愈沒有人讀，等於連前面「搬好了幾套」都一起弄丟。
+        // 前三筆講清楚，其餘只報數量：要逐筆理由的話那已經不是一行提示該做的事。
+        let shown = result.skipped.prefix(3).map { "\($0.name)：\($0.reason)" }
+        parts.append(contentsOf: shown)
+        if result.skipped.count > shown.count {
+            // 「資料夾」而不是「套」：`Skipped` 記的是資料夾名，而它們之所以被
+            // 略過，最常見的原因正是那裡面根本不是一套圖組。
+            parts.append("另外 \(result.skipped.count - shown.count) 個資料夾沒有搬。")
+        }
+        return parts.joined(separator: " ")
+    }
 
     private func apply(_ result: PackActionResult, source: URL) {
         switch result {

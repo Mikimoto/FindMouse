@@ -174,3 +174,65 @@ private func copyFixture(_ id: String, into parent: URL, as newID: String) throw
     #expect(PackCatalogRepository.directory(for: "bad-missing-core", in: [(scanDir, true)]) != nil,
             "合法 id 仍然要找得到，否則這條測試只是把全部都擋掉")
 }
+
+/// 偵測器的兩個條件**缺一不可**，第三個條件（記號）能把它關掉。
+///
+/// 四個 case 對應四種真實狀態：全新安裝（沒有舊目錄）、非沙盒建置（舊家就是新家、
+/// 讀得到）、從沙盒之前升級上來（在那裡但讀不到）、以及已經搬過一次。
+///
+/// **這裡的三個布林值全部來自真的檔案系統**，不是假的 FileManager：`chmod 000`
+/// 對擁有者自己也會讓 `isReadableFile` 回 false（同一招在
+/// `anUnreadableSourceSaysSoInsteadOfBlamingTheManifest` 用過），所以沙盒下
+/// 「存在但讀不到」那個不對稱在這裡造得出來，不必為了測試發明一層抽象。
+@Test func theLegacyMigrationDetectorNeedsEveryCondition() throws {
+    let base = try makeUserPacksDirectory()
+    defer { try? FileManager.default.removeItem(at: base) }
+    let newHome = base.appendingPathComponent("Containers/Packs")
+    try FileManager.default.createDirectory(at: newHome, withIntermediateDirectories: true)
+
+    // 1. 沒有舊目錄＝全新安裝。
+    let missing = base.appendingPathComponent("nothing-here")
+    #expect(PackCatalogRepository.legacyPacksNeedMigration(
+        legacy: missing, packsDirectory: newHome) == false)
+
+    // 2. 舊目錄在、而且讀得到＝非沙盒建置（那時舊家就是新家）。
+    let readable = base.appendingPathComponent("readable")
+    try FileManager.default.createDirectory(at: readable, withIntermediateDirectories: true)
+    #expect(PackCatalogRepository.legacyPacksNeedMigration(
+        legacy: readable, packsDirectory: newHome) == false)
+
+    // 3. 在、但讀不到＝沙盒下的舊家。這是唯一該提示的狀態。
+    try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: readable.path)
+    defer {
+        try? FileManager.default.setAttributes([.posixPermissions: 0o700],
+                                               ofItemAtPath: readable.path)
+    }
+    // 前置條件自己也要驗：`chmod 000` 若對擁有者無效（例如以 root 跑），
+    // 下面那條就會是為了錯的理由失敗，而訊息會指向偵測器。
+    #expect(FileManager.default.isReadableFile(atPath: readable.path) == false,
+            "chmod 000 沒有讓它變成讀不到，這條測試的前提不成立")
+    #expect(PackCatalogRepository.legacyPacksNeedMigration(
+        legacy: readable, packsDirectory: newHome) == true)
+
+    // 4. 使用者已經走過一次搬移——舊目錄仍然讀不到，但不該再提示。
+    FileManager.default.createFile(
+        atPath: PackCatalogRepository.migrationMarker(in: newHome).path, contents: nil)
+    #expect(PackCatalogRepository.legacyPacksNeedMigration(
+        legacy: readable, packsDirectory: newHome) == false)
+}
+
+/// 記號是點開頭的檔案，所以它不會自己變成清單上的一列。
+///
+/// 釘住的是「記號住在 Packs 底下」這個決定的代價：那個目錄的每一個項目都會被
+/// `scan` 走過一次。它若被當成一套 pack，使用者會看到一列叫
+/// `.legacy-migration-done` 的東西。
+@Test func theMigrationMarkerDoesNotShowUpAsAPack() throws {
+    let packs = try makeUserPacksDirectory()
+    defer { try? FileManager.default.removeItem(at: packs) }
+    try copyFixture("bad-missing-teaser", into: packs, as: "real-one")
+    FileManager.default.createFile(
+        atPath: PackCatalogRepository.migrationMarker(in: packs).path, contents: nil)
+
+    let ids = PackCatalogRepository.scan(directories: [(packs, false)]).map(\.id)
+    #expect(ids == ["real-one"], "記號不該出現在清單上：\(ids)")
+}

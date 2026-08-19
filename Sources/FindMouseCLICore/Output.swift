@@ -33,9 +33,23 @@ public enum Output {
     /// App 在跑但有問題（1）、你給的 socket 路徑不對（2）。
     /// 全部收斂成 3 的話，`WireClient` 那份 errno 分類就完全觀察不到，
     /// 而腳本看到 3 會去啟動第二個實例——對一個卡住的 App 那只會多一個提示視窗。
+    /// - Parameter legacySocketPresent: 舊位置（沙盒之前）還留著一個 control socket。
+    ///   呼叫端 `stat` 出來的，**不是連出去試的**——新 CLI 與舊 App 之間沒有相容
+    ///   路徑，連上去也只能得到一個雙方都看不懂的對話。
     public static func failure(for error: WireClient.ClientError,
-                               socketPath: String) -> WireError {
+                               socketPath: String,
+                               legacySocketPresent: Bool = false) -> WireError {
         switch error {
+        case .appNotRunning where legacySocketPresent:
+            // **不宣稱「舊版正在跑」**：`stop()` 會 unlink，但被 SIGKILL 不會，
+            // 所以那個檔案也可能只是上次崩潰的殘留（`UnixSocketServer` 開頭那句
+            // 「stale socket 檔不能擋住啟動」講的就是它）。句子因此用「如果正開著」
+            // 起頭——兩種情況下都為真，而該做的事也剛好同一件。
+            return WireError(code: .appNotRunning,
+                message: "FindMouse 沒在執行（\(socketPath)）。"
+                       + "舊位置還留著一個 control socket——你的 FindMouse 如果正開著，"
+                       + "那是升級前的舊版，這支 CLI 連不上它。"
+                       + "升級（brew upgrade --cask findmouse）再重開 FindMouse。")
         case .appNotRunning:
             return WireError(code: .appNotRunning, message: "FindMouse 沒在執行（\(socketPath)）")
         case .noResponse:

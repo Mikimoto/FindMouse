@@ -20,8 +20,9 @@ public final class UnixSocketServer: @unchecked Sendable {
         case cannotListen(errno: Int32)
     }
 
-    /// `~/Library/Application Support/FindMouse/control.sock`，可用
-    /// `FINDMOUSE_SOCKET` 覆寫。定義在 `FindMouseWire`，與 CLI 共用同一份。
+    /// 沙盒容器 `Data` 根底下的 `control.sock`，可用 `FINDMOUSE_SOCKET` 覆寫。
+    /// 定義在 `FindMouseWire`，與 CLI 共用同一份——**同一個屬性，不是兩份算法**，
+    /// 所以兩端不可能錯開。
     public static var defaultPath: String { ControlSocket.path }
 
     private let path: String
@@ -68,7 +69,19 @@ public final class UnixSocketServer: @unchecked Sendable {
         try? FileManager.default.createDirectory(
             at: directory, withIntermediateDirectories: true,
             attributes: [.posixPermissions: 0o700])
-        // 目錄可能是舊版留下的（那時建成 0755），所以每次都收緊一次。
+        // 這兩行在**現行的每一條路徑上都是 no-op**，留著是為了不依賴那個巧合。
+        //
+        // `createDirectory`：沙盒下容器由 containermanagerd 建好了；`FINDMOUSE_SOCKET`
+        // 覆寫在 e2e 也是指到容器 `Data` 根底下（`e2e.sh` 的 `CONTAINER`），父目錄
+        // 同樣早就在。真的會動的只剩「非沙盒建置」與「有人把覆寫指到一個不存在的
+        // 深層路徑」，前者造出一個沒人管的假容器，而讓那件事有聲音的是
+        // `AppDelegate` 那道 `isInOwnContainer` 檢查，不是這裡。
+        //
+        // `setAttributes`：實測本機 849 個容器的 `Data` **全部**都是 700（755 的
+        // 那 4 個是容器根，不是 `Data`），所以它也沒東西可收緊。留著是因為它是
+        // socket 那個 0600 的前提，而「系統一定會給 700」沒有任何文件保證。
+        // （順帶：上面那個 `createDirectory` 自己建的話每一層都會是 0700，
+        // 連 intermediate 都是——實測 umask 022 下四層全 700，不跟 umask。）
         try? FileManager.default.setAttributes([.posixPermissions: 0o700],
                                                ofItemAtPath: directory.path)
 

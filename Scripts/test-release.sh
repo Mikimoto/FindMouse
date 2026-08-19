@@ -120,12 +120,29 @@ fi
 
 # --- 4 -------------------------------------------------------------------
 step "4. 驗收會對壞產物說 no（負向對照組）"
-# 下面逐條點名的標籤是寫死的。verify_dmg() 日後多一條 check 而沒有跟著加進來，
-# 那條就會永遠不被檢查——所以先確認兩邊的數量對得上。
-N_CHECKS="$(grep -c '^ *check "' "${ROOT}/Scripts/release.sh")"
-[[ "${N_CHECKS}" -eq 6 ]] \
-    && ok "release.sh 裡剛好六條 check，與下面列舉的標籤數相符" \
-    || bad "release.sh 裡有 ${N_CHECKS} 條 check，但這裡只列舉了 6 個標籤——補上去，否則多的那條永遠不會被驗"
+# **標籤不再寫死，從 verify_dmg() 自己抽出來。**
+#
+# 原本這裡是一份手寫清單加一個「數量要等於 6」的守衛。那個守衛設計得對——它就是
+# 為了抓「verify_dmg 多一條 check 而這裡沒跟上」——而它也真的抓到了：#12 加了
+# stapler validate app 與 syspolicy_check 之後，這支腳本從那時起就一直是紅的，
+# 只是沒有人跑它。抓到了卻沒人看，等於沒抓到。
+#
+# 所以改成從來源抽，讓那一整類漂移不再可能發生，而不是再補一次清單。
+# 只抽 verify_dmg() 裡的：釘票之後那條 check 屬於第 7 步，--verify-only 走不到它，
+# 拿整份檔案去數必然對不上（實測 9 vs 8）。
+#
+# 巢狀那條的標籤含 `$(basename …)`，原始碼裡的字串與印出來的不同，
+# 所以在 `$(` 處截斷，用前綴比對。
+LABELS=()
+while IFS= read -r label; do
+    LABELS+=("${label}")
+done < <(awk '/^verify_dmg\(\)/,/^}/' "${ROOT}/Scripts/release.sh" \
+         | grep -oE '^ *check "[^"]*"' | sed 's/^ *check "//; s/"$//; s/\$(.*//')
+
+# 抽到 0 個的話，下面整個迴圈會**無聲通過**——那正是這支腳本要防的東西。
+[[ "${#LABELS[@]}" -ge 6 ]] \
+    && ok "從 verify_dmg() 抽出 ${#LABELS[@]} 條 check 的標籤" \
+    || bad "只從 verify_dmg() 抽到 ${#LABELS[@]} 條 check——抽取式壞了，下面的逐條點名等於沒做"
 
 # 拿一個沒簽過的 .app 包成 dmg。六條驗收會跑兩輪（原檔一輪、加了隔離屬性的
 # 副本一輪），十二條應該全部踩紅——實測 ad-hoc 產物：codesign 回 1、spctl 回 1、
@@ -147,8 +164,6 @@ if hdiutil create -volname "FindMouse bad" -srcfolder "${ROOT}/build/release" \
     # 剛好就是三條，門檻照樣過——**測試全綠，而六條驗收一條都沒執行**。
     # 所以改成逐條點名，每條都要在兩輪裡各出現一次。
     #
-    # grep 的 pattern 用 `✗.*<標籤>` 而不是 `✗ <標籤>`：✗ 與標籤之間夾著
-    # 一段 ANSI 重設碼（`\033[0m`），寫成一個空格永遠對不上。
     # 巢狀那條是**每個 bundle 各跑一次**，不是一次。它在 release.sh 裡是一行，
     # 但執行次數等於 bundle 數——多一個帶 resources 的 target 就變 4 次，
     # 寫死 2 會紅在「有驗收沒跑到」這個與事實無關的訊息上。
@@ -159,15 +174,28 @@ if hdiutil create -volname "FindMouse bad" -srcfolder "${ROOT}/build/release" \
     [[ "${NESTED_BUNDLES}" -ge 1 ]] \
         || bad "build/release/FindMouse.app 裡找不到任何 *.bundle，巢狀那條驗收根本沒有對象（期望值會變成 0 次而自動通過）"
 
+    # 比對用**完整標籤**而不是關鍵字。原本寫 "stapler validate"，而它同時比中
+    # 「stapler validate（票沒釘上…）」與「stapler validate app（拖出來那份…）」，
+    # 於是數到 4、期望 2，紅在一個與事實無關的訊息上。
+    #
+    # **兩段 grep，不是一個 pattern。** 標籤要用固定字串比（`-F`）——它含中文與
+    # 全形括號，當成 regex 會出事；而「有沒有報紅」得另外問，因為 `check()` 成功時
+    # 印的是同一個標籤（`release.sh:22` 的 `ok()`）。只數標籤出現幾次的話，一條在
+    # 兩輪都**通過**的驗收照樣數到 2、正好等於期望值，於是這一段對它說「報紅了」
+    # ——負向對照組整段失去鑑別力。63dfec2 把 pattern 改成 `-F` 時就是這樣弄丟了
+    # `✗`（2026-08-19 抓到）。
+    #
+    # 先濾 `✗` 再比標籤，也順帶避開「✗ 與標籤之間夾著 ANSI 重設碼（`\033[0m`）」
+    # 這件事——寫成單一 pattern 的話 `✗ <標籤>` 永遠對不上。
     MISSING=""
-    for label in "codesign --verify" "簽章者是我們" "巢狀 bundle 的簽章者也是我們" "spctl app" "spctl dmg" "stapler validate"; do
+    for label in "${LABELS[@]}"; do
         want=2
-        [[ "${label}" == "巢狀 bundle 的簽章者也是我們" ]] && want=$((2 * NESTED_BUNDLES))
-        n="$(echo "${OUT}" | grep -c "✗.*${label}")"
+        [[ "${label}" == 巢狀* ]] && want=$((2 * NESTED_BUNDLES))
+        n="$(echo "${OUT}" | grep '✗' | grep -cF "${label}")"
         [[ "${n}" -eq "${want}" ]] || MISSING="${MISSING} ${label}(${n}次，期望 ${want})"
     done
     [[ -z "${MISSING}" ]] \
-        && ok "六條驗收各自報紅該有的次數（原檔一輪＋加隔離屬性一輪，巢狀那條 ×${NESTED_BUNDLES} 個 bundle）" \
+        && ok "${#LABELS[@]} 條驗收各自報紅該有的次數（原檔一輪＋加隔離屬性一輪，巢狀那條 ×${NESTED_BUNDLES} 個 bundle）" \
         || bad "有驗收沒跑到或次數不對：${MISSING}"
 else
     bad "造不出測試用的 dmg"
@@ -190,6 +218,44 @@ else
         bad "已發布的 dmg 沒通過驗收：$(echo "${GOOD_OUT}" | tail -20)"
     fi
 fi
+
+# --- 6 -------------------------------------------------------------------
+step "6. app-sandbox 的斷言分得出有簽與沒簽（雙向對照組）"
+
+# **這一段的來歷**：release.sh 的那條斷言第一版寫成 `=> 1`，而 `plutil -p` 對布林
+# 印的是 `true`。後果不是「漏掉一個沒沙盒的產物」，是**每一次發版都被擋在第 5 步**，
+# 訊息還宣稱一個明明在的鍵不見了。它從寫下來就是壞的，只因為那條路要真的發版
+# 才走得到，所以沒有人知道。
+#
+# 只有正向不夠：一個永遠說 yes 的斷言與沒有斷言等價。所以兩個方向都要。
+SANDBOX_PRED='"com.apple.security.app-sandbox" => true'
+
+# 正向：一份真的簽過的 .app。用 make-app.sh 的產物而不是 release.sh 的——
+# 後者要 Developer ID 憑證，而這支測試要能在沒有憑證的機器上跑完負向那半。
+DEV_APP="${ROOT}/build/FindMouse.app"
+if [[ ! -d "${DEV_APP}" ]]; then
+    Scripts/make-app.sh >/dev/null 2>&1 || true
+fi
+if [[ -d "${DEV_APP}" ]]; then
+    E="$(mktemp)"
+    codesign -d --entitlements - --xml "${DEV_APP}" >"${E}" 2>/dev/null || true
+    plutil -p "${E}" 2>/dev/null | grep -q "${SANDBOX_PRED}" \
+        && ok "斷言認得真的簽進去的 app-sandbox" \
+        || bad "斷言對一份真的沙盒 .app 說不——release.sh 會擋住每一次發布（實際讀到：$(plutil -p "${E}" 2>/dev/null | tr '\n' ' '))"
+    rm -f "${E}"
+else
+    bad "建不出 build/FindMouse.app，這一段的正向對照組沒跑到"
+fi
+
+# 負向：一份沒有那個鍵的 entitlements。
+NOSANDBOX="$(mktemp)"
+/usr/libexec/PlistBuddy -c "Save" "${NOSANDBOX}" >/dev/null 2>&1
+/usr/libexec/PlistBuddy -c "Add :com.apple.security.files.user-selected.read-only bool true" \
+    "${NOSANDBOX}" >/dev/null
+plutil -p "${NOSANDBOX}" | grep -q "${SANDBOX_PRED}" \
+    && bad "斷言對一份沒有 app-sandbox 的 entitlements 說 yes——它沒有鑑別力" \
+    || ok "斷言擋下沒有 app-sandbox 的 entitlements"
+rm -f "${NOSANDBOX}"
 
 step "結果"
 printf '  通過 %d、失敗 %d\n' "${PASS}" "${FAIL}"

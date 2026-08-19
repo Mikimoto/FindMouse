@@ -45,6 +45,11 @@ private final class FormHarness {
     private(set) var forcedSources: [String] = []
     private(set) var removedIDs: [String] = []
     private(set) var revealCount = 0
+    /// 搬移那條路的兩個注入點。`migrationResult` 為 nil ＝ 使用者按了取消，
+    /// 那是它唯一一種「什麼都沒發生」的形狀，所以預設就設成它。
+    var legacyNeedsMigration = false
+    var migrationResult: PackMigrationResult?
+    private(set) var migrationAttempts = 0
     /// `reload()` 被呼叫幾次——它一定會呼叫 `packs`，所以掛在那裡數。
     private(set) var reloadCount = 0
 
@@ -63,7 +68,12 @@ private final class FormHarness {
             self.removedIDs.append(id)
             return self.removeResult
         },
-        revealPacksDirectory: { [unowned self] in self.revealCount += 1 })
+        revealPacksDirectory: { [unowned self] in self.revealCount += 1 },
+        legacyPacksNeedMigration: { [unowned self] in self.legacyNeedsMigration },
+        migrateLegacyPacks: { [unowned self] in
+            self.migrationAttempts += 1
+            return self.migrationResult
+        })
 }
 
 private func summary(_ id: String, builtIn: Bool = true, errors: [String] = []) -> PackSummary {
@@ -1195,4 +1205,119 @@ private let specWindowKeys = [
     #expect(harness.store.snapshot.errors["cat.scale"] != nil, "主視窗的紅字被連帶清掉了")
 
     #expect(harness.changeNotifications == 1, "整批只通知一次")
+}
+
+// MARK: - 從沙盒之前的位置搬移
+
+/// 那一列提示的開關**每次重讀都重問**。
+///
+/// 不快取的理由就是這條測試的第二段：搬完之後偵測器會變 false，而使用者必須
+/// 在同一次更新裡看到那一列消失——「按了之後它還在」與「按了沒反應」
+/// 在畫面上分不出來。
+@MainActor
+@Test func theMigrationRowFollowsTheDetectorOnEveryReload() {
+    let h = FormHarness()
+    h.legacyNeedsMigration = true
+    h.store.reload()
+    #expect(h.store.snapshot.legacyPacksNeedMigration)
+
+    h.legacyNeedsMigration = false
+    h.store.reload()
+    #expect(h.store.snapshot.legacyPacksNeedMigration == false)
+}
+
+/// 使用者在面板上按取消（closure 回 nil）→ **一個字都不要動**。
+///
+/// 留一句「取消了」是在回答他沒問的問題；而清掉既有的提示會把上一個動作的
+/// 結果抹掉——他剛剛才移除過一套。
+@MainActor
+@Test func cancellingTheMigrationPanelChangesNothing() {
+    let h = FormHarness()
+    h.removeResult = .succeeded(id: "gone")
+    h.store.removePack("gone")
+    let before = h.store.snapshot.packNotice
+    #expect(before != nil)
+
+    h.migrationResult = nil
+    h.store.migrateLegacyPacks()
+
+    #expect(h.migrationAttempts == 1, "取消也要真的問過使用者")
+    #expect(h.store.snapshot.packNotice == before)
+}
+
+/// 搬完之後要重讀（新的那幾套要出現在清單上），而且提示要蓋成這一次的結果。
+@MainActor
+@Test func aFinishedMigrationRereadsTheCatalogAndReportsWhatHappened() {
+    let h = FormHarness()
+    h.store.reload()
+    #expect(h.store.snapshot.packs.contains { $0.id == "alpha" } == false,
+            "前置條件：搬移之前清單上沒有 alpha")
+
+    // 搬移的效果在**磁碟**上，而這一層看到的是「重掃之後多了一套」。
+    h.packs = [summary("alpha", builtIn: false)]
+    h.migrationResult = PackMigrationResult(installed: ["alpha"])
+
+    let reloadsBefore = h.reloadCount
+    h.store.migrateLegacyPacks()
+
+    #expect(h.reloadCount > reloadsBefore, "不重讀的話搬進來的那套要等下一次才看得到")
+    #expect(h.store.snapshot.packs.contains { $0.id == "alpha" })
+    #expect(h.store.snapshot.packNotice?.contains("alpha") == true)
+}
+
+/// 四種結果**不能長得一樣**。
+///
+/// 「搬好了三套」與「三套都撞名所以一套都沒動」若共用一句「完成」，使用者
+/// 下一步該做什麼就完全看不出來——而那正是他打開這個視窗要問的事。
+///
+/// 走公開路徑（`migrateLegacyPacks()` 之後讀 `packNotice`）而不是直接叫那支
+/// 渲染函式：這樣連「結果有沒有真的被接到提示上」一起驗到，而那正是使用者
+/// 唯一看得到的東西。
+@MainActor
+@Test func everyMigrationOutcomeReadsDifferently() {
+    let h = FormHarness()
+    func notice(_ result: PackMigrationResult) -> String {
+        h.migrationResult = result
+        h.store.migrateLegacyPacks()
+        return h.store.snapshot.packNotice ?? ""
+    }
+
+    let nothing = notice(PackMigrationResult())
+    let allGood = notice(PackMigrationResult(installed: ["alpha", "beta"]))
+    let allSkipped = notice(
+        PackMigrationResult(skipped: [.init(name: "cat", reason: "已經有了。")]))
+    let mixed = notice(
+        PackMigrationResult(installed: ["alpha"],
+                            skipped: [.init(name: "cat", reason: "已經有了。")]))
+
+    let all: [String] = [nothing, allGood, allSkipped, mixed]
+    #expect(Set(all).count == 4, "四種結果講出了重複的話：\(all)")
+    #expect(allGood.contains("2") && allGood.contains("alpha") && allGood.contains("beta"))
+    #expect(allSkipped.contains("沒有搬進任何圖組"))
+    #expect(allSkipped.contains("cat") && allSkipped.contains("已經有了。"))
+    // 混合的那個要同時講兩邊，不能只報好消息。
+    #expect(mixed.contains("alpha") && mixed.contains("cat"))
+}
+
+/// 選錯資料夾的提示要收口。
+///
+/// 使用者可以在面板裡選任何地方（家目錄、下載），而 `migrate` 對每一個子目錄各試
+/// 一次——不收口的話這裡會把幾十句理由串成同一行提示，連前面「搬好了幾套」都一起
+/// 被淹掉。前三筆講清楚、其餘只報數量。
+@MainActor
+@Test func aFolderFullOfNonPacksReportsACountInsteadOfAWallOfText() {
+    let h = FormHarness()
+    h.migrationResult = PackMigrationResult(
+        installed: ["alpha"],
+        skipped: (1...9).map { .init(name: "dir\($0)", reason: "讀不出 pack.json。") })
+
+    h.store.migrateLegacyPacks()
+    let notice = h.store.snapshot.packNotice ?? ""
+
+    #expect(notice.contains("搬好了 1 套：alpha。"))
+    #expect(notice.contains("dir1：讀不出 pack.json。"))
+    #expect(notice.contains("dir3：讀不出 pack.json。"))
+    // 第四筆之後只剩數量——這是這條測試唯一守的東西。
+    #expect(notice.contains("dir4") == false)
+    #expect(notice.contains("另外 6 個資料夾沒有搬。"))
 }

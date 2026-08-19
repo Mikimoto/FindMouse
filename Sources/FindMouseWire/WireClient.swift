@@ -20,13 +20,72 @@ import Foundation
 /// （用 `open --env` 傳進去），所以 e2e 可以跑在自己的路徑上，
 /// 不會把使用者正在用的那個實例殺掉或搶走。
 public enum ControlSocket {
+
+    /// App 的 bundle id。**與 `Scripts/Info.plist` 的 `CFBundleIdentifier` 必須一致**，
+    /// 由 `bundleIDMatchesTheInfoPlist` 釘住。
+    ///
+    /// CLI 為什麼要知道它：沙盒之後 socket 住在 App 的容器裡，而容器的路徑就是
+    /// 以 bundle id 命名的。CLI 不沙盒，算不出「App 的容器」除非它知道那個 id。
+    /// 漂掉的症狀是 CLI 安靜地連到一個不存在的路徑，回 `APP_NOT_RUNNING`
+    /// ——與「App 真的沒開」一個字都不差。
+    public static let bundleID = "tw.com.deepthought.findmouse"
+
+    /// App 沙盒容器的 `Data` 目錄，也就是 socket 的家。
+    ///
+    /// **用 `getpwuid` 而不是 `NSHomeDirectory()`。** 後者在沙盒下**已經是**這個
+    /// 目錄、在沙盒外是真家目錄，於是 App 與 CLI 會算出兩個不同的答案——而這一段
+    /// 存在的全部理由就是兩端要得到同一個字串。`getpwuid` 讀的是 passwd 資料庫，
+    /// 沙盒**不重導**它（2026-08-17 實測：沙盒下 `NSHomeDirectory()` 是容器、
+    /// `getpwuid().pw_dir` 仍是 `/Users/<name>`），所以這一份程式碼在兩端同解。
+    ///
+    /// 為什麼是容器根而不是容器裡的 `Application Support`：`sun_path` 只有 104
+    /// bytes，而後者實測 119（前者 81）。長度不是風格問題，是能不能 bind 的問題。
+    public static var containerData: String {
+        "\(realHome)/Library/Containers/\(bundleID)/Data"
+    }
+
     public static var path: String {
         if let override = ProcessInfo.processInfo.environment["FINDMOUSE_SOCKET"] {
             return override
         }
-        let base = FileManager.default.urls(for: .applicationSupportDirectory,
-                                            in: .userDomainMask)[0]
-        return base.appendingPathComponent("FindMouse/control.sock").path
+        return "\(containerData)/control.sock"
+    }
+
+    /// 沙盒**之前** socket 綁的地方。
+    ///
+    /// 只拿來**認**，不拿來連（CLI 與舊 App 的 wire 契約沒有相容路徑）。存在的
+    /// 意義是把「App 沒在跑」與「App 在跑，但它是升級前的那一版」分開——兩者的
+    /// 下一步完全不同，而少了這個判別，後者會拿到一句「沒在執行」，
+    /// 使用者看著選單列上那隻貓完全無法理解。
+    ///
+    /// **`FINDMOUSE_SOCKET` 覆寫時這個判別不成立**，所以呼叫端在有覆寫時不該問它：
+    /// 那條路的兩端都是測試自己指定的，舊位置有沒有東西與它無關。
+    public static var legacyPath: String {
+        "\(realHome)/Library/Application Support/FindMouse/control.sock"
+    }
+
+    /// 這個 process 是不是真的跑在自己的沙盒容器裡。
+    ///
+    /// App 用它自我檢查：不是的話（＝這份建置沒被簽成沙盒），它會綁在一個 CLI
+    /// 永遠不會去看的地方，而**兩邊各自都運作正常**——最難聯想的那種。
+    /// CLI 不該問這個，它本來就不在容器裡。
+    public static var isInOwnContainer: Bool {
+        NSHomeDirectory() == containerData
+    }
+
+    /// 真家目錄。`getpwuid` 失敗時退回 `NSHomeDirectory()`——那是沒有 passwd
+    /// 記錄的極端情況，退回去至少讓非沙盒的情境還能動，而沙盒情境本來就會被
+    /// `isInOwnContainer` 抓到。
+    ///
+    /// **公開是因為 pack 的舊家也只能從這裡算。** 沙盒之後
+    /// `applicationSupportDirectory` 指向容器（那正是新家），而「使用者升級之前
+    /// 的圖組住在哪」在沙盒裡沒有第二個問法——見
+    /// `PackCatalogRepository.legacyUserPacksDirectory`。
+    public static var realHome: String {
+        guard let pw = getpwuid(getuid()), let dir = pw.pointee.pw_dir else {
+            return NSHomeDirectory()
+        }
+        return String(cString: dir)
     }
 }
 

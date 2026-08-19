@@ -242,6 +242,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
 
+        // **先問「我在不在自己的容器裡」，再問「綁得起來嗎」。** 兩者的處方完全
+        // 不同，而症狀在使用者眼裡一模一樣（CLI 說 App 沒在跑）。
+        //
+        // 沒被簽成沙盒的建置，socket 照樣綁得起來、CLI 也照樣連得上：兩端都用
+        // `ControlSocket.path`，而它從 `getpwuid` 算起、不被沙盒重導，所以兩邊
+        // 不可能錯開；`UnixSocketServer.start()` 還會自己把那個目錄建出來。
+        //
+        // 真正壞掉的是**資料的家**。`NSHomeDirectory()` 這時是真家目錄，於是
+        // `PackCatalogRepository.userPacksDirectory` 指回沙盒之前的
+        // `~/Library/Application Support/FindMouse/Packs`，設定也寫在容器外
+        // （2026-08-19 實測）。也就是說這份建置看起來一切正常，卻在讀寫舊世界
+        // ——拿它驗沙盒行為會得到一個什麼都沒驗到的綠，而那正是最難聯想的那種。
+        //
+        // **`FINDMOUSE_SOCKET` 有沒有覆寫與這一條無關。** 這裡原本會在覆寫時跳過
+        // 檢查，理由是「兩端都吃同一個環境變數、socket 不會錯開」——那個理由跟著
+        // 上面那段一起作廢了：現在這條問的是資料的家，而覆寫只換 socket 的位置。
+        // 留著那個條件的後果剛好相反：e2e 與開發**一定**帶覆寫，於是最需要這個
+        // 提示的路徑正好是唯一看不到它的路徑。
+        //
+        // 拿掉不會製造雜訊：`make-app.sh` 收尾一律 ad-hoc 簽章帶 entitlements，
+        // 所以 e2e 跑的那份是沙盒的、`isInOwnContainer` 為真。會叫的只剩真的沒被
+        // 簽成沙盒的建置，而那正是我們想聽到的那一次。
+        if !ControlSocket.isInOwnContainer {
+            log.error("這份建置沒有跑在沙盒容器裡（HOME=\(NSHomeDirectory(), privacy: .public)）")
+            menuBar.reportDegradation(
+                "這份建置沒有沙盒簽章：圖組與設定讀寫的是沙盒之前的舊位置，"
+                + "不是容器。用 Scripts/make-app.sh 重建。")
+        }
+
         do {
             try server.start()
             socket = server
@@ -322,7 +351,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 // Finder 什麼都不會發生，而使用者的結論是「這個按鈕壞了」。
                 try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
                 NSWorkspace.shared.activateFileViewerSelecting([dir])
+            },
+            legacyPacksNeedMigration: { PackCatalogRepository.legacyPacksNeedMigration() },
+            migrateLegacyPacks: { [weak self] in
+                guard let self else { return nil }
+                return self.runLegacyPackMigration()
             })
+    }
+
+    /// 開檔案面板要授權，然後把舊位置的圖組搬進容器。
+    ///
+    /// **面板本身就是授權**：沙盒下 `NSOpenPanel` 由 powerbox 代跑，使用者按下
+    /// 「選取」等於發一張 sandbox extension 給那個 URL，之後才讀得到裡面的東西。
+    /// 自己組一個等價路徑丟給 `migrate` 會安靜地搬出零套——沙盒下容器外是
+    /// 「`stat` 成功、內容 EPERM」（2026-08-17 探針前提 1）。
+    ///
+    /// **不要對面板回的 URL 寫 `guard startAccessingSecurityScopedResource()`。**
+    /// 同一批探針量到它對拖放來的 URL 回 `false` 而檔案照樣讀得到（回 false 的
+    /// 意思是「這不是 bookmark」，不是「你沒有權限」），寫成守衛會讓某些入口
+    /// 靜默失效。這裡連呼叫都不呼叫。
+    private func runLegacyPackMigration() -> PackMigrationResult? {
+        let legacy = PackCatalogRepository.legacyUserPacksDirectory
+        let panel = NSOpenPanel()
+        panel.directoryURL = legacy
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = false
+        panel.prompt = "授權並搬移"
+        panel.message = "選取舊版的圖組資料夾（已經幫你指好了），FindMouse 才有權限讀它。"
+        // 選單列 App 平常不是前景，面板會開在別人後面而看起來像「按了沒反應」。
+        NSApp.activate()
+        guard panel.runModal() == .OK, let chosen = panel.url else { return nil }
+        return packLibrary.migrate(from: chosen, legacyDirectory: legacy)
     }
 
     /// 匯入／移除的決策鏈。與 `RequestRouter` 內部那一份是**同一個型別、同一組

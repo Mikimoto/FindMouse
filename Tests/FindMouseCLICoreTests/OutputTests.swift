@@ -346,3 +346,34 @@ private let packList = PackListPayload(packs: [
     #expect(Output.loginItemText("requiresApproval").contains("系統設定"))
     #expect(Output.loginItemText("ineligible").contains("應用程式"))
 }
+
+/// 舊位置還有 socket 時，「沒在執行」要換一句話。
+///
+/// 這是升級到沙盒版之後最容易發生的困惑：CLI 說沒在執行，而選單列上那隻貓
+/// 正看著你。**兩種情況的下一步完全不同**，所以訊息必須分得開；exit code
+/// 仍然是 3（去把它弄成在跑的狀態），那一點沒有變。
+@Test func aSocketAtTheOldLocationChangesWhatWeSay() {
+    let path = "/tmp/whatever.sock"
+
+    let plain = Output.failure(for: .appNotRunning, socketPath: path)
+    let stale = Output.failure(for: .appNotRunning, socketPath: path,
+                               legacySocketPresent: true)
+
+    #expect(plain.message != stale.message, "兩種情況講了同一句話")
+    #expect(stale.code == .appNotRunning, "仍然是 3——要做的事還是讓它跑起來")
+    #expect(stale.message.contains("舊版"), "沒講出「對面是舊版」就等於沒說明")
+    #expect(stale.message.contains("upgrade"), "訊息要講接下來能做什麼")
+    // **不能宣稱它正在跑。** 那個檔案也可能是上次崩潰的殘留（stop() 會 unlink，
+    // 被 SIGKILL 不會），所以句子只能是條件句。
+    #expect(stale.message.contains("如果"), "不可以斷言舊版正在跑，那件事我們沒有量到")
+
+    // 旗標只該改這一種。連上了卻沒回應、路徑太長都與舊位置無關，
+    // 順手一起改掉的話，使用者會在四種毫不相干的失敗上看到同一句升級建議。
+    for error: WireClient.ClientError in [.noResponse, .connectionFailed(errno: 13),
+                                          .pathTooLong(path)] {
+        #expect(Output.failure(for: error, socketPath: path).message
+                == Output.failure(for: error, socketPath: path,
+                                  legacySocketPresent: true).message,
+                "\(error) 不該受舊位置影響")
+    }
+}

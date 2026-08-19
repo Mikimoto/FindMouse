@@ -523,6 +523,37 @@ private func settingValue(_ f: Fixture, _ key: String) throws -> String {
     #expect(error.code == .packNotFound)
 }
 
+/// 存在但讀不到的來源，`validate` 不可以說「這個來源裡沒有 pack.json」。
+///
+/// 沙盒下容器外是「`stat` 成功、內容 EPERM」，所以沒有這道守衛時
+/// `packRoot` 看到的是一棵空樹，回報的是一句**與真相相反**的話——它說內容不對，
+/// 實際上我們沒看到內容。兩者的下一步完全不同（換一個來源／處理權限）。
+///
+/// 這條同時釘住 `install` 與 `validate` **對同一個來源給同一種診斷**：
+/// 那個等價性是 `packValidate` 自己的註解寫下的主張
+/// （「驗過的與裝進去的是同一個判定」），而它一度不成立。
+@Test func validatingAnUnreadableSourceSaysSoInsteadOfBlamingTheManifest() throws {
+    let dir = URL(fileURLWithPath: NSTemporaryDirectory())
+        .appendingPathComponent("fm-unreadable-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    defer {
+        try? FileManager.default.setAttributes([.posixPermissions: 0o700],
+                                               ofItemAtPath: dir.path)
+        try? FileManager.default.removeItem(at: dir)
+    }
+    try FileManager.default.setAttributes([.posixPermissions: 0o000],
+                                          ofItemAtPath: dir.path)
+    // 前置條件自己也要驗：chmod 000 若對擁有者無效（例如以 root 跑），
+    // 下面兩條會為了錯的理由通過。
+    try #require(FileManager.default.isReadableFile(atPath: dir.path) == false)
+
+    let error = try decodeError(Fixture().send("pack.validate", ["path": dir.path]))
+    #expect(error.code == .packNotFound)
+    #expect(error.message.contains("權限"), "沒講出是權限問題：\(error.message)")
+    #expect(!error.message.contains("pack.json"),
+            "不可以怪罪 manifest——我們根本沒看到內容：\(error.message)")
+}
+
 // MARK: - pack list / use
 
 /// pack list 要把壞掉的也列出來並標 usable:false，而且標出哪一套是當前的。

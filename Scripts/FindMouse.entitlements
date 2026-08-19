@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  兩個鍵，而且刻意只有這兩個。
+
+  每加一個 entitlement 都要說得出「哪一個實測失敗需要它」——沒有那個實測，
+  加進來的就是一個沒人知道能不能拿掉的權限，而它會一直留著。
+  這份清單由 `InfoPlistTests.theSandboxEntitlementsAreExactlyTheOnesWeCanJustify`
+  釘成**精確相等**：加一個或少一個都會紅，逼人回來這裡寫下理由。
+
+  1. com.apple.security.app-sandbox
+     整件事的目的。**拿掉它不會讓任何東西報錯**——那正是它需要一條測試盯著的
+     理由。socket 不受影響：兩端都用 `ControlSocket.path`，它從 `getpwuid` 算起、
+     不被沙盒重導，而 `UnixSocketServer.start()` 還會自己把目錄建出來，所以 CLI
+     照樣連得上。真正變的是**資料的家**：`NSHomeDirectory()` 回到真家目錄，於是
+     pack 與設定讀寫的是沙盒之前的位置，而畫面上一切正常。唯一的訊號是 App
+     自己查的 `ControlSocket.isInOwnContainer`（2026-08-19 實測）。
+
+  2. com.apple.security.files.user-selected.read-only
+     **NSOpenPanel 是第三個機制**，powerbox 不吃雙擊與拖放各自發的那張
+     sandbox extension。少了它，面板**不是報錯而是根本不出現**：
+     `runModal()` 當場回 .cancel、`url` 是 nil，與使用者按取消一個字都不差
+     （2026-08-17 實測，log 裡看得到 openAndSavePanelService 起來 4ms 後就
+     `xpc_connection_cancel()`）。搬移舊 pack 那條路（spec D-2）就是靠它。
+     read-only 而不是 read-write：我們只**讀**使用者選的資料夾，
+     寫入一律寫進自己的容器。
+
+  以下這些**量過、確認不需要**（2026-08-17 的六個沙盒前提）：
+
+  - 讀被雙擊／拖進來的檔案 → LaunchServices 與拖放各自發 sandbox extension
+    （前提 3）。上面第 2 條講的是 powerbox，與這條是不同的機制，別合併理解。
+  - control socket → 綁在自己的容器裡（前提 2、5）
+  - 開機啟動 → SMAppService 在沙盒下正常，連自己的 bundle 都讀得到（前提 6）
+  - Carbon 熱鍵、NSEvent.mouseLocation、overlay → 2026-08-10 驗過，
+    spec 第 13 節的「零系統權限」在沙盒下依然成立
+-->
+<plist version="1.0">
+<dict>
+    <key>com.apple.security.app-sandbox</key>
+    <true/>
+    <key>com.apple.security.files.user-selected.read-only</key>
+    <true/>
+</dict>
+</plist>

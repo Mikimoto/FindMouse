@@ -102,5 +102,19 @@ BUNDLE_ID="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "${ROOT}/Scr
     echo "先跑 plutil -lint Scripts/Info.plist 看它是不是壞了；檔案沒壞就是那個 key 不見了，補回去再重組。" >&2
     exit 1
 }
-echo "已組出 ${APP}"
+# **開發建置也要簽成沙盒的。**
+#
+# 這支本來完全不簽（`grep codesign` 零命中），所以 build/FindMouse.app 是未簽、
+# 不沙盒的。若只有 release.sh 帶 entitlements，**e2e 永遠測不到沙盒**——而沙盒
+# 改變的東西（socket 綁在哪、舊 pack 目錄讀不讀得到、/tmp 能不能用）全都是
+# e2e 該抓的，只在發布版現形的話等於沒有守衛。
+#
+# ad-hoc（`--sign -`）帶 entitlements 一樣會啟動沙盒：2026-08-17 的四支探針
+# 全都是這樣簽的，`NSHomeDirectory()` 確實落在容器裡。
+#
+# 不加 `--options runtime`：hardened runtime 是 notarize 的門檻，不是沙盒的，
+# 而它會擋掉開發時想附加 debugger 的路。release.sh 那邊才需要。
+codesign --force --sign - --entitlements "${ROOT}/Scripts/FindMouse.entitlements" "${APP}"
+
+echo "已組出 ${APP}（ad-hoc 簽章 ＋ app-sandbox）"
 echo "跑：open ${APP}    （看 log：log stream --predicate 'subsystem == \"${BUNDLE_ID}\"'）"

@@ -615,3 +615,181 @@ private func libraryOverRealScan(_ packs: URL) -> PackLibraryUseCase {
     #expect(FileManager.default.fileExists(atPath: packs.appendingPathComponent("bar").path),
             "排在前面的那個不該被牽連")
 }
+
+/// 讀不到的來源要說「讀不到」，不能說「這裡面沒有 pack.json」。
+///
+/// **後者是與真相相反的一句話**：它宣稱來源的內容不對，而實際上我們根本沒看到
+/// 內容。沙盒下容器外的路徑正是這個形狀——`fileExists` 過、`opendir` 回 EPERM
+/// （2026-08-17 實測），於是後面每一步都看到一個空目錄。分不開的話，使用者會
+/// 去改一個沒有問題的 pack。
+///
+/// 用 `chmod 000` 構造：實測對**擁有者自己**也回 `access(R_OK) == false`。
+/// defer 要先 chmod 回去再刪，否則刪不掉。
+@Test func anUnreadableSourceSaysSoInsteadOfBlamingTheManifest() throws {
+    let root = try tempDir()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let packs = root.appendingPathComponent("Packs")
+    let source = root.appendingPathComponent("blocked")
+    try FileManager.default.createDirectory(at: source, withIntermediateDirectories: true)
+    try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: source.path)
+    defer { try? FileManager.default.setAttributes([.posixPermissions: 0o755],
+                                                   ofItemAtPath: source.path) }
+
+    let library = PackLibraryUseCase(packsDirectory: { packs }, installedPacks: { [] })
+    guard case let .failed(code, message) = library.install(source: source, force: false) else {
+        Issue.record("預期 failed"); return
+    }
+    #expect(code == .packSourceInvalid)
+    #expect(message.contains("讀不到"), "訊息是「\(message)」")
+    #expect(!message.contains("沒有 pack.json"),
+            "這正是要避免的那句話：它把權限問題說成內容問題")
+}
+
+// MARK: - 從沙盒之前的位置搬移
+
+/// 搬移把舊目錄底下的**每一套**都裝進去，並且不會被雜物絆倒。
+///
+/// 雜物是刻意放的：舊家底下一定有 `.DS_Store`，而使用者常常還留著當初的 zip。
+/// 沒有那道「只看目錄」的過濾時，它們各自換來一句「這個來源裡沒有 pack.json」，
+/// 而那三句會把真正搬不成的那一套淹掉。
+@Test func migratingALegacyFolderInstallsEveryPackInside() throws {
+    let root = try tempDir()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let legacy = root.appendingPathComponent("legacy")
+    try FileManager.default.createDirectory(at: legacy, withIntermediateDirectories: true)
+    _ = try makeSource(id: "alpha", in: legacy)
+    _ = try makeSource(id: "beta", in: legacy)
+    FileManager.default.createFile(atPath: legacy.appendingPathComponent(".DS_Store").path,
+                                   contents: Data("垃圾".utf8))
+    FileManager.default.createFile(atPath: legacy.appendingPathComponent("old.zip").path,
+                                   contents: Data("不是 pack".utf8))
+
+    let packs = root.appendingPathComponent("Packs")
+    let library = PackLibraryUseCase(packsDirectory: { packs }, installedPacks: { [] })
+    let report = library.migrate(from: legacy, legacyDirectory: legacy)
+
+    #expect(report.installed == ["alpha", "beta"])
+    #expect(report.skipped.isEmpty, "檔案不該變成搬不成的一筆：\(report.skipped)")
+    for id in ["alpha", "beta"] {
+        #expect(FileManager.default.fileExists(
+            atPath: packs.appendingPathComponent("\(id)/pack.json").path))
+    }
+}
+
+/// 新家已經有同 id 時**不覆蓋**，而且要說得出是哪一套。
+///
+/// 斷言目的地的內容原封不動，理由與 `aCollidingIDAsksBeforeTouchingAnything`
+/// 同一條：只看回傳值的話，「先覆蓋再回報跳過」照樣會通過。
+@Test func migrationNeverOverwritesWhatIsAlreadyInTheNewHome() throws {
+    let root = try tempDir()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let legacy = root.appendingPathComponent("legacy")
+    try FileManager.default.createDirectory(at: legacy, withIntermediateDirectories: true)
+    _ = try makeSource(id: "cat", version: "1.0", in: legacy)
+
+    let packs = root.appendingPathComponent("Packs")
+    let installed = packs.appendingPathComponent("cat")
+    try FileManager.default.createDirectory(at: installed, withIntermediateDirectories: true)
+    try Data("新家原本的".utf8).write(to: installed.appendingPathComponent("pack.json"))
+
+    let library = PackLibraryUseCase(packsDirectory: { packs },
+                                     installedPacks: { [summary("cat", builtIn: false)] })
+    let report = library.migrate(from: legacy, legacyDirectory: legacy)
+
+    #expect(report.installed.isEmpty)
+    #expect(report.skipped.count == 1)
+    #expect(report.skipped.first?.name == "cat")
+    #expect(report.skipped.first?.reason.contains("cat") == true,
+            "訊息要指名是哪一套：\(report.skipped)")
+    // **刻意略過仍然算走完了。** 這裡與 `aFolderWhereEveryPackFailedIsNotMarkedDone`
+    // 是同一個判斷的兩邊：新家已經有了＝再按一次也不會更好，該落記號；
+    // 出了事＝重試可能會好，不落。
+    #expect(FileManager.default.fileExists(
+        atPath: PackCatalogRepository.migrationMarker(in: packs).path),
+        "每一套都是刻意略過時仍要落記號，否則那一列提示每次啟動都回來")
+    let survived = try String(contentsOf: installed.appendingPathComponent("pack.json"),
+                              encoding: .utf8)
+    #expect(survived == "新家原本的", "新家那一份被覆蓋了")
+}
+
+/// 「已經搬過」的記號**只在使用者真的選了舊資料夾時**才落下。
+///
+/// 兩個方向都要釘。少了「選別的地方就不落記號」那一邊，使用者在面板裡逛去
+/// 錯的資料夾按下選取之後，那一列提示會永遠消失——而他一套都還沒搬到。
+@Test func theDoneMarkerFollowsWhichFolderTheUserPicked() throws {
+    let root = try tempDir()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let legacy = root.appendingPathComponent("legacy")
+    let elsewhere = root.appendingPathComponent("somewhere-else")
+    for dir in [legacy, elsewhere] {
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    }
+
+    let packs = root.appendingPathComponent("Packs")
+    let marker = PackCatalogRepository.migrationMarker(in: packs)
+    let library = PackLibraryUseCase(packsDirectory: { packs }, installedPacks: { [] })
+
+    _ = library.migrate(from: elsewhere, legacyDirectory: legacy)
+    #expect(FileManager.default.fileExists(atPath: marker.path) == false,
+            "選的不是舊資料夾，不該記成已經搬過")
+
+    _ = library.migrate(from: legacy, legacyDirectory: legacy)
+    #expect(FileManager.default.fileExists(atPath: marker.path),
+            "選了舊資料夾就要記下來，否則那一列提示每次啟動都回來")
+}
+
+/// **列不出來的資料夾不能當成空的。**
+///
+/// 這是這條路上最難救的失敗：記號一旦落下，`legacyPacksNeedMigration()` 從此永遠
+/// 回 false，那一列提示再也不出現、一套都沒搬，而使用者收到的訊息是「這個資料夾裡
+/// 沒有圖組」——他不會知道要去刪一個他不知道存在的記號。
+@Test func anUnreadableLegacyFolderIsReportedInsteadOfMarkedDone() throws {
+    let root = try tempDir()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let legacy = root.appendingPathComponent("legacy")
+    try FileManager.default.createDirectory(at: legacy, withIntermediateDirectories: true)
+    // 還原權限要排在刪除之前才刪得掉（defer 是 LIFO，所以寫在後面）。
+    defer {
+        try? FileManager.default.setAttributes([.posixPermissions: 0o700],
+                                               ofItemAtPath: legacy.path)
+    }
+    try FileManager.default.setAttributes([.posixPermissions: 0],
+                                          ofItemAtPath: legacy.path)
+
+    let packs = root.appendingPathComponent("Packs")
+    let library = PackLibraryUseCase(packsDirectory: { packs }, installedPacks: { [] })
+
+    let result = library.migrate(from: legacy, legacyDirectory: legacy)
+
+    #expect(result.installed.isEmpty)
+    #expect(result.skipped.count == 1, "讀不到要說出來，不能靜靜當成空的")
+    #expect(FileManager.default.fileExists(
+        atPath: PackCatalogRepository.migrationMarker(in: packs).path) == false,
+        "一套都沒搬卻落下記號，等於把那一列提示永久關掉")
+}
+
+/// **一套都沒搬成、而且是出了事，就不要落記號。**
+///
+/// 與 `anUnreadableLegacyFolderIsReportedInsteadOfMarkedDone` 同一個後果，走的是
+/// 另一條路：目錄列得出來，但每一套都 `install` 失敗（磁碟滿、子目錄讀不到、
+/// rename 失敗都會走到這裡）。落了記號就永遠關掉那一列提示，而它是進入這條路的
+/// 唯一入口，所以重試會好的情況不能落。
+@Test func aFolderWhereEveryPackFailedIsNotMarkedDone() throws {
+    let root = try tempDir()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let legacy = root.appendingPathComponent("legacy")
+    // 沒有 pack.json 的目錄——`install` 對它回 .failed。
+    try FileManager.default.createDirectory(
+        at: legacy.appendingPathComponent("not-a-pack"), withIntermediateDirectories: true)
+
+    let packs = root.appendingPathComponent("Packs")
+    let library = PackLibraryUseCase(packsDirectory: { packs }, installedPacks: { [] })
+
+    let report = library.migrate(from: legacy, legacyDirectory: legacy)
+
+    #expect(report.installed.isEmpty)
+    #expect(report.skipped.count == 1)
+    #expect(FileManager.default.fileExists(
+        atPath: PackCatalogRepository.migrationMarker(in: packs).path) == false,
+        "一套都沒搬成卻落記號，等於把唯一的入口靜靜關掉")
+}

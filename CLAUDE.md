@@ -48,15 +48,58 @@
   測試前要斷言零個實例，不能「殺完就當作乾淨」；`pgrep -f <路徑片段>` 比
   `pgrep -x <名字>` 可靠（bundle 內執行檔名與 SwiftPM 產物名不同）。
   **但「零個實例」不是唯一的路**——身分既然是 socket，給不同的 socket 就是不同的
-  身分：`open -n --env "FINDMOUSE_SOCKET=/tmp/xxx.sock" <某個.app>` 可以與使用者
-  自己那份（`/Applications`，常常正在跑）共存，`e2e.sh:131` 的 `launch_app` 就是
-  這樣做的。要驗開發建置時**不要去殺使用者的實例**。
-  收工要照 e2e 那兩支的分工：`launch_app`（`e2e.sh:131`）用 before/after 的 `pgrep`
-  差集記下**自己啟動的 pid**，`kill_started`（`:99`）只殺那些、並等到它們真的不在了
-  才繼續。（那個差集有個已知邊界：它會收養 `open` 之後 2 秒內出現的**任何**實例，
-  所以「只殺自己的」在那個窗口內有別人啟動時不成立。）
+  身分，可以與使用者自己那份（`/Applications`，常常正在跑）共存，`e2e.sh` 的
+  `launch_app` 就是這樣做的。要驗開發建置時**不要去殺使用者的實例**。
+
+  **那條路徑不能放 `/tmp`。** 沙盒下在 `/tmp` bind 回 `errno 1`（EPERM，2026-08-17
+  實測；不沙盒時成功，所以是沙盒擋的）。要放進 App 自己的容器：
+
+      open -n --env "FINDMOUSE_SOCKET=$HOME/Library/Containers/tw.com.deepthought.findmouse/Data/dev-$$.sock" <某個.app>
+
+  **同一個容器內靠檔名隔離仍然成立，靠目錄隔離不成立**——App 只寫得進自己的容器，
+  而所有實例共用同一個容器（容器以 bundle id 為鍵），所以只能靠檔名分開。
+  收工要照 e2e 那兩支的分工：`launch_app`（`e2e.sh`）用 before/after 的 `pgrep`
+  差集記下**自己啟動的 pid**，`kill_started` 只殺那些、並等到它們真的不在了
+  才繼續（不寫行號是因為它們漂過一次而沒人發現，函式名 grep 得到）。那個差集有個
+  已知邊界：它會收養 `open` 之後 2 秒內出現的**任何**實例，所以「只殺自己的」
+  在那個窗口內有別人啟動時不成立。
   **不要用 `pkill -f <路徑片段>`**——路徑片段是相對的，它會匹配**任何** worktree 的
   `build/FindMouse.app`，連另一個 session 的實例一起殺，正是這條要避免的事。
+- **每一種建置都是沙盒的**（v0.5.1 起）。`make-app.sh` 收尾會 ad-hoc 簽章並帶上
+  `Scripts/FindMouse.entitlements`——不簽的話 e2e 從頭到尾都沒在測沙盒，而那正是
+  它該測的東西。App 自己也會查（`ControlSocket.isInOwnContainer`），不在容器裡就在
+  選單列掛一筆降級提示。
+
+  **那個提示講的不是 socket。** CLI 照樣連得上——兩端都用 `ControlSocket.path`，
+  它從 `getpwuid` 算起、不被沙盒重導，而 `UnixSocketServer.start()` 還會自己把那個
+  目錄建出來。壞掉的是**資料的家**：非沙盒建置的 `NSHomeDirectory()` 是真家目錄，
+  於是 pack 與設定讀寫的是沙盒之前的位置。也就是說那份建置看起來一切正常，
+  卻在讀寫舊世界——拿它驗沙盒行為會得到一個什麼都沒驗到的綠。
+
+  **entitlement 清單由測試釘成精確相等**（`theSandboxEntitlementsAreExactlyTheOnesWeCanJustify`）。
+  加一個就紅，那是刻意的：每一個都要說得出「哪一個實測失敗需要它」。目前兩個，
+  第二個的來歷值得記——**`NSOpenPanel` 需要 `files.user-selected.read-only`，
+  而少了它面板不是報錯，是根本不出現**：`runModal()` 當場回 `.cancel`、`url` 是 nil，
+  與使用者按取消一個字都不差（2026-08-17 實測，log 裡 `openAndSavePanelService`
+  起來 4ms 後就 `xpc_connection_cancel()`）。雙擊與拖放不需要它——那兩條各自有
+  LaunchServices／拖放發的 sandbox extension，**powerbox 是第三個機制、不吃那兩張票**。
+  把前者的結論套到後者身上，就是這個 bug 的成因。
+- **pack 的家在容器裡**：`~/Library/Containers/tw.com.deepthought.findmouse/Data/Library/Application Support/FindMouse/Packs`。
+  程式碼不必自己組——`applicationSupportDirectory` 在沙盒下就指向那裡。要**舊家**
+  才得自己算（`PackCatalogRepository.legacyUserPacksDirectory`，走
+  `ControlSocket.realHome`：`getpwuid` 不被沙盒重導）。
+
+  **設定會自動搬，pack 不會。** `cfprefsd` 認得容器並替你搬（2026-08-17 實測：
+  舊 plist 直接消失，是搬不是複製），而 `Application Support` 底下就只是檔案。
+  所以同一次沙盒化，設定安然無恙、圖組整批消失——這個不對稱猜不到。
+  搬移只能靠使用者在 `NSOpenPanel` 授權（`AppDelegate.runLegacyPackMigration`），
+  搬完在 `Packs/.legacy-migration-done` 落一個記號，否則那一列提示每次啟動都回來
+  （授權只活在那一個 process 裡，下次開 App 偵測器又為真）。
+- **CLI 的 `pack install`／`validate` 會先把來源複製進容器**（`SourceStaging`）。
+  App 讀不到 CLI 遞過來的裸路徑——雙擊與拖放有 extension，socket 上的一個字串沒有。
+  所以 App 看到的路徑與你在命令列打的不是同一個。容器的 `tmp/fm-cli-<pid>/` 在
+  **那個 CLI 還在等回應時本來就存在**（收到回應才刪），所以看到一個不代表出過事；
+  `kill(pid, 0)` 回 ESRCH 的那些才是被 SIGKILL 留下的，下一次 CLI 啟動會掃掉。
 - **`/Applications/FindMouse.app` 現在由 Homebrew cask 管**（2026-08-14 起）。
   兩個後果：驗 cask 時不要裝進 `/Applications`（用
   `brew fetch --cask <tap>/findmouse`——它下載並驗 sha256 但**不安裝**，2026-08-17
@@ -76,10 +119,17 @@
   一個好的狀態，而不是一個要你自己收拾的狀態。
 
   以及**永遠不要跑 `brew uninstall --cask --zap`**
-  ——`zap` 的路徑是絕對路徑，會刪掉使用者真正的 `~/Library/Application Support/FindMouse/`
-  （他自己裝的 pack）與 `~/Library/Preferences/tw.com.deepthought.findmouse.plist`
-  （全部設定），而 `brew uninstall` **沒有 `--dry-run`** 可以先看（實測回
-  `Error: invalid option`）。要移除就用不帶 `--zap` 的版本。
+  ——`zap` 的路徑是絕對路徑，會刪掉使用者真正的圖組與設定，而 `brew uninstall`
+  **沒有 `--dry-run`** 可以先看（實測回 `Error: invalid option`）。
+  要移除就用不帶 `--zap` 的版本。
+  （**v0.5.1 起那份清單過時了，而且不是往安全的方向過時**：cask 寫的還是
+  `~/Library/Application Support/FindMouse` 與
+  `~/Library/Preferences/tw.com.deepthought.findmouse.plist`，而沙盒之後新的家在
+  `~/Library/Containers/tw.com.deepthought.findmouse`。關鍵是**舊位置沒有變空**
+  ——搬移是複製、刻意不刪原檔（README〈從 v0.5.0 以前升級上來〉就是這樣寫給使用者
+  的），而還沒按過「搬過來…」的人整批圖組都還在那裡。所以現在跑 `--zap` 會刪掉
+  搬移功能存在要救的那一批，同時漏掉容器裡的新家：兩頭都錯。發 v0.5.1 時要一起
+  改 tap 把兩個位置都列上，見 README〈自己發一份〉。）
 - **`findmouse pack validate` 走 socket，App 必須在跑。** CLI 是薄用戶端，
   App 沒跑會回 `APP_NOT_RUNNING`（exit 3），那不是 pack 有問題。
 - **`ditto -x -k` 會把 zip 裡的 `../x` 攤平到目標根目錄，不是拒絕它**
