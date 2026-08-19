@@ -311,6 +311,75 @@ else
     rm -rf "${T}"
 fi
 
+# --- 8 -------------------------------------------------------------------
+step "8. 出貨 pack 的精確相等判準分得出「只有預設那套」與「多了一套」（雙向對照組）"
+
+# **這一段的來歷**：2026-08-19 以前有兩套開發用的色塊跟著出貨，使用者在圖組選單裡
+# 看得到，其中一套還顯示「缺少逗貓棒動作」。舊守衛只問「預設那套在不在」，所以它
+# 對那個狀態說 yes 說了好幾個版本。色塊搬走之後就沒有自然出現的反例了，而一個
+# 永遠說 yes 的斷言與沒有斷言等價。
+#
+# **為什麼不直接跑 release.sh 來驗。** 原訂做法是在 Sources/.../Packs 底下種一個
+# 誘餌再跑 `--dry-run`，實測行不通：誘餌是 untracked，release.sh 第 1／12 步的
+# 乾淨工作樹檢查會先把它擋掉，於是紅的是「工作樹不乾淨」而不是精確相等那一條
+# ——一個為了錯的理由而紅的測試，證明不了那條守衛有鑑別力。繞過那個檢查更糟：
+# 它正是本檔第 1 段在守的東西。
+#
+# 所以這裡對**組好的 .app 的拋棄式複本**動手，驗的是那個判準的形狀。與第 6 段
+# 同一個取捨（那一段也是把斷言的 pattern 重新表達一次，而不是呼叫 release.sh）：
+# 權威的那一份在 release.sh 裡，這裡證明的是「這個形狀真的分得出兩種狀態」。
+DEFAULT_PACK_T="$(sed -nE 's/.*static let factory = "([a-z0-9-]+)".*/\1/p' \
+    "${ROOT}/Sources/FindMouseCore/SettingsUseCase.swift")"
+if [[ "$(printf '%s\n' "${DEFAULT_PACK_T}" | grep -c .)" -ne 1 ]]; then
+    bad "從 SettingsUseCase.swift 讀不到唯一的出廠預設 pack id（讀到「${DEFAULT_PACK_T}」）"
+else
+    DEV_APP_P="${ROOT}/build/FindMouse.app"
+    [[ -d "${DEV_APP_P}" ]] || Scripts/make-app.sh >/dev/null 2>&1 || true
+    if [[ ! -d "${DEV_APP_P}" ]]; then
+        bad "建不出 ${DEV_APP_P}，這一段兩個方向都沒跑到"
+    else
+        P8="$(mktemp -d)"
+        # ditto 而不是 cp -R：這台機器的 shell 對 cp 有帶 -r 的 alias，
+        # `cp -R` 直接失敗而 && 鏈會整條短路——那會讓下面的比對拿空字串去比，
+        # 印出一個看起來正常的「通過」。
+        /usr/bin/ditto "${DEV_APP_P}" "${P8}/app" 2>/dev/null || true
+
+        # 與 release.sh 同一個形狀：找唯一的 Resources/Packs，列出它底下的目錄集合。
+        packs_of() {
+            local app="$1" dir
+            dir="$(/usr/bin/find "${app}" -type d -path '*/Resources/Packs' 2>/dev/null || true)"
+            [[ "$(printf '%s\n' "${dir}" | grep -c .)" -eq 1 ]] || { echo "__NOT_UNIQUE__"; return; }
+            (cd "${dir}" && /usr/bin/find . -mindepth 1 -maxdepth 1 -type d \
+                | sed 's|^\./||' | sort | paste -sd' ' -)
+        }
+
+        # 正向：乾淨的複本必須恰好等於出廠預設那一套
+        CLEAN8="$(packs_of "${P8}/app")"
+        [[ "${CLEAN8}" == "${DEFAULT_PACK_T}" ]] \
+            && ok "判準對「只有出廠預設那套」說 yes（讀到「${CLEAN8}」）" \
+            || bad "判準對乾淨的產物說不（讀到「${CLEAN8}」，期望「${DEFAULT_PACK_T}」）——release.sh 會擋住每一次發布"
+
+        # 負向：在複本裡多種一套。**要有 pack.json**，否則擋下它的可能是別的判準。
+        DECOY8="$(/usr/bin/find "${P8}/app" -type d -path '*/Resources/Packs' | head -1)/zz-decoy"
+        mkdir -p "${DECOY8}"
+        cat >| "${DECOY8}/pack.json" <<'DECOYEOF'
+{"schemaVersion":1,"id":"zz-decoy","name":"decoy","logicalHeight":96,
+ "anchor":{"x":0.5,"y":0.9},"facing":"right","mirrorForOpposite":true,
+ "actions":{"run":{"frames":1,"fps":10,"loop":true}}}
+DECOYEOF
+        DIRTY8="$(packs_of "${P8}/app")"
+        # 正面確認誘餌真的種進去了，否則「不相等」可能只是因為前面某步失敗
+        if [[ "${DIRTY8}" != *"zz-decoy"* ]]; then
+            bad "誘餌沒種進去（讀到「${DIRTY8}」），負向對照組沒跑到"
+        elif [[ "${DIRTY8}" == "${DEFAULT_PACK_T}" ]]; then
+            bad "多了一套 pack 而判準照樣說相等——它沒有鑑別力"
+        else
+            ok "判準擋下多出來的 zz-decoy（讀到「${DIRTY8}」）"
+        fi
+        rm -rf "${P8}"
+    fi
+fi
+
 step "結果"
 printf '  通過 %d、失敗 %d\n' "${PASS}" "${FAIL}"
 [[ "${FAIL}" -eq 0 ]]
