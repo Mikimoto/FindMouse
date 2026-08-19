@@ -85,7 +85,9 @@ private func infoPlistBundleID() throws -> String {
 /// 拿現在的 API 去算會在沙盒下解到容器裡——那正是新位置，於是判別永遠成立，
 /// 每一次「App 沒在跑」都會被說成「你的 App 是舊版」。
 @Test func theLegacyPathIsTheRealHomeNotTheContainer() throws {
-    let real = try #require(String(validatingUTF8: getpwuid(getuid())!.pointee.pw_dir))
+    let pw = try #require(getpwuid(getuid()))
+    let dir = try #require(pw.pointee.pw_dir)
+    let real = try #require(String(validatingUTF8: dir))
     #expect(ControlSocket.legacyPath
             == real + "/Library/Application Support/FindMouse/control.sock")
     #expect(ControlSocket.legacyPath != ControlSocket.path)
