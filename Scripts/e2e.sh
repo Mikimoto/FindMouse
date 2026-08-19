@@ -86,20 +86,26 @@ export FINDMOUSE_SOCKET="${CONTAINER}/fm-e2e-$$.sock"
 # 而 `pack use` 成功時會把 `pack.id` 寫進去（`AppDelegate.performSwap` 的副作用），
 # 所以跑一次 e2e 使用者的貓就換一套，而且**跑完不會有任何訊號**。
 #
-# 兩件事一起做：先記下原值供 cleanup 還原，再把它釘成內建那套。
-# 釘住是因為「剛啟動載入的是 test-blocks」這類斷言否則會跟著使用者上次選了什麼
+# 兩件事一起做：先記下原值供 cleanup 還原，再把它釘成**出廠預設**那套。
+# 釘 mycat 而不是色塊，是因為 2026-08-19 起色塊不再出貨——而這樣一來「剛啟動
+# 載入的是哪一套」驗的才是使用者真正的起始狀態。
+# 釘住是因為「剛啟動載入的是 mycat」這類斷言否則會跟著使用者上次選了什麼
 # 而變——失敗的原因與被測物無關（實測踩過：使用者在設定視窗把 rest.duration
 # 調成 5，寫死出廠值 10 的那條斷言就紅了）。
 # 與 socket、pack 目錄同一個來源（上面那個 BUNDLE_ID）。一旦漂掉，症狀是
-# 「e2e 去寫一個沒人讀的 domain」——App 讀到的還是使用者自己的設定，於是下面
-# 「載入的是內建 pack」那條會紅，而紅的原因與被測物完全無關（實測：使用者的
-# pack.id 是 mycat）。
+# 「e2e 去寫一個沒人讀的 domain」——App 讀到的還是使用者自己的設定。
+#
+# **這個漂移以前會被下面那條 pack 斷言順手抓到，現在不會了**：釘的值從色塊改成
+# mycat 之後，使用者自己的 pack.id 若也是 mycat（實測就是），漂掉時那條照樣綠。
+# 這是刻意的取捨——那條斷言的本業是「使用者真正的起始狀態」，順手抓漂移只是副作用。
+# 代價要講清楚：**漂移現在沒有任何一條斷言保證抓得到**，只有「使用者上次選的剛好
+# 不是 mycat」時才會現形。要真的守它得另外寫一條，這裡沒有寫。
 #
 # 沙盒之後 `defaults` 這一側**不必改**：cfprefsd 認得容器，對同一個 domain
 # 的讀寫兩邊都會被重導過去（2026-08-17 實測，連 `defaults read` 都跟著重導）。
 DEFAULTS_DOMAIN="${BUNDLE_ID}"
 SAVED_PACK_ID="$(defaults read "${DEFAULTS_DOMAIN}" pack.id 2>/dev/null || true)"
-defaults write "${DEFAULTS_DOMAIN}" pack.id -string "test-blocks"
+defaults write "${DEFAULTS_DOMAIN}" pack.id -string "mycat"
 
 # 使用者放自己 pack 的地方（`PackCatalogRepository.userPacksDirectory`）。
 # 這裡面可能有使用者自己的東西，所以只記下**自己造的 id**，收工只刪這些。
@@ -228,7 +234,7 @@ json() { "${FM}" status --json 2>/dev/null; }
 field() { json | /usr/bin/python3 -c "import json,sys; d=json.load(sys.stdin)['data']; print($1)"; }
 
 expect "$(field 'd["visible"]')" "False" "剛啟動時貓不可見"
-expect "$(field 'd["pack"]["id"]')" "test-blocks" "載入的是內建 pack"
+expect "$(field 'd["pack"]["id"]')" "mycat" "載入的是出廠預設那套（使用者的起始狀態）"
 
 # 建置身分的「讀取 → 顯示」那一段（「寫入」在建置那一步驗過，那裡的窗口是毫秒級）。
 # 期望值從**plist 自己**組，不重算 describe：重算會在改過 tracked 檔案或 describe
@@ -494,7 +500,7 @@ launch_app
 sleep 1
 "${FM}" status >/dev/null 2>&1
 expect "$?" "0" "原本的實例仍然在服務 CLI"
-expect "$(field 'd["pack"]["id"]')" "test-blocks" "回應來自一個正常載入 pack 的實例"
+expect "$(field 'd["pack"]["id"]')" "mycat" "回應來自一個正常載入 pack 的實例"
 echo "  （本次啟動的 pid：${STARTED_PIDS}；第二個停在提示視窗，收工時一併關掉）"
 
 # 以下四條是 spec 第 15 節 M4 的驗收條件。**它們是 M4 唯一能證明自己做完的東西**——
@@ -526,7 +532,14 @@ step "9. 換 pack（M4 驗收條件一：放入第二套 pack 能切換）"
 # **先把貓叫出來再換。** spec 第 6.5 節的時序（先淡出、換完立刻重新召喚）
 # 只在貓在場時才走得到——貓不在場時 `PackSwapUseCase.request` 當場回 `.swap`，
 # 「先淡出」那條路一步都沒踩到，這條 e2e 就沒有涵蓋 6.5。
-expect "$(field 'd["pack"]["id"]')" "test-blocks" "前提：現在跑的是內建 test-blocks"
+# 要換過去的那一套。2026-08-19 起色塊不再出貨，所以 e2e 自己現做——同一支產生器、
+# 體高 240、**刻意缺 pounce**（step 11「缺 teaser 的 pack」就站在它上面）——這兩個
+# 對得上 Tests/FindMouseAdaptersTests/Fixtures 底下那套 test-blocks-tall 的 manifest。
+# 色相只影響顏色，這裡沒有斷言看它（那個參數也回推不出來，manifest 不記）。
+# 只做這一套：其餘原本指向色塊的地方語意都是「內建／出廠預設」，那些改成 mycat。
+make_pack e2e-blocks-tall 240 40 pounce
+
+expect "$(field 'd["pack"]["id"]')" "mycat" "前提：現在跑的是出廠預設 mycat"
 "${FM}" summon >/dev/null
 for _ in $(seq 1 40); do
     [[ "$(field 'd["visible"]')" == "True" ]] && break
@@ -534,12 +547,12 @@ for _ in $(seq 1 40); do
 done
 expect "$(field 'd["visible"]')" "True" "前提：貓在場，所以待會走的是「先淡出」那條"
 
-"${FM}" pack use test-blocks-tall >/dev/null
+"${FM}" pack use e2e-blocks-tall >/dev/null
 for _ in $(seq 1 40); do
-    [[ "$(field 'd["pack"]["id"]')" == "test-blocks-tall" ]] && break
+    [[ "$(field 'd["pack"]["id"]')" == "e2e-blocks-tall" ]] && break
     sleep 0.5
 done
-expect "$(field 'd["pack"]["id"]')" "test-blocks-tall" "pack.id 換過去了"
+expect "$(field 'd["pack"]["id"]')" "e2e-blocks-tall" "pack.id 換過去了"
 # **這條才是真正的驗收。** 只比對 id 的話，「更新了 packID 欄位、七個協作者
 # 一個都沒換」會照樣通過，而那正是 M4 最大的風險（`SpriteRepository` 有七個
 # 持有者）。體高讀的是 `pack.sprites.logicalHeight`，換的是整包 `PackBinding`。
@@ -571,7 +584,7 @@ expect "${CODE}" "1" "壞 pack 回 exit 1"
 # 「這套 pack 根本沒被掃到」與「掃到了、判定不合格」分不出來——前者會讓這一條
 # 在驗證邏輯整個不存在的情況下照樣通過。
 expect "$(errcode "${OUT}")" "PACK_INVALID" "錯誤碼是 PACK_INVALID（不是沒找到）"
-expect "$(field 'd["pack"]["id"]')" "test-blocks-tall" "而且沒有真的換過去"
+expect "$(field 'd["pack"]["id"]')" "e2e-blocks-tall" "而且沒有真的換過去"
 
 # --- 11 ----------------------------------------------------------------------
 step "11. 缺 teaser 的 pack 讓逗貓棒不可用（M4 驗收條件三）"
@@ -581,7 +594,7 @@ step "11. 缺 teaser 的 pack 讓逗貓棒不可用（M4 驗收條件三）"
 # 拿那個管道驗，看到的「沒反應」證明不了任何事。
 # 改走 `findmouse teaser on`：它與快捷鍵投遞的是同一個 `.setTeaser(true)`，
 # 閘門也在同一個 `ControlUseCase`（`ControlUseCase.swift:59`）。
-expect "$(field 'd["pack"]["id"]')" "test-blocks-tall" "前提：現在跑的是缺 pounce 的那套"
+expect "$(field 'd["pack"]["id"]')" "e2e-blocks-tall" "前提：現在跑的是缺 pounce 的那套"
 expect "$(field 'd["teaser"]["available"]')" "False" "缺 pounce → teaserAvailable: false"
 OUT="$("${FM}" teaser on --json 2>&1)"; CODE=$?
 expect "${CODE}" "1" "teaser on 回 exit 1"
@@ -591,11 +604,14 @@ expect "$(field 'd["teaser"]["enabled"]')" "False" "而且真的沒開起來"
 
 # --- 12 ----------------------------------------------------------------------
 step "12. 使用者目錄丟進去的 pack 切得過去；它在執行期消失就退回內建"
-# 前半是驗收條件一的字面意思（「**放入**第二套 pack」——test-blocks-tall 是內建的，
-# 從 bundle 載入，證明不了使用者目錄那條路）。後半是 spec 第 10 節：
-# 「當前 pack 在執行期失效（檔案被刪）→ 退回內建 pack 並記錄 log」。
+# 後半是這一段真正獨有的：spec 第 10 節「當前 pack 在執行期失效（檔案被刪）→
+# 退回內建 pack 並記錄 log」。
 #
-# 內建的兩套都刪不得（在 .app 的 bundle 裡），所以要先自己造一套放進使用者目錄。
+# 前半（切得過去）在 2026-08-19 以前是使用者目錄那條路的**唯一**證明——當時 step 9
+# 換過去的是內建的色塊，走的是 bundle。色塊不再出貨之後 step 9 換的也是自己造的
+# pack，所以前半不再獨佔那個證明；它留在這裡是因為後半需要一個刪得掉的當前 pack。
+#
+# 內建那套刪不得（在 .app 的 bundle 裡），所以要先自己造一套放進使用者目錄。
 make_pack e2e-dropin 120 60
 "${FM}" pack use e2e-dropin >/dev/null
 for _ in $(seq 1 40); do
@@ -613,9 +629,9 @@ kill_started
 launch_app
 for _ in $(seq 1 40); do "${FM}" status >/dev/null 2>&1 && break; sleep 0.5; done
 expect "$(field 'd["pack"]["id"]')" "mycat" "正在用的 pack 被刪掉，重啟退回內建"
-# 原本這裡比 logicalHeight，但出廠預設從 test-blocks 換成 mycat 之後那條失效了
-# ——兩套都是 96，比它分不出載入的是哪一套，斷言變成沒有內容。
-# 改用 sitIdle 的格數：mycat 4 格、test-blocks 2 格，而貓隱藏時的動作正是 sitIdle。
+# 比的是 sitIdle 的格數而不是 logicalHeight。體高這個量在這裡撞過一次號（那次兩邊
+# 都是 96，斷言變成沒有內容），所以換成比較不會撞的格數——mycat 的 sitIdle 是 4 格、
+# 產生器做的色塊一律 2 格，而貓隱藏時的動作正是 sitIdle。
 expect "$(field 'int(d["cat"]["frameCount"])')" "4" \
        "退回的是真的 mycat（sitIdle 4 格），不是只改了 id"
 
@@ -629,12 +645,11 @@ step "13. 逗貓棒真的跑起來（spec 第 3.2 / 4.5 節）"
 # `findmouse teaser on` 與 ⌥⌘T 投遞的是同一個 `.setTeaser(true)`、過同一個
 # `ControlUseCase` 閘門，所以驗的是同一條線。
 #
-# 為什麼放在 step 12 之後：step 9 把 pack 換成 test-blocks-tall，而那套**缺 pounce**
+# 為什麼放在 step 12 之後：step 9 把 pack 換成 e2e-blocks-tall，而那套**缺 pounce**
 # （step 11 正是靠它驗 TEASER_UNAVAILABLE）。step 12 尾端的重啟把執行中的 pack
 # 帶回**出廠預設**，這是整個腳本裡最後一段 teaser 可用的區間。
 #
-# 出廠預設從 test-blocks 換成 mycat 之後這裡跟著改。mycat 的 14 組動作齊全
-# （含 pounce），所以 teaser 照樣可用——換的只是 id。
+# 出廠預設 mycat 的 14 組動作齊全（含 pounce），所以 teaser 在這裡是可用的。
 expect "$(field 'd["pack"]["id"]')" "mycat" "前提：跑的是 teaser 齊全的出廠預設 mycat"
 expect "$(field 'd["teaser"]["available"]')" "True" "前提：teaserAvailable"
 expect "$(field 'd["visible"]')" "False" "前提：貓不在畫面上（待會要看牠自己入場）"
@@ -865,14 +880,16 @@ expect "$?" "0" "--force 覆蓋同 id"
 
 # 撞內建 id：連 --force 都不給過，而且錯誤碼與「移除內建」不同
 BUILTIN_DIR="$(mktemp -d)"; TEMP_DIRS="${TEMP_DIRS} ${BUILTIN_DIR}"
-cp -R "${STAGE_SRC}" "${BUILTIN_DIR}/test-blocks"
-/usr/bin/python3 - "${BUILTIN_DIR}/test-blocks" <<'PYEOF'
+# 撞的必須是**現在還內建的**那個 id。2026-08-19 起色塊不再出貨，拿 test-blocks 來
+# 撞會裝得成功而不是被擋——那條斷言會安靜地驗錯東西。
+cp -R "${STAGE_SRC}" "${BUILTIN_DIR}/mycat"
+/usr/bin/python3 - "${BUILTIN_DIR}/mycat" <<'PYEOF'
 import json, sys
 path = f"{sys.argv[1]}/pack.json"
-m = json.load(open(path)); m["id"] = "test-blocks"
+m = json.load(open(path)); m["id"] = "mycat"
 json.dump(m, open(path, "w"))
 PYEOF
-OUT="$("${FM}" pack install "${BUILTIN_DIR}/test-blocks" --force --json 2>&1)"; CODE=$?
+OUT="$("${FM}" pack install "${BUILTIN_DIR}/mycat" --force --json 2>&1)"; CODE=$?
 expect "${CODE}" "1" "撞內建 id 即使加 --force 也是 exit 1"
 expect "$(echo "${OUT}" | /usr/bin/python3 -c 'import json,sys; print(json.load(sys.stdin)["error"]["code"])' 2>/dev/null)" \
        "PACK_ID_RESERVED" "錯誤碼是 PACK_ID_RESERVED（不是 PACK_BUILT_IN——處方不同）"
@@ -891,9 +908,9 @@ expect "$(echo "${OUT}" | /usr/bin/python3 -c 'import json,sys; print("換成別
 expect "$(field 'd["pack"]["id"]')" "e2e-installable" "被擋下之後仍在用那一套"
 
 # 切走之後才移除得掉
-"${FM}" pack use test-blocks >/dev/null 2>&1
+"${FM}" pack use mycat >/dev/null 2>&1
 for _ in $(seq 1 20); do
-    [[ "$(field 'd["pack"]["id"]')" == "test-blocks" ]] && break
+    [[ "$(field 'd["pack"]["id"]')" == "mycat" ]] && break
     sleep 0.25
 done
 "${FM}" pack remove e2e-installable >/dev/null 2>&1
@@ -901,7 +918,7 @@ expect "$?" "0" "切走之後 pack remove 回 exit 0"
 expect "$(packentry "'e2e-installable' in ps")" "False" "移除後不在 pack list 裡"
 
 # 內建拿不掉
-OUT="$("${FM}" pack remove test-blocks --json 2>&1)"; CODE=$?
+OUT="$("${FM}" pack remove mycat --json 2>&1)"; CODE=$?
 expect "${CODE}" "1" "移除內建 exit 1"
 expect "$(echo "${OUT}" | /usr/bin/python3 -c 'import json,sys; print(json.load(sys.stdin)["error"]["code"])' 2>/dev/null)" \
        "PACK_BUILT_IN" "錯誤碼是 PACK_BUILT_IN"
