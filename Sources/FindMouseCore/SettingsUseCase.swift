@@ -5,14 +5,17 @@ import CoreGraphics
 import Foundation
 import FindMouseDomain
 
-/// 出廠預設的內建 pack。mycat 是**產品本身**——test-blocks 是開發用的色塊，
-/// 讓陌生人裝完看到方塊等於沒有交付這個 App（0.2.0 就是這樣出去的）。
+/// 出廠預設的內建 pack。mycat 是**產品本身**——0.2.0 出去時開發用的色塊也跟著
+/// 出貨、還排在選單裡，陌生人裝完看到方塊等於沒有交付這個 App。
+/// 2026-08-19 起色塊只住在 `Tests/FindMouseAdaptersTests/Fixtures`，出貨範圍由
+/// `release.sh` 的精確相等守衛釘住（`Resources/Packs` 底下必須恰好只有這一個 id）。
 ///
 /// 它是一個常數而不是兩份字面值，理由是後者踩過：`AppDelegate` 的載入失敗
 /// 退路與這裡的 `defaultValue` 各寫一份 "mycat"，靠註解互相提醒對齊。改壞
 /// App 那一份的話，`SettingsUseCase` 的測試照樣綠（它讀的是 registry）、
 /// release.sh 的守衛照樣綠（它 sed 的是這個檔）、e2e 照樣綠（它在啟動前就把
-/// `pack.id` 寫死），而全新安裝的使用者看到的是色塊——沒有任何一層會紅。
+/// `pack.id` 寫死）——沒有任何一層會紅。現在出貨的只剩一套，所以走到的不再是
+/// 「看到方塊」而是「要一套不存在的 pack」，但沒有訊號這件事沒有變。
 public enum PackDefaults {
     public static let factory = "mycat"
 }

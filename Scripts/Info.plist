@@ -6,6 +6,8 @@
     <string>FindMouse</string>
     <key>CFBundleIdentifier</key>
     <string>tw.com.deepthought.findmouse</string>
+    <key>CFBundleIconFile</key>
+    <string>FindMouse</string>
     <key>CFBundleExecutable</key>
     <string>FindMouse</string>
     <key>CFBundlePackageType</key>

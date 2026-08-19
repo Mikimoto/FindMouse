@@ -326,18 +326,66 @@ DEFAULT_PACK="$(sed -nE 's/.*static let factory = "([a-z0-9-]+)".*/\1/p' \
 [[ "$(printf '%s\n' "${DEFAULT_PACK}" | grep -c .)" -eq 1 ]] \
     || die "從 SettingsUseCase.swift 讀不到唯一的出廠預設 pack id（讀到「${DEFAULT_PACK}」）。那行的寫法可能改了，去更新 release.sh 這段 sed。"
 
-SHIPPED="$(/usr/bin/find "${APP}" -type d -path '*/Packs/*' -name "${DEFAULT_PACK}" 2>/dev/null || true)"
-[[ -n "${SHIPPED}" ]] \
-    || die "出廠預設的 pack「${DEFAULT_PACK}」不在 .app 裡。使用者裝了會看到開發用的色塊而不是貓。內建 pack 要放在 Sources/FindMouseAdapters/Resources/Packs/ 底下才會被 SwiftPM 打包。"
+# **精確相等，不是「在不在」。** 舊版只問預設那套在不在，所以它的尾註得自己承認
+# 「不證明預設是對的那一套」——開發用的色塊也跟著出貨（`.copy("Resources/Packs")`
+# 複製整個目錄），使用者在圖組選單裡看得到，其中一套還顯示「缺少逗貓棒動作」。
+# 改成精確相等之後那個 caveat 自己消失了：多一套就紅。
+#
+# Packs 目錄的位置用 find 而不是寫死 bundle 名——那個名字由 make-app.sh 的
+# EXPECTED_BUNDLES 在管，寫死等於在這裡放第二份。
+PACKS_DIR="$(/usr/bin/find "${APP}" -type d -path '*/Resources/Packs' 2>/dev/null || true)"
+[[ "$(printf '%s\n' "${PACKS_DIR}" | grep -c .)" -eq 1 ]] \
+    || die "在 .app 裡找不到唯一的 Resources/Packs 目錄（找到「${PACKS_DIR}」）。內建 pack 要放在 Sources/FindMouseAdapters/Resources/Packs/ 底下才會被 SwiftPM 打包。"
+SHIPPED_PACKS="$(cd "${PACKS_DIR}" && /usr/bin/find . -mindepth 1 -maxdepth 1 -type d \
+    | sed 's|^\./||' | sort | paste -sd' ' -)"
+[[ "${SHIPPED_PACKS}" == "${DEFAULT_PACK}" ]] \
+    || die "出貨的內建 pack 應該恰好是「${DEFAULT_PACK}」，實際是「${SHIPPED_PACKS}」。多出來的那些使用者在圖組選單裡看得到——開發用的色塊不該出貨。"
+SHIPPED="${PACKS_DIR}/${DEFAULT_PACK}"
 [[ -f "${SHIPPED}/pack.json" ]] \
     || die "「${DEFAULT_PACK}」的目錄在 .app 裡，但沒有 pack.json——那不是一套能載入的 pack。"
 ok "出廠預設的 pack「${DEFAULT_PACK}」有跟著出貨"
-# 這條守衛只證明「預設那套在」，**不**證明「預設是對的那一套」——開發用的
-# test-blocks 也跟著出貨（`.copy("Resources/Packs")` 複製整個目錄，目前刻意不濾），
-# 所以預設若被改回 test-blocks，find 照樣找得到、這裡照樣放行。
-# 釘住預設值本身的是 SettingsUseCaseTests 的 factoryDefaultPackIsTheShippedCat()，
-# 而它蓋得到 App 的全新安裝路徑，是因為 AppDelegate 的退路讀的是同一個
-# `PackDefaults.factory` 而不是自己那份字面值。
+# 這條守衛現在**同時**證明兩件事：預設那套在，而且沒有別的東西跟著出貨。
+# 釘住「預設值本身是對的那一個」的是 SettingsUseCaseTests 的
+# factoryDefaultPackIsTheShippedCat()；釘住「那套 pack 的內容合格」的是
+# RealPackFilesTests 的 theFactoryPackIsValidWithFullCapabilities()。
+# 三條各守一件事，任一條單獨都不夠。
+
+# 圖示要真的在出貨的 .app 裡，而且要含所有尺寸。
+#
+# **驗產物而不是驗意圖**，與上面那條出廠 pack 守衛同一個理由。`make-icon.swift`
+# 自己也做反向拆解，但那驗的是「產生器剛剛寫出來的那份」——這裡驗的是「組裝、
+# 複製、簽章之後留在 .app 裡的那份」，中間每一步都可能弄掉它。
+#
+# 讀 `.app` 裡那份 plist 而不是來源：出貨的是複本，而這支腳本對它下過 PlistBuddy
+# （版本戳）。驗複本才驗得到「組裝或後續編輯把這個鍵弄掉了」。
+ICON_NAME="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIconFile' "${APP}/Contents/Info.plist")" || ICON_NAME=""
+[[ -n "${ICON_NAME}" ]] || die "剛組出來那份 Info.plist 讀不到 CFBundleIconFile——.app 會用通用圖示而且不會有任何訊息。"
+SHIPPED_ICON="${APP}/Contents/Resources/${ICON_NAME}.icns"
+[[ -f "${SHIPPED_ICON}" ]] \
+    || die "圖示不在 .app 裡（找不到 ${SHIPPED_ICON}）。使用者會在 Finder、Dock、Spotlight 看到通用圖示，而且沒有任何錯誤訊息。"
+# **先把要看的東西全部讀出來，清掉暫存目錄，最後才判斷。** die 會直接結束整支
+# 腳本，所以任何夾在 mktemp 與 rm 之間的 die 都會留下一個暫存目錄——這一段有三個。
+# 這支腳本沒有 trap 慣例（第 200 行那個 mktemp -d 是兩條路徑各自 rm），所以照它，
+# 但把「量測」與「判斷」分開，讓需要清理的區間裡一個 die 都沒有。
+ICON_TMP="$(mktemp -d)"
+if ! /usr/bin/iconutil -c iconset -o "${ICON_TMP}/back.iconset" "${SHIPPED_ICON}" 2>/dev/null; then
+    rm -rf "${ICON_TMP}"
+    die "出貨的 ${ICON_NAME}.icns 拆不開——它不是一份合法的 icns。"
+fi
+ICON_REPS="$(/usr/bin/find "${ICON_TMP}/back.iconset" -name '*.png' | grep -c . || true)"
+# 絕對路徑 ＋ `|| true`：前者與這一段其他外部命令一致（避免 alias／PATH 污染），
+# 後者是為了不依賴一個沒人保證的行為——這支腳本有 `set -euo pipefail`，而管線在
+# command substitution 裡非零就會讓整支直接退出、繞過下面那個 die 訊息。
+# 今天不會發生只因為 `sips` 對「檔案不存在」與「不是圖片」都回 exit 0（2026-08-19
+# 實測，後者還會印 `<nil>`）。那是 sips 的偏好，不是可以靠的契約。
+ICON_BIG_W="$(/usr/bin/sips -g pixelWidth "${ICON_TMP}/back.iconset/icon_512x512@2x.png" 2>/dev/null | awk '/pixelWidth/{print $2}' || true)"
+rm -rf "${ICON_TMP}"
+
+[[ "${ICON_REPS}" -eq 10 ]] \
+    || die "出貨的圖示只有 ${ICON_REPS} 個尺寸，應該是 10 個。少尺寸的症狀是某些位置顯示放大的大圖，而檔案本身完全合法。"
+[[ "${ICON_BIG_W}" == "1024" ]] \
+    || die "圖示最大那張是 ${ICON_BIG_W}px，不是 1024。App Store 要 1024，而縮圖出來的假 1024 從檔名看不出來。"
+ok "圖示 ${ICON_NAME}.icns 有跟著出貨（10 個尺寸、最大 1024）"
 
 if [[ "${MODE}" == dry ]]; then
     say "--dry-run：本機那半段沒問題，停在簽章之前"

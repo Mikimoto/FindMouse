@@ -96,12 +96,41 @@ shopt -u nullglob
 # 所以 Info.plist 檔案是在的——讀不出 key 只剩兩種可能：plist 壞掉、或 key 真的
 # 不見了。兩種都表示剛組出來的那個 .app 帶著一份沒有 bundle id 的 Info.plist，
 # 它根本啟動不了。這時候安靜地少印一行提示，等於把一個壞掉的 .app 交出去。
-BUNDLE_ID="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "${ROOT}/Scripts/Info.plist")" || BUNDLE_ID=""
+#
+# 讀的是**剛複製進 .app 的那一份**，不是 Scripts/ 底下的來源。上面那段話講的是
+# 「剛組出來的那個 .app」，讀來源就量不到它——這支腳本與 release.sh 都會對那份
+# 複本下 PlistBuddy，把鍵弄掉的話來源看起來一切正常。理由與下面圖示那條同一個。
+BUNDLE_ID="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "${APP}/Contents/Info.plist")" || BUNDLE_ID=""
 [[ -n "${BUNDLE_ID}" ]] || {
-    echo "讀不到 ${ROOT}/Scripts/Info.plist 的 CFBundleIdentifier，剛組出來的 .app 會沒有 bundle id、啟動不了。" >&2
-    echo "先跑 plutil -lint Scripts/Info.plist 看它是不是壞了；檔案沒壞就是那個 key 不見了，補回去再重組。" >&2
+    echo "讀不到 ${APP}/Contents/Info.plist 的 CFBundleIdentifier，剛組出來的 .app 會沒有 bundle id、啟動不了。" >&2
+    echo "先跑 plutil -lint Scripts/Info.plist 看來源是不是壞了；來源沒壞就是複製或後續的 PlistBuddy 把那個鍵弄掉了。" >&2
     exit 1
 }
+
+# 圖示。**必須排在 codesign 之前**——簽章封印 Contents/Resources，之後才放進去的
+# 檔案會讓 `codesign --verify` 報 "resource added"，而那個錯誤訊息完全不會提到圖示。
+#
+# 檔名不寫死，而且**讀的是剛複製進 .app 的那一份 plist**，不是 Scripts/ 底下的來源。
+# 差別是實質的：出貨的是那份複本，而這支腳本與 release.sh 都會對它下 PlistBuddy
+# （版本戳、開發旗標）。讀來源的話，「複製或後續編輯把這個鍵弄掉了」完全驗不到
+# ——那正是這一層唯一能守、而 InfoPlistTests 守不到的東西（單元測試跑不到建置）。
+ICON_NAME="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIconFile' "${APP}/Contents/Info.plist")" || ICON_NAME=""
+[[ -n "${ICON_NAME}" ]] || {
+    echo "讀不到 ${APP}/Contents/Info.plist 的 CFBundleIconFile。" >&2
+    echo "來源 Scripts/Info.plist 有沒有那個鍵請另外看——這裡讀的是剛複製進 .app 的那一份。" >&2
+    echo "少了它 .app 會用通用圖示，而且 Finder／Dock／Spotlight 都不會有任何訊息。" >&2
+    exit 1
+}
+swift "${ROOT}/Scripts/make-icon.swift" "${APP}/Contents/Resources/${ICON_NAME}.icns" >/dev/null || {
+    echo "產不出圖示。單獨跑一次看訊息：swift Scripts/make-icon.swift /tmp/x.icns" >&2
+    exit 1
+}
+[[ -f "${APP}/Contents/Resources/${ICON_NAME}.icns" ]] || {
+    echo "make-icon 回 0 但 ${APP}/Contents/Resources/${ICON_NAME}.icns 不在。" >&2
+    echo "剛組出來那份 plist 宣告的名字是「${ICON_NAME}」，而 Resources/ 底下沒有對應的檔案。" >&2
+    exit 1
+}
+
 # **開發建置也要簽成沙盒的。**
 #
 # 這支本來完全不簽（`grep codesign` 零命中），所以 build/FindMouse.app 是未簽、

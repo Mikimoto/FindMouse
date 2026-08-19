@@ -56,7 +56,7 @@ public struct BehaviorConfig: Sendable, Equatable {
     /// 所以衍生值的跨度是 9.6–640，而這個 key 的範圍是 20–400。不夾的話，
     /// 極端 pack 加極端縮放下 `config get arrive.radius` 會回一個 `config set`
     /// 拒收的值——「讀出來的值餵回去一定被接受」那個保證就破了。
-    /// 內建的 test-blocks（96）落在 38.4–153.6，所以今天碰不到；M4 開放換 pack 之後會。
+    /// 出貨的 mycat（96）落在 38.4–153.6，所以預設狀態碰不到；使用者換一套極端 pack 就會。
     public func arriveRadius(logicalHeight: CGFloat) -> CGFloat {
         if let override = arriveRadiusOverride { return override }
         let derived = effectiveHeight(logicalHeight: logicalHeight) * 0.8

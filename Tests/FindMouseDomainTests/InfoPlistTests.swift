@@ -103,3 +103,22 @@ private func infoPlist() throws -> [String: Any] {
         #expect((value as? Bool) == true, "\(key) 的值不是 true：\(value)")
     }
 }
+
+/// 圖示的宣告面。
+///
+/// **這一條只驗宣告，不驗建置**——單元測試跑不到 `make-app.sh`。把兩個半邊釘在
+/// 一起的是那支腳本自己：它讀剛複製進 `.app` 的那份 plist 宣告的名字，再確認
+/// `Contents/Resources/` 底下真的有那個檔案。
+///
+/// 漏掉這個鍵的症狀是**圖示靜默不出現**，而 plist 本身完全合法：Finder、Dock、
+/// Spotlight 都退回通用圖示，沒有任何錯誤訊息。v0.5.1 以前就是這個狀態。
+@Test func theIconFileIsDeclared() throws {
+    let plist = try infoPlist()
+    let name = try #require(plist["CFBundleIconFile"] as? String,
+                            "沒有 CFBundleIconFile，.app 會用通用圖示而且不會有任何訊息")
+    #expect(!name.isEmpty)
+    // 不寫 `.icns` 副檔名：CFBundleIconFile 的慣例是給不帶副檔名的基底名，
+    // 而 make-app.sh 會自己接上 `.icns`。帶了副檔名不會壞，但兩邊的組法就
+    // 各有一份假設了。
+    #expect(!name.hasSuffix(".icns"), "只寫基底名，副檔名由 make-app.sh 接")
+}

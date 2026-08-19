@@ -119,9 +119,9 @@ private func makePresenter(catScale: CGFloat = 1,
 // MARK: - 從 pack ＋ 設定建構
 
 private func loadTestBlocks() throws -> SpriteRepository {
-    let packs = try #require(SpritePackRepository.builtInPacksDirectory())
+    let base = try #require(Bundle.module.url(forResource: "Fixtures", withExtension: nil))
     let loaded = try #require(SpritePackRepository.load(
-        at: packs.appendingPathComponent("test-blocks")))
+        at: base.appendingPathComponent("test-blocks")))
     let report = PackValidator.validate(manifest: loaded.manifest,
                                         directoryName: loaded.directoryName,
                                         listing: loaded.listing)
