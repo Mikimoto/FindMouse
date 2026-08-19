@@ -7,6 +7,7 @@ import Testing
 // `CatAction.core` / `.teaser` / `.restPool` 是 internal（M1 沒把它們設成 public），
 // 跨 target 取用必須走 @testable。
 @testable import FindMouseDomain
+import FindMouseCore
 
 /// M1 的 `PackValidator` 有 13 個測試，全部餵手寫的記憶體 listing。
 /// 這個檔案是它第一次面對真實檔案系統：真的目錄、真的 PNG、真的 pack.json。
@@ -119,4 +120,28 @@ private func fixtureURL(_ id: String) throws -> URL {
     // 而 contains 對那種退化完全沒有反應。
     #expect(report.warnings == [.missingTeaserActions([.pounce])],
             "預期只有缺 pounce 這一個 warning，實際：\(report.warnings)")
+}
+
+/// **出貨的那一套必須是合格的。**
+///
+/// 這一條在 2026-08-19 之前不存在，而那是一個真的缺口：這個檔案裡每一條真實檔案
+/// 系統的驗證，對象都是開發用的色塊；所有 `mycat` 的測試都是記憶體字串 fixture
+/// （`summary("mycat")` 那一類）。也就是說**使用者實際拿到的那套 pack 從來沒有被
+/// 真的載入過一次**。
+///
+/// v0.2.0 正是那個形狀：簽好、notarize 過、十條驗收全綠地發出去，而裡面只有色塊。
+/// `release.sh` 那條守衛擋的是「pack 目錄在不在」，擋不到「pack 的內容合不合格」。
+///
+/// 用 `PackDefaults.factory` 而不是寫死 "mycat"：改了出廠預設而忘了改這裡的話，
+/// 這條會繼續為舊的那套背書。
+@Test func theFactoryPackIsValidWithFullCapabilities() throws {
+    let report = try report(for: builtInPackURL(PackDefaults.factory))
+
+    #expect(report.errors.isEmpty, "出貨的 pack 有 error：\(report.errors)")
+    #expect(report.warnings.isEmpty, "出貨的 pack 有 warning：\(report.warnings)")
+    #expect(report.isValid)
+    let caps = try #require(report.capabilities, "有效的 pack 必須帶著能力")
+    #expect(caps.available == Set(CatAction.allCases), "出貨的 pack 要涵蓋全部 14 個動作")
+    #expect(caps.teaserAvailable, "逗貓棒要可用")
+    #expect(Set(caps.restPool) == CatAction.restPool)
 }
