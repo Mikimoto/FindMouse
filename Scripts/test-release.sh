@@ -380,6 +380,37 @@ DECOYEOF
     fi
 fi
 
+# --- 9 -------------------------------------------------------------------
+step "9. 兩支腳本對隱私宣告清單講的是同一個路徑"
+
+# **這一段守的是路徑漂移，而兩個方向的後果不對稱。** make-app.sh 寫它、
+# release.sh 檢查它，兩邊各寫死一份字面路徑。
+#
+#   make-app.sh 那份漂掉  → 它自己的 plutil -lint 照樣過（它 lint 的是它剛寫的
+#                          那個新位置），而 release.sh 找不到 → 擋住發版。吵，安全。
+#   release.sh 那份漂掉   → 檔案在、只是沒人檢查那個位置 → **靜默出貨**。
+#
+# 後者沒有任何其他東西會發現：執行、簽章、notarize、Homebrew 那條通路全部不受
+# 影響，只有上傳 App Store 時才知道。所以這裡比對兩邊的字面值。
+PRIV_PATH="Contents/Resources/PrivacyInfo.xcprivacy"
+MK_N="$(grep -c "${PRIV_PATH}" "${ROOT}/Scripts/make-app.sh" || true)"
+RL_N="$(grep -c "${PRIV_PATH}" "${ROOT}/Scripts/release.sh" || true)"
+if [[ "${MK_N}" -ge 1 && "${RL_N}" -ge 1 ]]; then
+    ok "make-app.sh（${MK_N} 處）與 release.sh（${RL_N} 處）用的是同一個路徑"
+else
+    bad "兩支腳本對隱私宣告清單的路徑對不上（make-app.sh ${MK_N} 處、release.sh ${RL_N} 處）——release.sh 那邊漂掉會靜默出貨"
+fi
+
+# 而且組出來的那份 .app 真的有它。空洞地比對兩個字串是不夠的——兩邊可以一起
+# 寫錯，那時 grep 依然相等。
+DEV_APP_P9="${ROOT}/build/FindMouse.app"
+[[ -d "${DEV_APP_P9}" ]] || Scripts/make-app.sh >/dev/null 2>&1 || true
+if [[ -f "${DEV_APP_P9}/${PRIV_PATH}" ]]; then
+    ok "組出來的 .app 在那個路徑上真的有一份（$(/usr/bin/stat -f%z "${DEV_APP_P9}/${PRIV_PATH}") bytes）"
+else
+    bad "組出來的 .app 在 ${PRIV_PATH} 沒有東西——兩邊的字面值一致，但一起指錯了地方"
+fi
+
 step "結果"
 printf '  通過 %d、失敗 %d\n' "${PASS}" "${FAIL}"
 [[ "${FAIL}" -eq 0 ]]
