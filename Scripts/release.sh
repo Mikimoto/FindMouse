@@ -369,7 +369,12 @@ ICON_TMP="$(mktemp -d)"
 ICON_REPS="$(/usr/bin/find "${ICON_TMP}/back.iconset" -name '*.png' | grep -c . || true)"
 [[ "${ICON_REPS}" -eq 10 ]] \
     || die "出貨的圖示只有 ${ICON_REPS} 個尺寸，應該是 10 個。少尺寸的症狀是某些位置顯示放大的大圖，而檔案本身完全合法。"
-ICON_BIG_W="$(sips -g pixelWidth "${ICON_TMP}/back.iconset/icon_512x512@2x.png" 2>/dev/null | awk '/pixelWidth/{print $2}')"
+# 絕對路徑 ＋ `|| true`：前者與這一段其他外部命令一致（避免 alias／PATH 污染），
+# 後者是為了不依賴一個沒人保證的行為——這支腳本有 `set -euo pipefail`，而管線在
+# command substitution 裡非零就會讓整支直接退出、繞過下面那個 die 訊息。
+# 今天不會發生只因為 `sips` 對「檔案不存在」與「不是圖片」都回 exit 0（2026-08-19
+# 實測，後者還會印 `<nil>`）。那是 sips 的偏好，不是可以靠的契約。
+ICON_BIG_W="$(/usr/bin/sips -g pixelWidth "${ICON_TMP}/back.iconset/icon_512x512@2x.png" 2>/dev/null | awk '/pixelWidth/{print $2}' || true)"
 [[ "${ICON_BIG_W}" == "1024" ]] \
     || die "圖示最大那張是 ${ICON_BIG_W}px，不是 1024。App Store 要 1024，而縮圖出來的假 1024 從檔名看不出來。"
 rm -rf "${ICON_TMP}"

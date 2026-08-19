@@ -104,8 +104,10 @@ do {
         at: outICNS.deletingLastPathComponent(), withIntermediateDirectories: true)
     try run("/usr/bin/iconutil", ["-c", "icns", "-o", outICNS.path, staging.path])
 
-    // **反向拆解自我驗證。** iconutil 對缺尺寸的 iconset 會直接拒絕，但它不保證
-    // 產物含所有 rep——而「圖示在小尺寸變成放大的大圖」這種退化從外面看不出來。
+    // **反向拆解自我驗證。** `iconutil -c icns` **不檢查尺寸齊不齊**——只有
+    // `icon_16x16.png` 一張的 iconset 照樣回 exit 0 並產出一份合法的 icns
+    // （2026-08-19 實測 1136 bytes；`test-release.sh` 第 7 段的負向對照組正是
+    // 這樣做出來的）。而「圖示在小尺寸變成放大的大圖」這種退化從外面看不出來。
     // 拆回來數，才是驗產物而不是驗意圖。
     let back = staging.deletingLastPathComponent()
         .appendingPathComponent("fm-icon-back-\(ProcessInfo.processInfo.processIdentifier).iconset")

@@ -279,7 +279,7 @@ else
         B="$(mktemp -d)"
         if /usr/bin/iconutil -c iconset -o "${B}/ok.iconset" "${SHIPPED_I}" 2>/dev/null; then
             N="$(/usr/bin/find "${B}/ok.iconset" -name '*.png' | grep -c . || true)"
-            W="$(sips -g pixelWidth "${B}/ok.iconset/icon_512x512@2x.png" 2>/dev/null | awk '/pixelWidth/{print $2}')"
+            W="$(/usr/bin/sips -g pixelWidth "${B}/ok.iconset/icon_512x512@2x.png" 2>/dev/null | awk '/pixelWidth/{print $2}' || true)"
             [[ "${N}" -eq 10 && "${W}" == "1024" ]] \
                 && ok "守衛認得一份完整的圖示（10 個尺寸、最大 1024）" \
                 || bad "守衛對一份真的完整圖示說不（數到 ${N} 個尺寸、最大 ${W}px）——release.sh 會擋住每一次發布"
