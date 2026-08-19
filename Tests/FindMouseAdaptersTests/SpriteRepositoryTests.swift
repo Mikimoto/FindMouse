@@ -5,19 +5,16 @@ import CoreGraphics
 import Foundation
 import Testing
 @testable import FindMouseAdapters
-import FindMouseCore
 @testable import FindMouseDomain
 
 private func makeRepository(_ packID: String = "test-blocks") throws -> SpriteRepository {
-    let url: URL
-    // test-blocks 與 test-blocks-tall 已搬到 Fixtures；只有 mycat 留在出貨資源裡。
-    if packID == PackDefaults.factory {
-        let packs = try #require(SpritePackRepository.builtInPacksDirectory())
-        url = packs.appendingPathComponent(packID)
-    } else {
-        let base = try #require(Bundle.module.url(forResource: "Fixtures", withExtension: nil))
-        url = base.appendingPathComponent(packID)
-    }
+    // **這支載入的每一套都住在 Fixtures**：色塊兩套與三個刻意壞掉的 fixture。
+    // 2026-08-19 色塊搬過來之前，`test-blocks` 是從出貨資源讀的，所以這裡曾有一個
+    // 二分支。搬完之後那個 built-in 分支沒有任何呼叫端（這支只被用預設值或
+    // `bad-missing-teaser` 呼叫），留著就是走不到的程式碼——出貨的 mycat 由
+    // `RealPackFilesTests.theFactoryPackIsValidWithFullCapabilities` 驗。
+    let base = try #require(Bundle.module.url(forResource: "Fixtures", withExtension: nil))
+    let url = base.appendingPathComponent(packID)
     let loaded = try #require(SpritePackRepository.load(at: url))
     let report = PackValidator.validate(manifest: loaded.manifest,
                                         directoryName: loaded.directoryName,
