@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  隱私宣告清單。`make-app.sh` 把它複製到 `Contents/Resources/PrivacyInfo.xcprivacy`
+  （macOS 的 app bundle 放這裡；框架才是放 `Versions/A/Resources/`）。
+
+  **這份清單短是查出來的，不是懶。** Apple 的「required reason API」只有五類，
+  2026-08-20 逐類掃過 `Sources/`：
+
+    User Defaults      命中——`SettingsGateway` 用 `UserDefaults.standard`
+    File Timestamp     零命中——`PackInstaller.tree(of:)` 讀的 URLResourceKey 是
+                       isDirectory / isSymbolicLink / isRegularFile / fileSize，
+                       一個時間戳鍵都沒有
+    System Boot Time   零命中
+    Disk Space         零命中（fileSize 是單一檔案大小，不是磁碟區可用空間）
+    Active Keyboards   零命中
+
+  `CA92.1` 的語意是「Access info from same app, per documentation」，從 Xcode 27 的
+  `DVTCorePlistStructDefs.xcplugindata` 查的（那份定義檔同時是四個合法代碼的來源：
+  1C8F.1 是 App Group、AC6B.1 是受管理設定、C56D.1 是第三方 SDK，都不是我們）。
+  **不要憑記憶寫代碼**——四個長得很像，而寫錯的後果是上傳被退，本機驗不出來。
+
+  三個空/false 的鍵是刻意寫出來而不是省略：FindMouse 不追蹤、不蒐集、沒有追蹤網域，
+  而「沒有宣告」與「宣告為無」在審查那頭不是同一件事。
+
+  **未證實**：macOS 到底強不強制這份清單，本專案沒有查到定論（Apple 那頁是 JS
+  算繪的，抓不到內文；搜尋只確認了 macOS 的擺放位置）。放著是無害的，而且它同時
+  餵給 App Store 的隱私標籤——所以不必為了這個問題卡住。
+-->
+<plist version="1.0">
+<dict>
+    <key>NSPrivacyTracking</key>
+    <false/>
+    <key>NSPrivacyTrackingDomains</key>
+    <array/>
+    <key>NSPrivacyCollectedDataTypes</key>
+    <array/>
+    <key>NSPrivacyAccessedAPITypes</key>
+    <array>
+        <dict>
+            <key>NSPrivacyAccessedAPIType</key>
+            <string>NSPrivacyAccessedAPICategoryUserDefaults</string>
+            <key>NSPrivacyAccessedAPITypeReasons</key>
+            <array>
+                <string>CA92.1</string>
+            </array>
+        </dict>
+    </array>
+</dict>
+</plist>

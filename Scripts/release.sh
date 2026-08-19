@@ -387,6 +387,23 @@ rm -rf "${ICON_TMP}"
     || die "圖示最大那張是 ${ICON_BIG_W}px，不是 1024。App Store 要 1024，而縮圖出來的假 1024 從檔名看不出來。"
 ok "圖示 ${ICON_NAME}.icns 有跟著出貨（10 個尺寸、最大 1024）"
 
+# 隱私宣告清單也要真的在 .app 裡，而且解析得動。
+#
+# 與圖示同一個理由（驗產物不驗意圖），但**失效的形狀更安靜**：漏掉它不影響
+# 執行、不影響簽章、不影響 notarize，只在上傳 App Store 時才知道；而 Homebrew
+# 那條通路永遠不會知道，因為它根本不上傳。所以這裡是唯一會出聲的地方。
+#
+# 只驗「在、而且是合法 plist」，不驗內容——內容由
+# `InfoPlistTests.thePrivacyManifestDeclaresExactlyTheApisWeUse` 釘住，
+# 那一層讀得到 Sources/ 也判斷得了「宣告的是不是我們真的用到的」，
+# 這一層讀不到。兩層各守一半。
+SHIPPED_PRIVACY="${APP}/Contents/Resources/PrivacyInfo.xcprivacy"
+[[ -f "${SHIPPED_PRIVACY}" ]] \
+    || die "隱私宣告清單不在 .app 裡（找不到 ${SHIPPED_PRIVACY}）。make-app.sh 應該在簽章前把它複製進去。"
+plutil -lint "${SHIPPED_PRIVACY}" >/dev/null 2>&1 \
+    || die "出貨的 PrivacyInfo.xcprivacy 解析不動。跑 plutil -lint Scripts/PrivacyInfo.xcprivacy 看來源是不是壞了。"
+ok "隱私宣告清單有跟著出貨"
+
 if [[ "${MODE}" == dry ]]; then
     say "--dry-run：本機那半段沒問題，停在簽章之前"
     echo "  ${APP}"

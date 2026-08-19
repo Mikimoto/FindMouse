@@ -131,6 +131,20 @@ swift "${ROOT}/Scripts/make-icon.swift" "${APP}/Contents/Resources/${ICON_NAME}.
     exit 1
 }
 
+# 隱私宣告清單。**同樣必須排在 codesign 之前**（理由與圖示一樣：簽章封印
+# Contents/Resources）。macOS 的 app bundle 放 Contents/Resources/，框架才是
+# Versions/A/Resources/。
+#
+# 每一種建置都帶著它，不是只有 App Store 那條：兩條通路出貨的是同一份 bundle，
+# 而「只有發布時才做的事」是這個 repo 已經踩過的形狀（v0.5.0 以前只有 release.sh
+# 帶 entitlements，於是 e2e 從來沒測到沙盒）。
+cp "${ROOT}/Scripts/PrivacyInfo.xcprivacy" "${APP}/Contents/Resources/PrivacyInfo.xcprivacy"
+plutil -lint "${APP}/Contents/Resources/PrivacyInfo.xcprivacy" >/dev/null || {
+    echo "PrivacyInfo.xcprivacy 複製進去之後 plutil 讀不動它。" >&2
+    echo "先跑 plutil -lint Scripts/PrivacyInfo.xcprivacy 看來源是不是壞了。" >&2
+    exit 1
+}
+
 # **開發建置也要簽成沙盒的。**
 #
 # 這支本來完全不簽（`grep codesign` 零命中），所以 build/FindMouse.app 是未簽、

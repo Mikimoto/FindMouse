@@ -122,3 +122,113 @@ private func infoPlist() throws -> [String: Any] {
     // 各有一份假設了。
     #expect(!name.hasSuffix(".icns"), "只寫基底名，副檔名由 make-app.sh 接")
 }
+
+/// App Store 的主類別。
+///
+/// **為什麼在 Homebrew 版也要有**：出貨的是同一份 `Scripts/Info.plist`，兩條通路
+/// 共用。分開維護兩份 plist 才是真正會漂掉的做法。
+///
+/// 只驗形狀不釘死值：換類別是產品決定，不該要改測試。要防的是**打錯字與整個漏掉**
+/// ——Xcode 27 的 `DVTCorePlistStructDefs` 把這個鍵標成 `use="required"`，而它的
+/// 合法值是一份 45 個字串的封閉清單（`public.app-category.utilities` 在裡面，
+/// 2026-08-20 從那份定義檔查的）。不在清單上的字串會被 App Store Connect 退件，
+/// 而在本機**沒有任何東西會發現**：plist 合法、簽章有效、App 照常啟動。
+@Test func theAppStoreCategoryIsDeclared() throws {
+    let category = try #require(try infoPlist()["LSApplicationCategoryType"] as? String,
+                                "沒有 LSApplicationCategoryType，App Store 上架必填")
+    #expect(category.hasPrefix("public.app-category."),
+            "類別必須是 public.app-category.* 那份封閉清單裡的值，實際是「\(category)」")
+    #expect(category != "public.app-category.", "前綴後面是空的")
+}
+
+private func repoRoot() -> URL {
+    URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+}
+
+private func privacyManifest() throws -> [String: Any] {
+    let raw = try Data(contentsOf: repoRoot().appendingPathComponent("Scripts/PrivacyInfo.xcprivacy"))
+    guard let dict = try PropertyListSerialization.propertyList(
+        from: raw, format: nil) as? [String: Any] else {
+        throw CocoaError(.propertyListReadCorrupt)
+    }
+    return dict
+}
+
+/// 隱私宣告清單宣告的東西，恰好是我們真的用到的那些。
+///
+/// 用**精確相等**的理由與 entitlements 那條一樣：多宣告一類不會壞掉，但它會變成
+/// 一個沒有人知道能不能拿掉的宣告。少宣告一類則是上傳被退，而本機驗不出來。
+///
+/// 三個「無」的鍵也一起釘：把 `NSPrivacyTracking` 從 `false` 改成 `true` 不會讓
+/// 任何東西報錯，只會讓 App Store 的隱私標籤說我們在追蹤使用者。
+@Test func thePrivacyManifestDeclaresExactlyTheApisWeUse() throws {
+    let m = try privacyManifest()
+
+    #expect((m["NSPrivacyTracking"] as? Bool) == false, "FindMouse 不追蹤")
+    #expect((m["NSPrivacyTrackingDomains"] as? [String])?.isEmpty == true)
+    #expect((m["NSPrivacyCollectedDataTypes"] as? [[String: Any]])?.isEmpty == true)
+
+    let types = try #require(m["NSPrivacyAccessedAPITypes"] as? [[String: Any]])
+    let declared = Set(types.compactMap { $0["NSPrivacyAccessedAPIType"] as? String })
+    #expect(declared == ["NSPrivacyAccessedAPICategoryUserDefaults"],
+            "宣告的 API 類別變了，每一類都要說得出哪一行程式碼用到它：\(declared.sorted())")
+
+    let userDefaults = try #require(types.first {
+        $0["NSPrivacyAccessedAPIType"] as? String == "NSPrivacyAccessedAPICategoryUserDefaults"
+    })
+    // CA92.1 = Access info from same app。另外三個 User Defaults 代碼都不是我們：
+    // 1C8F.1 是 App Group、AC6B.1 是受管理設定、C56D.1 是第三方 SDK。四個長得很像，
+    // 寫錯的後果是上傳被退而本機全綠，所以這裡把值釘死。
+    #expect((userDefaults["NSPrivacyAccessedAPITypeReasons"] as? [String]) == ["CA92.1"])
+}
+
+/// 反方向：程式碼開始用到某一類 required-reason API，而清單沒跟上。
+///
+/// 上面那條守的是「清單多宣告」，這條守的是「程式碼多用」——**兩個方向的失效
+/// 完全不同**，而後者才是會被退件的那個。掃的是 `Sources/`，與
+/// `ArchitectureBoundaryTests` 同一種專案衛生掃描。
+///
+/// 這是**文字比對**，所以它擋不住刻意規避（動態呼叫、字串拼接），那不是它的目的；
+/// 目的是讓「順手加一行讀檔案修改時間」在 CI 就紅，而不是在上傳時才知道。
+/// 已宣告的 UserDefaults 不在掃描範圍——它本來就該出現。
+@Test func noUndeclaredRequiredReasonApiSneaksIntoSources() throws {
+    // 每一類的標記取自 Apple 的 required reason API 清單裡實際會出現在 Swift 原始碼
+    // 的那些呼叫。命中不代表一定要宣告（可能在註解裡），但它值得一次人工判讀。
+    let markers: [String: [String]] = [
+        "NSPrivacyAccessedAPICategoryFileTimestamp":
+            [".creationDateKey", ".contentModificationDateKey", ".attributeModificationDateKey",
+             "attributesOfItem(", "getattrlist(", "fstat(", "lstat("],
+        "NSPrivacyAccessedAPICategorySystemBootTime":
+            ["systemUptime", "mach_absolute_time(", "kern.boottime"],
+        "NSPrivacyAccessedAPICategoryDiskSpace":
+            [".volumeAvailableCapacityKey", ".volumeAvailableCapacityForImportantUsageKey",
+             "systemFreeSize", "statfs("],
+        "NSPrivacyAccessedAPICategoryActiveKeyboards":
+            ["activeInputModes"],
+    ]
+
+    let sources = repoRoot().appendingPathComponent("Sources")
+    let files = FileManager.default.enumerator(at: sources, includingPropertiesForKeys: nil)?
+        .compactMap { $0 as? URL }
+        .filter { $0.pathExtension == "swift" } ?? []
+    // 沒有這一行，整條測試在「路徑算錯、一個檔案都沒讀到」時會空洞地通過。
+    #expect(files.count > 20, "只掃到 \(files.count) 個 .swift，路徑可能算錯了")
+
+    let declared = Set((try privacyManifest()["NSPrivacyAccessedAPITypes"] as? [[String: Any]] ?? [])
+        .compactMap { $0["NSPrivacyAccessedAPIType"] as? String })
+
+    for (category, needles) in markers where !declared.contains(category) {
+        for file in files {
+            let text = try String(contentsOf: file, encoding: .utf8)
+            for needle in needles where text.contains(needle) {
+                Issue.record("""
+                    \(file.lastPathComponent) 出現「\(needle)」，那屬於 \(category)，\
+                    而 Scripts/PrivacyInfo.xcprivacy 沒有宣告它。\
+                    確認是真的用到就去補宣告（代碼查 Xcode 的 DVTCorePlistStructDefs），\
+                    只是碰巧出現在註解裡就改掉那個字。
+                    """)
+            }
+        }
+    }
+}
