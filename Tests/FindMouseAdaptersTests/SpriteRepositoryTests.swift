@@ -10,7 +10,8 @@ import FindMouseCore
 
 private func makeRepository(_ packID: String = "test-blocks") throws -> SpriteRepository {
     let url: URL
-    if packID == "test-blocks" {
+    // test-blocks 與 test-blocks-tall 已搬到 Fixtures；只有 mycat 留在出貨資源裡。
+    if packID == PackDefaults.factory {
         let packs = try #require(SpritePackRepository.builtInPacksDirectory())
         url = packs.appendingPathComponent(packID)
     } else {

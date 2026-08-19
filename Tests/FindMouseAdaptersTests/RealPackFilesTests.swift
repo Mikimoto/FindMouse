@@ -32,10 +32,10 @@ private func fixtureURL(_ id: String) throws -> URL {
 /// 而且**一個 warning 都不該有**——它是後面每個 M2 task 的基準素材，
 /// 基準本身有雜訊的話，真正的問題會被淹掉。
 @Test func testBlocksIsValidWithFullCapabilities() throws {
-    let report = try report(for: builtInPackURL("test-blocks"))
+    let report = try report(for: fixtureURL("test-blocks"))
 
-    #expect(report.errors.isEmpty, "內建 pack 有 error：\(report.errors)")
-    #expect(report.warnings.isEmpty, "內建 pack 有 warning：\(report.warnings)")
+    #expect(report.errors.isEmpty, "色塊 fixture 有 error：\(report.errors)")
+    #expect(report.warnings.isEmpty, "色塊 fixture 有 warning：\(report.warnings)")
     #expect(report.isValid)
     let caps = try #require(report.capabilities, "有效的 pack 必須帶著能力")
     #expect(caps.available == Set(CatAction.allCases))
@@ -98,8 +98,10 @@ private func fixtureURL(_ id: String) throws -> URL {
 /// 直接站在這套 pack 的內容上，而它是產生器跑出來的：參數少給一個
 /// 就會安靜地產出一套「看起來正常、卻驗不到東西」的 pack，
 /// 而錯誤要拖到手動驗收才會現形。
+/// （2026-08-19 起這套 pack 住在 `Fixtures/` 而不是出貨資源裡——e2e 那兩條驗收改用
+/// `make_pack` 在執行期現做的 `e2e-blocks-tall`，參數相同。）
 @Test func tallPackIsValidButHasNoTeaser() throws {
-    let url = try builtInPackURL("test-blocks-tall")
+    let url = try fixtureURL("test-blocks-tall")
     let loaded = try #require(SpritePackRepository.load(at: url))
     let report = PackValidator.validate(manifest: loaded.manifest,
                                         directoryName: loaded.directoryName,
