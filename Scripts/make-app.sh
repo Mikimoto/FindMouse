@@ -102,6 +102,31 @@ BUNDLE_ID="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "${ROOT}/Scr
     echo "先跑 plutil -lint Scripts/Info.plist 看它是不是壞了；檔案沒壞就是那個 key 不見了，補回去再重組。" >&2
     exit 1
 }
+
+# 圖示。**必須排在 codesign 之前**——簽章封印 Contents/Resources，之後才放進去的
+# 檔案會讓 `codesign --verify` 報 "resource added"，而那個錯誤訊息完全不會提到圖示。
+#
+# 檔名不寫死，而且**讀的是剛複製進 .app 的那一份 plist**，不是 Scripts/ 底下的來源。
+# 差別是實質的：出貨的是那份複本，而這支腳本與 release.sh 都會對它下 PlistBuddy
+# （版本戳、開發旗標）。讀來源的話，「複製或後續編輯把這個鍵弄掉了」完全驗不到
+# ——那正是這一層唯一能守、而 InfoPlistTests 守不到的東西（單元測試跑不到建置）。
+ICON_NAME="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIconFile' "${APP}/Contents/Info.plist")" || ICON_NAME=""
+[[ -n "${ICON_NAME}" ]] || {
+    echo "讀不到 ${APP}/Contents/Info.plist 的 CFBundleIconFile。" >&2
+    echo "來源 Scripts/Info.plist 有沒有那個鍵請另外看——這裡讀的是剛複製進 .app 的那一份。" >&2
+    echo "少了它 .app 會用通用圖示，而且 Finder／Dock／Spotlight 都不會有任何訊息。" >&2
+    exit 1
+}
+swift "${ROOT}/Scripts/make-icon.swift" "${APP}/Contents/Resources/${ICON_NAME}.icns" >/dev/null || {
+    echo "產不出圖示。單獨跑一次看訊息：swift Scripts/make-icon.swift /tmp/x.icns" >&2
+    exit 1
+}
+[[ -f "${APP}/Contents/Resources/${ICON_NAME}.icns" ]] || {
+    echo "make-icon 回 0 但 ${APP}/Contents/Resources/${ICON_NAME}.icns 不在。" >&2
+    echo "剛組出來那份 plist 宣告的名字是「${ICON_NAME}」，而 Resources/ 底下沒有對應的檔案。" >&2
+    exit 1
+}
+
 # **開發建置也要簽成沙盒的。**
 #
 # 這支本來完全不簽（`grep codesign` 零命中），所以 build/FindMouse.app 是未簽、
