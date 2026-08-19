@@ -66,20 +66,15 @@ do {
 //
 // 沙盒 App 讀不到容器外的裸路徑（見 SourceStaging 的檔頭）。這一段把 pack 的
 // 來源複製進去，再把請求裡的路徑換成複製後的位置。
-//
-// **只在容器已經存在時做。** 容器由系統在 App 首次啟動時建立；不存在就代表
-// 這台機器上沒跑過沙盒版的 FindMouse，那時 CLI 該回的是 APP_NOT_RUNNING
-// （下面那個 send 自然會給），而不是自己去造一個 containermanagerd 不認得的目錄。
 var stagingToRemove: String?
 var requestToSend = parsed.request
 
-// **來源不存在時不搬。** 搬的話 `copyItem` 會拋，於是「路徑打錯」變成
-// 「複製失敗」——而那兩件事的 exit code 不同（spec 第 8.5 節：路徑不存在或
-// 無法讀取是 2，pack 本身不合格才是 1）。staging 是運輸機制，不該自己發明
-// 新的錯誤分類；原樣送出去，讓 App 給出它一直以來給的那個答案。
+// **不存在、讀不到、容器還沒建立——三種都不搬**，理由寫在 `shouldStage` 上：
+// staging 是運輸機制，讓它自己發明錯誤分類，同一個來源就會因為「有沒有被搬」
+// 而拿到兩種 exit code。原樣送出去，讓 App 給出它一直以來給的那個答案。
 if let source = SourceStaging.sourcePath(of: parsed.request),
-   FileManager.default.fileExists(atPath: source),
-   FileManager.default.fileExists(atPath: ControlSocket.containerData) {
+   SourceStaging.shouldStage(source: source,
+                             containerData: ControlSocket.containerData) {
 
     // 先掃掉別人留下的 staging。CLI 被 SIGKILL 時下面那個 defer 不會跑，
     // 所以「上一次沒收拾的」只能由下一次來清——判準是那個 pid 已經不在了。

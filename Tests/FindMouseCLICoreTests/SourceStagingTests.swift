@@ -66,3 +66,54 @@ import FindMouseWire
     let name = URL(fileURLWithPath: dir).lastPathComponent
     #expect(SourceStaging.pid(ofStagingDirectoryNamed: name) == 987)
 }
+
+/// `0` 與負數不是 pid，即使 `Int32(_:)` 解得出來。
+///
+/// 這條的後果不在解析而在**掃除**：`kill(0, 0)` 問的是呼叫端的整個 process group、
+/// `kill(-1, 0)` 問的是所有送得到的 process，兩者都回 0（2026-08-19 實測），
+/// 於是那種目錄永遠被判成「主人還活著」而掃不掉——正是掃除存在的理由要防的狀態。
+@Test func zeroAndNegativeNumbersAreNotPIDs() {
+    #expect(SourceStaging.pid(ofStagingDirectoryNamed: "fm-cli-0") == nil)
+    #expect(SourceStaging.pid(ofStagingDirectoryNamed: "fm-cli--1") == nil)
+    // `Int32("+5")` 是 5。我們自己永遠不會造出這個名字，所以它不是我們的。
+    #expect(SourceStaging.pid(ofStagingDirectoryNamed: "fm-cli-+5") == nil)
+    // 真的 pid 照樣要解得出來——不然掃除認不得自己造的東西，staging 永遠累積。
+    #expect(SourceStaging.pid(ofStagingDirectoryNamed: "fm-cli-1") == 1)
+}
+
+/// 「存在但讀不到」的來源**不搬**——不是為了省事，是為了不改掉錯誤分類。
+///
+/// 搬的話 `copyItem` 會拋，CLI 回 `PACK_SOURCE_INVALID`（exit 1）；而
+/// `pack validate` 對「讀不到」的答案是 `PACK_NOT_FOUND`（exit 2，spec 第 8.5 節，
+/// `Output.exitCode(for:request:)` 也只對那一組給 2）。於是同一個來源會因為
+/// 「有沒有被搬」而拿到兩種 exit code。不搬，讓 App 端那道守衛回答。
+@Test func anUnreadableSourceIsNotStagedSoTheAppKeepsOwningTheDiagnosis() throws {
+    let fm = FileManager.default
+    let root = URL(fileURLWithPath: NSTemporaryDirectory())
+        .appendingPathComponent("fm-staging-\(UUID().uuidString)")
+    try fm.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? fm.removeItem(at: root) }
+
+    let container = root.appendingPathComponent("container")
+    try fm.createDirectory(at: container, withIntermediateDirectories: true)
+
+    let readable = root.appendingPathComponent("readable.fmpack")
+    try Data("pack".utf8).write(to: readable)
+    #expect(SourceStaging.shouldStage(source: readable.path, containerData: container.path))
+
+    let unreadable = root.appendingPathComponent("unreadable.fmpack")
+    try Data("pack".utf8).write(to: unreadable)
+    try fm.setAttributes([.posixPermissions: 0], ofItemAtPath: unreadable.path)
+    // 存在**而且**讀不到——兩件事分開問才有這個分岔，這也正是沙盒下容器外
+    // 路徑的形狀（stat 成功、內容 EPERM）。
+    #expect(fm.fileExists(atPath: unreadable.path))
+    #expect(SourceStaging.shouldStage(source: unreadable.path,
+                                      containerData: container.path) == false)
+
+    // 另外兩個條件：來源不存在、容器還沒建立。
+    #expect(SourceStaging.shouldStage(source: root.appendingPathComponent("nope").path,
+                                      containerData: container.path) == false)
+    #expect(SourceStaging.shouldStage(
+        source: readable.path,
+        containerData: root.appendingPathComponent("no-container").path) == false)
+}
