@@ -191,6 +191,44 @@ else
     fi
 fi
 
+# --- 6 -------------------------------------------------------------------
+step "6. app-sandbox 的斷言分得出有簽與沒簽（雙向對照組）"
+
+# **這一段的來歷**：release.sh 的那條斷言第一版寫成 `=> 1`，而 `plutil -p` 對布林
+# 印的是 `true`。後果不是「漏掉一個沒沙盒的產物」，是**每一次發版都被擋在第 5 步**，
+# 訊息還宣稱一個明明在的鍵不見了。它從寫下來就是壞的，只因為那條路要真的發版
+# 才走得到，所以沒有人知道。
+#
+# 只有正向不夠：一個永遠說 yes 的斷言與沒有斷言等價。所以兩個方向都要。
+SANDBOX_PRED='"com.apple.security.app-sandbox" => true'
+
+# 正向：一份真的簽過的 .app。用 make-app.sh 的產物而不是 release.sh 的——
+# 後者要 Developer ID 憑證，而這支測試要能在沒有憑證的機器上跑完負向那半。
+DEV_APP="${ROOT}/build/FindMouse.app"
+if [[ ! -d "${DEV_APP}" ]]; then
+    Scripts/make-app.sh >/dev/null 2>&1 || true
+fi
+if [[ -d "${DEV_APP}" ]]; then
+    E="$(mktemp)"
+    codesign -d --entitlements - --xml "${DEV_APP}" >"${E}" 2>/dev/null || true
+    plutil -p "${E}" 2>/dev/null | grep -q "${SANDBOX_PRED}" \
+        && ok "斷言認得真的簽進去的 app-sandbox" \
+        || bad "斷言對一份真的沙盒 .app 說不——release.sh 會擋住每一次發布（實際讀到：$(plutil -p "${E}" 2>/dev/null | tr '\n' ' '))"
+    rm -f "${E}"
+else
+    bad "建不出 build/FindMouse.app，這一段的正向對照組沒跑到"
+fi
+
+# 負向：一份沒有那個鍵的 entitlements。
+NOSANDBOX="$(mktemp)"
+/usr/libexec/PlistBuddy -c "Save" "${NOSANDBOX}" >/dev/null 2>&1
+/usr/libexec/PlistBuddy -c "Add :com.apple.security.files.user-selected.read-only bool true" \
+    "${NOSANDBOX}" >/dev/null
+plutil -p "${NOSANDBOX}" | grep -q "${SANDBOX_PRED}" \
+    && bad "斷言對一份沒有 app-sandbox 的 entitlements 說 yes——它沒有鑑別力" \
+    || ok "斷言擋下沒有 app-sandbox 的 entitlements"
+rm -f "${NOSANDBOX}"
+
 step "結果"
 printf '  通過 %d、失敗 %d\n' "${PASS}" "${FAIL}"
 [[ "${FAIL}" -eq 0 ]]

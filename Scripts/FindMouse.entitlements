@@ -1,30 +1,34 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <!--
-  只有一個鍵，而且刻意如此。
+  兩個鍵，而且刻意只有這兩個。
 
   每加一個 entitlement 都要說得出「哪一個實測失敗需要它」——沒有那個實測，
   加進來的就是一個沒人知道能不能拿掉的權限，而它會一直留著。
+  這份清單由 `InfoPlistTests.theSandboxEntitlementsAreExactlyTheOnesWeCanJustify`
+  釘成**精確相等**：加一個或少一個都會紅，逼人回來這裡寫下理由。
 
-  不需要的（2026-08-17 的六個沙盒前提逐條量過）：
+  1. com.apple.security.app-sandbox
+     整件事的目的。拿掉的話 App 綁的 socket 不在容器裡，CLI 永遠回
+     APP_NOT_RUNNING 而 App 一切正常——最難聯想的那種。
 
-  - 讀被雙擊／拖進來的檔案 → LaunchServices 與拖放各自發 sandbox extension，
-    不需要 files.user-selected（見 spec 前提 3）
+  2. com.apple.security.files.user-selected.read-only
+     **NSOpenPanel 是第三個機制**，powerbox 不吃雙擊與拖放各自發的那張
+     sandbox extension。少了它，面板**不是報錯而是根本不出現**：
+     `runModal()` 當場回 .cancel、`url` 是 nil，與使用者按取消一個字都不差
+     （2026-08-17 實測，log 裡看得到 openAndSavePanelService 起來 4ms 後就
+     `xpc_connection_cancel()`）。搬移舊 pack 那條路（spec D-2）就是靠它。
+     read-only 而不是 read-write：我們只**讀**使用者選的資料夾，
+     寫入一律寫進自己的容器。
+
+  以下這些**量過、確認不需要**（2026-08-17 的六個沙盒前提）：
+
+  - 讀被雙擊／拖進來的檔案 → LaunchServices 與拖放各自發 sandbox extension
+    （前提 3）。上面第 2 條講的是 powerbox，與這條是不同的機制，別合併理解。
   - control socket → 綁在自己的容器裡（前提 2、5）
   - 開機啟動 → SMAppService 在沙盒下正常，連自己的 bundle 都讀得到（前提 6）
   - Carbon 熱鍵、NSEvent.mouseLocation、overlay → 2026-08-10 驗過，
     spec 第 13 節的「零系統權限」在沙盒下依然成立
-
-  需要的，只有一個：
-
-  - files.user-selected.read-only → **NSOpenPanel 是第三個機制**，powerbox 不吃
-    上面那兩張 extension。少了它，面板**不是報錯而是根本不出現**：
-    `runModal()` 當場回 .cancel、`url` 是 nil，與使用者按取消一個字都不差
-    （2026-08-17 實測，log 裡看得到 openAndSavePanelService 起來 4ms 後就
-    `xpc_connection_cancel()`）。搬移舊 pack 那條路（spec D-2）就是靠它，
-    而它由 `theOpenPanelEntitlementIsDeclared` 釘住。
-    read-only 而不是 read-write：我們只**讀**使用者選的資料夾，寫入一律
-    寫進自己的容器。
 -->
 <plist version="1.0">
 <dict>
