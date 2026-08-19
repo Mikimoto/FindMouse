@@ -117,3 +117,40 @@ import FindMouseWire
         source: readable.path,
         containerData: root.appendingPathComponent("no-container").path) == false)
 }
+
+/// 大得不可能是一套圖組的來源，在複製之前就停下。
+///
+/// App 的 `install` 先讀 `pack.json` 才動任何檔案，所以 `pack install ~/Movies`
+/// 這種手滑在 App 那邊是即刻拒絕；staging 反過來（先複製再問），少了這一關同一個
+/// 手滑會把整個資料夾遞迴複製進容器。
+@Test func aSourceTooBigToBeAPackIsRejectedBeforeAnythingIsCopied() throws {
+    let fm = FileManager.default
+    let root = URL(fileURLWithPath: NSTemporaryDirectory())
+        .appendingPathComponent("fm-limit-\(UUID().uuidString)")
+    try fm.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? fm.removeItem(at: root) }
+
+    // 目錄型來源：三個檔案共 300 bytes，還要分在兩層——走的是整棵樹，不是頂層。
+    let dir = root.appendingPathComponent("bulky")
+    let nested = dir.appendingPathComponent("deep/deeper")
+    try fm.createDirectory(at: nested, withIntermediateDirectories: true)
+    for (i, place) in [dir, dir, nested].enumerated() {
+        try Data(repeating: 0x41, count: 100)
+            .write(to: place.appendingPathComponent("f\(i).bin"))
+    }
+    #expect(SourceStaging.exceedsByteLimit(dir.path, limit: 250))
+    #expect(SourceStaging.exceedsByteLimit(dir.path, limit: 10_000) == false)
+
+    // 單一檔案（zip／.fmpack）問一次 size 就夠。
+    let file = root.appendingPathComponent("one.fmpack")
+    try Data(repeating: 0x42, count: 500).write(to: file)
+    #expect(SourceStaging.exceedsByteLimit(file.path, limit: 100))
+    #expect(SourceStaging.exceedsByteLimit(file.path, limit: 10_000) == false)
+
+    // 不存在的來源不是「太大」——那條由 `shouldStage` 回答，兩者不要重複發明答案。
+    #expect(SourceStaging.exceedsByteLimit(
+        root.appendingPathComponent("nope").path, limit: 1) == false)
+
+    // 預設上限與 App 用的是同一個數字（`PackInstaller.byteLimit` 指向它）。
+    #expect(PackLimits.byteLimit == 200 * 1024 * 1024)
+}

@@ -129,22 +129,35 @@ def _bump_mtime(path):
     os.utime(path, (future, future))
 
 
+# 對照組要插一句「在該檔案裡語法合法」的註解，所以每一種副檔名都得明講。
+#
+# **這張表不設退路，是因為猜錯過兩次。** 原本寫死 `//`，插進 `Scripts/Info.plist`
+# 讓整份 XML 解析不了（2026-08-13）；補上 plist/xml/html 之後改成「不認得就走 `#`」，
+# 於是 `Scripts/FindMouse.entitlements`（也是 XML）掉進那條退路，同一個症狀再來一次
+# （2026-08-19）。兩次的輸出都是「對照組不是全綠、整批不可採信」——而那個判決
+# 會被讀成「這些守衛沒有測試」，一個完全不同、而且更糟的結論。
+#
+# 補一種新的副檔名比追一次假結論便宜，所以不認得就停下來。`.json` 刻意不在表上：
+# 它根本沒有註解語法，真要突變 JSON 得換一種對照組，不是插一行進去。
+_COMMENT_SYNTAX = {
+    ".swift": "// {}", ".c": "// {}", ".h": "// {}", ".m": "// {}",
+    ".js": "// {}", ".ts": "// {}",
+    ".plist": "<!-- {} -->", ".xml": "<!-- {} -->", ".html": "<!-- {} -->",
+    ".entitlements": "<!-- {} -->", ".md": "<!-- {} -->",
+    ".sh": "# {}", ".bash": "# {}", ".zsh": "# {}",
+    ".py": "# {}", ".toml": "# {}", ".yml": "# {}", ".yaml": "# {}",
+}
+
+
 def _comment(path, text):
-    """依副檔名包出一句該檔案語法合法的註解。
-
-    **對照組原本寫死 `//`。** 那在 Swift 檔沒事，插進 `Scripts/Info.plist` 就讓
-    整份 XML 解析不了，於是對照組轉紅、整批被判為不可採信——而那一批的三個突變
-    其實全都正確地紅了。壞的是對照組，不是被測的東西，但兩者的輸出長得一模一樣
-    （都是「對照組不是全綠」）。2026-08-13 踩到。
-
-    不認得的副檔名走 `#`：這個 repo 剩下的可突變檔案是 shell 與 python，兩者都吃它。
-    """
+    """依副檔名包出一句該檔案語法合法的註解。不認得就停下來，不猜。"""
     suffix = Path(path).suffix.lower()
-    if suffix in {".swift", ".c", ".h", ".m", ".js", ".ts"}:
-        return f"// {text}"
-    if suffix in {".plist", ".xml", ".html"}:
-        return f"<!-- {text} -->"
-    return f"# {text}"
+    template = _COMMENT_SYNTAX.get(suffix)
+    if template is None:
+        sys.exit(f"對照組不知道「{suffix or '（沒有副檔名）'}」的註解語法。"
+                 f"請補進 mutate.py 的 _COMMENT_SYNTAX——猜一個會讓整批結果被判成"
+                 f"不可採信，而那看起來與「這些守衛沒有測試」一模一樣。")
+    return template.format(text)
 
 
 def main():

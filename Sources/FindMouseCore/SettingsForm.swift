@@ -715,7 +715,15 @@ public final class SettingsFormStore {
             ? "沒有搬進任何圖組。"
             : "搬好了 \(result.installed.count) 套："
                 + result.installed.joined(separator: "、") + "。")
-        parts.append(contentsOf: result.skipped.map { "\($0.name)：\($0.reason)" })
+        // **略過的要收口。** 使用者選到家目錄那種地方時，`migrate` 會對每一個
+        // 子目錄各試一次，於是這裡會串出幾十句話塞進同一行提示——而愈長的提示
+        // 愈沒有人讀，等於連前面「搬好了幾套」都一起弄丟。
+        // 前三筆講清楚，其餘只報數量：要逐筆理由的話那已經不是一行提示該做的事。
+        let shown = result.skipped.prefix(3).map { "\($0.name)：\($0.reason)" }
+        parts.append(contentsOf: shown)
+        if result.skipped.count > shown.count {
+            parts.append("另外 \(result.skipped.count - shown.count) 套沒有搬。")
+        }
         return parts.joined(separator: " ")
     }
 

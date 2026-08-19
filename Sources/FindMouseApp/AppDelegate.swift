@@ -245,10 +245,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // **先問「我在不在自己的容器裡」，再問「綁得起來嗎」。** 兩者的處方完全
         // 不同，而症狀在使用者眼裡一模一樣（CLI 說 App 沒在跑）。
         //
-        // 沒被簽成沙盒的建置，這裡算出來的預設路徑指向一個不存在的容器目錄，
-        // bind 會失敗；但更糟的情況是它**成功**——那表示某人手動造了那個目錄，
-        // 於是 App 綁在一個地方、CLI 看另一個地方，兩邊各自都「正常」。
-        // 所以這一條不是把 bind 的錯誤訊息講得漂亮一點，它是另一個問題。
+        // 沒被簽成沙盒的建置，socket 照樣綁得起來、CLI 也照樣連得上：兩端都用
+        // `ControlSocket.path`，而它從 `getpwuid` 算起、不被沙盒重導，所以兩邊
+        // 不可能錯開；`UnixSocketServer.start()` 還會自己把那個目錄建出來。
+        //
+        // 真正壞掉的是**資料的家**。`NSHomeDirectory()` 這時是真家目錄，於是
+        // `PackCatalogRepository.userPacksDirectory` 指回沙盒之前的
+        // `~/Library/Application Support/FindMouse/Packs`，設定也寫在容器外
+        // （2026-08-19 實測）。也就是說這份建置看起來一切正常，卻在讀寫舊世界
+        // ——拿它驗沙盒行為會得到一個什麼都沒驗到的綠，而那正是最難聯想的那種。
         //
         // 有 FINDMOUSE_SOCKET 覆寫時不檢查：那是 e2e 與開發時刻意指定的路徑，
         // 兩端都吃同一個環境變數，不會錯開。
@@ -256,7 +261,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if !overridden && !ControlSocket.isInOwnContainer {
             log.error("這份建置沒有跑在沙盒容器裡（HOME=\(NSHomeDirectory(), privacy: .public)）")
             menuBar.reportDegradation(
-                "CLI 不可用：這份建置沒有沙盒簽章，CLI 會找不到它。用 Scripts/make-app.sh 重建。")
+                "這份建置沒有沙盒簽章：圖組與設定讀寫的是沙盒之前的舊位置，"
+                + "不是容器。用 Scripts/make-app.sh 重建。")
         }
 
         do {

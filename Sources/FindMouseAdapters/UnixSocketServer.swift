@@ -20,8 +20,9 @@ public final class UnixSocketServer: @unchecked Sendable {
         case cannotListen(errno: Int32)
     }
 
-    /// `~/Library/Application Support/FindMouse/control.sock`，可用
-    /// `FINDMOUSE_SOCKET` 覆寫。定義在 `FindMouseWire`，與 CLI 共用同一份。
+    /// 沙盒容器 `Data` 根底下的 `control.sock`，可用 `FINDMOUSE_SOCKET` 覆寫。
+    /// 定義在 `FindMouseWire`，與 CLI 共用同一份——**同一個屬性，不是兩份算法**，
+    /// 所以兩端不可能錯開。
     public static var defaultPath: String { ControlSocket.path }
 
     private let path: String
@@ -68,7 +69,12 @@ public final class UnixSocketServer: @unchecked Sendable {
         try? FileManager.default.createDirectory(
             at: directory, withIntermediateDirectories: true,
             attributes: [.posixPermissions: 0o700])
-        // 目錄可能是舊版留下的（那時建成 0755），所以每次都收緊一次。
+        // `createDirectory` 在沙盒下永遠是 no-op——容器由 containermanagerd 建。
+        // 它真正會動的只有非沙盒建置，那時它造出一個沒人管的假容器；讓那件事有
+        // 聲音的是 `AppDelegate` 那道 `isInOwnContainer` 檢查，不是這裡。
+        //
+        // 每次都收緊一次，是因為這個目錄現在是**容器的 Data 根**、由系統建立，
+        // 而系統建出來的容器不是一律 0700（2026-08-19 實測同一台機器上兩種都有）。
         try? FileManager.default.setAttributes([.posixPermissions: 0o700],
                                                ofItemAtPath: directory.path)
 

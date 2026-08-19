@@ -39,7 +39,10 @@ public enum PackCatalogRepository {
     /// 記號的話，那一列提示每次啟動都回來，而按下去只會換得「三套都已經有了」。
     ///
     /// 用檔案而不是設定鍵：它描述的是**這個容器**的狀態，容器沒了它就該跟著沒。
-    /// 開頭的點讓 `scan` 自然略過它（那裡只認得出目錄裡的 `pack.json`）。
+    ///
+    /// 開頭的點只是讓它在 Finder 裡不礙眼——**擋住它進 pack 清單的不是那個點**。
+    /// `scan` 沒有帶 `.skipsHiddenFiles`，真正略過它的是「讀不出 `pack.json` 就
+    /// 不算一套」那一步（`SpritePackRepository.load` 回 nil）。
     static func migrationMarker(in packsDirectory: URL) -> URL {
         packsDirectory.appendingPathComponent(".legacy-migration-done")
     }

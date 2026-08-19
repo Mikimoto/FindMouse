@@ -87,8 +87,19 @@ private func infoPlist() throws -> [String: Any] {
     let plist = try #require(
         try PropertyListSerialization.propertyList(from: raw, format: nil) as? [String: Any])
 
-    let enabled = Set(plist.filter { ($0.value as? Bool) == true }.keys)
-    #expect(enabled == ["com.apple.security.app-sandbox",
-                        "com.apple.security.files.user-selected.read-only"],
-            "entitlement 清單變了。每一個都要說得出哪一個實測失敗需要它：\(enabled.sorted())")
+    // **比 key 的集合，不是「值為 true 的那些」。** 原本寫成
+    // `plist.filter { ($0.value as? Bool) == true }`，於是值不是布林的 entitlement
+    // 完全隱形——加一條 `com.apple.security.temporary-exception.files.absolute-path
+    // .read-write`（值是陣列）進去，這條測試照樣全綠（2026-08-19 突變實測）。
+    // 而 temporary-exception 那一族正是最該被擋下的：它在沙盒上開一個洞，
+    // 卻不長得像一個開關，所以「只看開關」的寫法對它天生瞎。
+    #expect(Set(plist.keys) == ["com.apple.security.app-sandbox",
+                               "com.apple.security.files.user-selected.read-only"],
+            "entitlement 清單變了。每一個都要說得出哪一個實測失敗需要它：\(plist.keys.sorted())")
+
+    // 值也要真的是 `true`。只比 key 的話，把 app-sandbox 改成 `<false/>` 會全綠，
+    // 而那等於整個沙盒沒了——檔案看起來還好端端地宣告著它。
+    for (key, value) in plist {
+        #expect((value as? Bool) == true, "\(key) 的值不是 true：\(value)")
+    }
 }

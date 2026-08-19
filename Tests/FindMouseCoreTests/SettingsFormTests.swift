@@ -1298,3 +1298,26 @@ private let specWindowKeys = [
     // 混合的那個要同時講兩邊，不能只報好消息。
     #expect(mixed.contains("alpha") && mixed.contains("cat"))
 }
+
+/// 選錯資料夾的提示要收口。
+///
+/// 使用者可以在面板裡選任何地方（家目錄、下載），而 `migrate` 對每一個子目錄各試
+/// 一次——不收口的話這裡會把幾十句理由串成同一行提示，連前面「搬好了幾套」都一起
+/// 被淹掉。前三筆講清楚、其餘只報數量。
+@MainActor
+@Test func aFolderFullOfNonPacksReportsACountInsteadOfAWallOfText() {
+    let h = FormHarness()
+    h.migrationResult = PackMigrationResult(
+        installed: ["alpha"],
+        skipped: (1...9).map { .init(name: "dir\($0)", reason: "讀不出 pack.json。") })
+
+    h.store.migrateLegacyPacks()
+    let notice = h.store.snapshot.packNotice ?? ""
+
+    #expect(notice.contains("搬好了 1 套：alpha。"))
+    #expect(notice.contains("dir1：讀不出 pack.json。"))
+    #expect(notice.contains("dir3：讀不出 pack.json。"))
+    // 第四筆之後只剩數量——這是這條測試唯一守的東西。
+    #expect(notice.contains("dir4") == false)
+    #expect(notice.contains("另外 6 套沒有搬。"))
+}

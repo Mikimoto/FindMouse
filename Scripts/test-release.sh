@@ -164,8 +164,6 @@ if hdiutil create -volname "FindMouse bad" -srcfolder "${ROOT}/build/release" \
     # 剛好就是三條，門檻照樣過——**測試全綠，而六條驗收一條都沒執行**。
     # 所以改成逐條點名，每條都要在兩輪裡各出現一次。
     #
-    # grep 的 pattern 用 `✗.*<標籤>` 而不是 `✗ <標籤>`：✗ 與標籤之間夾著
-    # 一段 ANSI 重設碼（`\033[0m`），寫成一個空格永遠對不上。
     # 巢狀那條是**每個 bundle 各跑一次**，不是一次。它在 release.sh 裡是一行，
     # 但執行次數等於 bundle 數——多一個帶 resources 的 target 就變 4 次，
     # 寫死 2 會紅在「有驗收沒跑到」這個與事實無關的訊息上。
@@ -179,11 +177,21 @@ if hdiutil create -volname "FindMouse bad" -srcfolder "${ROOT}/build/release" \
     # 比對用**完整標籤**而不是關鍵字。原本寫 "stapler validate"，而它同時比中
     # 「stapler validate（票沒釘上…）」與「stapler validate app（拖出來那份…）」，
     # 於是數到 4、期望 2，紅在一個與事實無關的訊息上。
+    #
+    # **兩段 grep，不是一個 pattern。** 標籤要用固定字串比（`-F`）——它含中文與
+    # 全形括號，當成 regex 會出事；而「有沒有報紅」得另外問，因為 `check()` 成功時
+    # 印的是同一個標籤（`release.sh:22` 的 `ok()`）。只數標籤出現幾次的話，一條在
+    # 兩輪都**通過**的驗收照樣數到 2、正好等於期望值，於是這一段對它說「報紅了」
+    # ——負向對照組整段失去鑑別力。63dfec2 把 pattern 改成 `-F` 時就是這樣弄丟了
+    # `✗`（2026-08-19 抓到）。
+    #
+    # 先濾 `✗` 再比標籤，也順帶避開「✗ 與標籤之間夾著 ANSI 重設碼（`\033[0m`）」
+    # 這件事——寫成單一 pattern 的話 `✗ <標籤>` 永遠對不上。
     MISSING=""
     for label in "${LABELS[@]}"; do
         want=2
         [[ "${label}" == 巢狀* ]] && want=$((2 * NESTED_BUNDLES))
-        n="$(echo "${OUT}" | grep -cF "${label}")"
+        n="$(echo "${OUT}" | grep '✗' | grep -cF "${label}")"
         [[ "${n}" -eq "${want}" ]] || MISSING="${MISSING} ${label}(${n}次，期望 ${want})"
     done
     [[ -z "${MISSING}" ]] \

@@ -76,6 +76,17 @@ if let source = SourceStaging.sourcePath(of: parsed.request),
    SourceStaging.shouldStage(source: source,
                              containerData: ControlSocket.containerData) {
 
+    // 大得不可能是一套圖組就當場停下，不要先複製好幾 GB 再讓 App 說不。
+    // 理由與成本見 `SourceStaging.exceedsByteLimit`。錯誤碼與訊息跟著 App 的
+    // `.tooLarge → .packTooLarge`：這不是 staging 發明的分類，是同一條政策
+    // 提早一步執行（上限的單一來源是 `PackLimits.byteLimit`）。
+    if SourceStaging.exceedsByteLimit(source) {
+        fail(.packTooLarge,
+             "\(source) 超過 \(PackLimits.byteLimit / 1024 / 1024) MB，不像是一套圖組。"
+             + "請指到 .fmpack 檔或圖組資料夾本身。",
+             json: parsed.json)
+    }
+
     // 先掃掉別人留下的 staging。CLI 被 SIGKILL 時下面那個 defer 不會跑，
     // 所以「上一次沒收拾的」只能由下一次來清——判準是那個 pid 已經不在了。
     let tmp = "\(ControlSocket.containerData)/tmp"
