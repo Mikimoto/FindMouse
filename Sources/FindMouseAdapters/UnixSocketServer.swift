@@ -69,12 +69,15 @@ public final class UnixSocketServer: @unchecked Sendable {
         try? FileManager.default.createDirectory(
             at: directory, withIntermediateDirectories: true,
             attributes: [.posixPermissions: 0o700])
-        // `createDirectory` 在沙盒下永遠是 no-op——容器由 containermanagerd 建。
-        // 它真正會動的只有非沙盒建置，那時它造出一個沒人管的假容器；讓那件事有
-        // 聲音的是 `AppDelegate` 那道 `isInOwnContainer` 檢查，不是這裡。
+        // `createDirectory` 在沙盒下是 no-op——容器由 containermanagerd 建好了。
+        // 它真的會動的是兩種情況：非沙盒建置（那時它造出一個沒人管的假容器，
+        // 讓那件事有聲音的是 `AppDelegate` 那道 `isInOwnContainer` 檢查），
+        // 以及 `FINDMOUSE_SOCKET` 指到一個還不存在的深層路徑（e2e 就是那樣用的）。
         //
-        // 每次都收緊一次，是因為這個目錄現在是**容器的 Data 根**、由系統建立，
-        // 而系統建出來的容器不是一律 0700（2026-08-19 實測同一台機器上兩種都有）。
+        // 收緊那一行在沙盒下也是 no-op：實測本機 849 個容器的 `Data` **全部**
+        // 都是 700（755 的那 4 個是容器根，不是 `Data`）。留著是因為它是 socket
+        // 那個 0600 的前提，而「系統一定會給 700」沒有任何文件保證——更何況
+        // 覆寫路徑那個目錄是我們自己建的，它只跟著 umask。
         try? FileManager.default.setAttributes([.posixPermissions: 0o700],
                                                ofItemAtPath: directory.path)
 

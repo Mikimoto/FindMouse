@@ -3,7 +3,6 @@
 
 import Foundation
 import FindMouseDomain
-import FindMouseWire
 
 /// pack 的安裝與移除。**只做 I/O，每個決策都問 Domain。**
 public enum PackInstaller {
@@ -17,9 +16,7 @@ public enum PackInstaller {
     /// ——它不驗證那個欄位。所以自報值只擋得住誠實的大檔案，而誠實的大檔案本來
     /// 就會被這裡擋下。殘餘風險：惡意 zip 在被拒絕前確實會寫到那麼大，緩解是
     /// 暫存目錄用完立刻刪（`defer`）且它在 `NSTemporaryDirectory()` 底下。
-    /// 數字本身住在 `FindMouseWire.PackLimits`——CLI 也要它（見
-    /// `SourceStaging.exceedsByteLimit`），而兩份會漂。
-    public static let byteLimit = PackLimits.byteLimit
+    public static let byteLimit = 200 * 1024 * 1024
 
     /// **實作 `LocalizedError`**，否則 `error.localizedDescription` 會吐
     /// 「The operation couldn't be completed. (…Failure error 1.)」——英文樣板，

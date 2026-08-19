@@ -1319,5 +1319,5 @@ private let specWindowKeys = [
     #expect(notice.contains("dir3：讀不出 pack.json。"))
     // 第四筆之後只剩數量——這是這條測試唯一守的東西。
     #expect(notice.contains("dir4") == false)
-    #expect(notice.contains("另外 6 套沒有搬。"))
+    #expect(notice.contains("另外 6 個資料夾沒有搬。"))
 }

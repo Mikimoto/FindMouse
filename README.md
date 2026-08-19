@@ -139,7 +139,8 @@ git push origin dev:main
 `~/Library/Application Support/FindMouse`，而沙盒化之後使用者的圖組與設定都住在
 `~/Library/Containers/tw.com.deepthought.findmouse`。兩個都要列——舊位置對
 「從 v0.5.0 以前升上來、但沒按過設定裡那個『搬過來…』」的人仍然有東西。
-沒改的話 `--zap` 會清掉一個空目錄然後說完成，而使用者的 pack 與設定原封不動留著。
+沒改的話 `--zap` 兩頭都錯：它會刪掉舊位置那批**還沒搬過來的圖組**（搬移是複製，
+刻意不刪原檔），同時完全漏掉容器裡的新家。
 
 只驗一個既有的 dmg：`Scripts/release.sh --verify-only <某個.dmg>`
 

@@ -58,45 +58,21 @@ public enum SourceStaging {
             && fm.fileExists(atPath: containerData)
     }
 
-    /// 來源大得不可能是一套圖組。
+    /// **這一層刻意不擋「來源太大」。**
     ///
-    /// **為什麼 staging 需要這一關而 App 不需要。** App 的 `install` 先讀
-    /// `pack.json`（`PackInstaller.manifestID`）才動任何目的地檔案，所以
-    /// `pack install ~/Movies` 這種手滑是**即刻**被拒絕的。staging 反過來：先複製
-    /// 再問。少了這一關，同一個手滑會把整個資料夾遞迴複製進容器、佔滿磁碟，
-    /// 好幾分鐘之後才拿到「讀不出 pack.json」。
+    /// 代價是真的：staging 先複製再問，而 App 的 `install` 先讀 `pack.json` 才動
+    /// 任何檔案，所以 `pack install ~/Movies` 這種手滑在 App 那邊是即刻拒絕，
+    /// 在這裡卻會遞迴複製整個資料夾。
     ///
-    /// **邊走邊加、超過就停**，所以成本由上限決定而不是由來源決定：`~/Movies`
-    /// 走幾個檔案就超過了，而一套合法的 pack 本來就小於上限、走得完。
-    /// 用「找 pack.json」當守衛不行——`ExtractedTree.packRoot` 允許它在**任何**
-    /// 深度，所以找不到的那個情況要走完整棵樹，正是我們想避免的成本。
+    /// 試過在這裡加一道上限，量整棵樹——**那個守衛會拒絕 App 會接受的來源**：
+    /// `PackInstaller.install` 只量 `installableEntries(under: packRoot)`，夾帶的
+    /// 大檔案刻意不計（`aStrayOutsideThePackRootDoesNotCountTowardTheLimit` 釘住
+    /// 那個方向），而 `pack.validate` 那條路根本沒有上限。要在這裡量對，等於把
+    /// packRoot 的判定整套搬進 CLI。
     ///
-    /// 只在**目錄**上走。單一檔案（zip／`.fmpack`）問一次 size 就夠了。
-    public static func exceedsByteLimit(_ source: String,
-                                        limit: Int = PackLimits.byteLimit) -> Bool {
-        let fm = FileManager.default
-        var isDirectory: ObjCBool = false
-        guard fm.fileExists(atPath: source, isDirectory: &isDirectory) else { return false }
-
-        if !isDirectory.boolValue {
-            let bytes = (try? fm.attributesOfItem(atPath: source))?[.size] as? Int
-            return (bytes ?? 0) > limit
-        }
-
-        guard let walker = fm.enumerator(atPath: source) else { return false }
-        var total = 0
-        for case let name as String in walker {
-            let full = (source as NSString).appendingPathComponent(name)
-            // 只算一般檔案。目錄本身、symlink 與 device 都不佔複製的位元組，
-            // 而 symlink 若照著算會把同一份內容數兩次。
-            guard let attrs = try? fm.attributesOfItem(atPath: full),
-                  (attrs[.type] as? FileAttributeType) == .typeRegular,
-                  let bytes = attrs[.size] as? Int else { continue }
-            total += bytes
-            if total > limit { return true }
-        }
-        return false
-    }
+    /// 保守估計的代價必須是多做一次無害的事，不能是拒絕合法輸入。所以寧可留著這個
+    /// 手滑代價，也不要一個會擋掉真 pack 的守衛——複製失敗或裝不成時 staging 目錄
+    /// 都會被刪掉，磁碟不會永久被佔住。
 
     /// 換掉路徑之後的請求。其餘欄位原樣保留（`--force` 就住在那裡面）。
     public static func rewritten(_ request: WireRequest, sourcePath: String) -> WireRequest {

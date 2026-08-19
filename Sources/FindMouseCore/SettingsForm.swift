@@ -722,7 +722,9 @@ public final class SettingsFormStore {
         let shown = result.skipped.prefix(3).map { "\($0.name)：\($0.reason)" }
         parts.append(contentsOf: shown)
         if result.skipped.count > shown.count {
-            parts.append("另外 \(result.skipped.count - shown.count) 套沒有搬。")
+            // 「資料夾」而不是「套」：`Skipped` 記的是資料夾名，而它們之所以被
+            // 略過，最常見的原因正是那裡面根本不是一套圖組。
+            parts.append("另外 \(result.skipped.count - shown.count) 個資料夾沒有搬。")
         }
         return parts.joined(separator: " ")
     }

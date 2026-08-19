@@ -64,7 +64,8 @@ private func infoPlistBundleID() throws -> String {
 /// `isInOwnContainer`——它在**真的沙盒裡**跑，那時兩者才分得開。
 @Test func theContainerPathStartsAtTheHomeDirectory() throws {
     let pw = try #require(getpwuid(getuid()))
-    let real = String(cString: pw.pointee.pw_dir)
+    let dir = try #require(pw.pointee.pw_dir)
+    let real = String(cString: dir)
     #expect(ControlSocket.containerData.hasPrefix(real + "/"))
 }
 
