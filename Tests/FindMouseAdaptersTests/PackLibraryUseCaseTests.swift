@@ -731,3 +731,33 @@ private func libraryOverRealScan(_ packs: URL) -> PackLibraryUseCase {
     #expect(FileManager.default.fileExists(atPath: marker.path),
             "選了舊資料夾就要記下來，否則那一列提示每次啟動都回來")
 }
+
+/// **列不出來的資料夾不能當成空的。**
+///
+/// 這是這條路上最難救的失敗：記號一旦落下，`legacyPacksNeedMigration()` 從此永遠
+/// 回 false，那一列提示再也不出現、一套都沒搬，而使用者收到的訊息是「這個資料夾裡
+/// 沒有圖組」——他不會知道要去刪一個他不知道存在的記號。
+@Test func anUnreadableLegacyFolderIsReportedInsteadOfMarkedDone() throws {
+    let root = try tempDir()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let legacy = root.appendingPathComponent("legacy")
+    try FileManager.default.createDirectory(at: legacy, withIntermediateDirectories: true)
+    // 還原權限要排在刪除之前才刪得掉（defer 是 LIFO，所以寫在後面）。
+    defer {
+        try? FileManager.default.setAttributes([.posixPermissions: 0o700],
+                                               ofItemAtPath: legacy.path)
+    }
+    try FileManager.default.setAttributes([.posixPermissions: 0],
+                                          ofItemAtPath: legacy.path)
+
+    let packs = root.appendingPathComponent("Packs")
+    let library = PackLibraryUseCase(packsDirectory: { packs }, installedPacks: { [] })
+
+    let result = library.migrate(from: legacy, legacyDirectory: legacy)
+
+    #expect(result.installed.isEmpty)
+    #expect(result.skipped.count == 1, "讀不到要說出來，不能靜靜當成空的")
+    #expect(FileManager.default.fileExists(
+        atPath: PackCatalogRepository.migrationMarker(in: packs).path) == false,
+        "一套都沒搬卻落下記號，等於把那一列提示永久關掉")
+}

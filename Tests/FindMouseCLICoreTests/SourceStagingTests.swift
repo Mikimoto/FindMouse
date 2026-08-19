@@ -77,6 +77,8 @@ import FindMouseWire
     #expect(SourceStaging.pid(ofStagingDirectoryNamed: "fm-cli--1") == nil)
     // `Int32("+5")` 是 5。我們自己永遠不會造出這個名字，所以它不是我們的。
     #expect(SourceStaging.pid(ofStagingDirectoryNamed: "fm-cli-+5") == nil)
+    // 同理 `Int32("0001")` 是 1（launchd，永遠在），那會讓它永遠掃不掉。
+    #expect(SourceStaging.pid(ofStagingDirectoryNamed: "fm-cli-0001") == nil)
     // 真的 pid 照樣要解得出來——不然掃除認不得自己造的東西，staging 永遠累積。
     #expect(SourceStaging.pid(ofStagingDirectoryNamed: "fm-cli-1") == 1)
 }

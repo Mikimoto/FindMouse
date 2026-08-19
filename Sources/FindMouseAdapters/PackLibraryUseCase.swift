@@ -266,8 +266,25 @@ public struct PackLibraryUseCase {
     public func migrate(from source: URL, legacyDirectory: URL) -> PackMigrationResult {
         var result = PackMigrationResult()
 
-        let entries = (try? FileManager.default.contentsOfDirectory(
-            at: source, includingPropertiesForKeys: [.isDirectoryKey])) ?? []
+        // **列不出來就不要當成空的。**
+        //
+        // 用 `try?` 吃掉錯誤的話，「讀不到」與「這裡真的沒有圖組」給出同一句話
+        // ——而下面那個記號**照樣會落下**。後果是這條路上最難救的一種：
+        // `legacyPacksNeedMigration()` 從此永遠回 false，那一列提示再也不出現，
+        // 一套都沒搬，而使用者收到的訊息是「這個資料夾裡沒有圖組」。他不會知道
+        // 要去刪一個他不知道存在的記號。
+        //
+        // 所以列目錄失敗要當成一筆 skipped 並**直接返回**（跳過落記號那一步）。
+        let entries: [URL]
+        do {
+            entries = try FileManager.default.contentsOfDirectory(
+                at: source, includingPropertiesForKeys: [.isDirectoryKey])
+        } catch {
+            result.skipped.append(.init(
+                name: source.lastPathComponent,
+                reason: "讀不到這個資料夾（\(error.localizedDescription)）。"))
+            return result
+        }
 
         // 排序理由與 `PackCatalogRepository.scan` 同一條：`contentsOfDirectory`
         // 沒有順序保證，而搬移結果那句話會逐一列出 id。

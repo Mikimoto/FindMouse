@@ -96,16 +96,21 @@ public enum SourceStaging {
 
     /// 從 staging 目錄名解出 pid。不是我們的格式就回 nil。
     ///
-    /// **只接受自己造得出來的形狀**（純十進位、大於 0）。`Int32(_:)` 自己還吃
-    /// `-1` 與 `+5`，而 `kill` 對 0 與負值是**完全不同的語意**：`kill(0, 0)` 問的是
-    /// 呼叫端的整個 process group、`kill(-1, 0)` 問的是所有送得到的 process，
-    /// 兩者都回 0（2026-08-19 實測）。於是一個叫 `fm-cli-0` 的目錄會被判成
-    /// 「主人還活著」而**永遠掃不掉**——正是這個掃除存在的理由要防的狀態。
+    /// **只接受自己造得出來的形狀。** 唯一的產生者是 `getpid()`，所以那個形狀就是
+    /// 「十進位、大於 0、沒有前導零、沒有正負號」。
+    ///
+    /// 為什麼要這麼嚴：`Int32(_:)` 自己吃 `-1`、`+5`、`0001`，而 `kill` 對 0 與負值
+    /// 是**完全不同的語意**——`kill(0, 0)` 問的是呼叫端的整個 process group、
+    /// `kill(-1, 0)` 問的是所有送得到的 process，兩者都回 0（2026-08-19 實測）。
+    /// 於是一個叫 `fm-cli-0` 的目錄會被判成「主人還活著」而**永遠掃不掉**，
+    /// 而 `fm-cli-0001` 會被當成 pid 1（launchd，永遠在）——同一個下場。
+    ///
+    /// 判準寫成 `String(pid) == digits` 而不是逐字元檢查：來回一致自動涵蓋上面
+    /// 全部三種，而且下次 `Int32(_:)` 又多接受一種寫法時它不必跟著改。
     public static func pid(ofStagingDirectoryNamed name: String) -> Int32? {
         guard name.hasPrefix(stagingPrefix) else { return nil }
-        let digits = name.dropFirst(stagingPrefix.count)
-        guard digits.allSatisfy({ $0.isASCII && $0.isNumber }),
-              let pid = Int32(digits), pid > 0 else { return nil }
+        let digits = String(name.dropFirst(stagingPrefix.count))
+        guard let pid = Int32(digits), pid > 0, String(pid) == digits else { return nil }
         return pid
     }
 }
