@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128">
+  <!-- 構圖：貓爪壓住游標。
+       四個構圖各渲染 128／48／32／16 比較過之後選它：並排兩個主體（貓在左、
+       游標在右）在 16px 下誰都不夠大；正面貓臉在小尺寸活得下來但游標會消失。
+       爪與游標咬合成一個形狀，縮小時是一整團而不是兩團——而「貓抓到了游標」
+       剛好就是這個 App 在做的事。 -->
+  <defs>
+    <linearGradient id="plate" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#FFC978"/>
+      <stop offset="1" stop-color="#F09A3E"/>
+    </linearGradient>
+  </defs>
+  <rect x="4" y="4" width="120" height="120" rx="28" fill="url(#plate)"/>
+  <g transform="translate(24 20) scale(1.5)">
+    <path d="M6 3 L6 33 L14 25 L19 37 L25 34 L20 22 L31 22 Z"
+          fill="#ffffff" stroke="#2B2118" stroke-width="3.6" stroke-linejoin="round"/>
+  </g>
+  <g fill="#8C4A18">
+    <ellipse cx="78" cy="86" rx="21" ry="17"/>
+    <circle cx="60" cy="66" r="7.5"/>
+    <circle cx="75" cy="60" r="8"/>
+    <circle cx="91" cy="63" r="7.5"/>
+    <circle cx="102" cy="75" r="6.5"/>
+  </g>
+</svg>
