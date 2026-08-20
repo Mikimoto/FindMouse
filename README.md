@@ -182,15 +182,17 @@ Scripts/appstore.sh <版本> --dry-run    # 只做不需要憑證的那半段
 為止就停，把 `altool --validate-app` 與 `--upload-app` 的確切命令印出來留給人按：
 上傳需要 App Store Connect 的 API 金鑰，而那是送出去就收不回來的動作。
 
-**還沒做完的**（都在 Apple 那邊，不在這個 repo）：App Store Connect 的 app 紀錄、
-API 金鑰、截圖與描述等素材。
+**已經有的**（2026-08-20）：App ID 與 App Store Connect 的 app 紀錄。
+**還沒做完的**（都在 Apple 那邊，不在這個 repo）：截圖、描述、關鍵字、支援與隱私政策
+網址、分級與價格——送審要的素材。API 金鑰是選配，上面第一次驗證走的是 Apple ID ＋
+app-specific password（`-u` / `-p`），`--apiKey` / `--apiIssuer` 只是另一條路。
 
 **驗到哪裡**：2026-08-20 對 `0.5.2` 跑完整條線——`Scripts/appstore.sh 0.5.2` 出的
 `.pkg` 送 `xcrun altool --validate-app`，回 `VERIFY SUCCEEDED with no errors`。所以：
 
 - `CFBundleVersion` 是 **三段**（Apple 允許 1–3 段非負整數），格式 `%Y.%m%d.%H%M`
-  ——那次是 `2026.0820.0552`。**各段的前導零 ASC 的格式檢查收**，這條原本是這條
-  通路最大的未知。
+  ——那次是 `2026.0820.0552`。**各段帶前導零，ASC 的格式檢查收**；這原本是整條通路
+  最大的未知。
 - `PrivacyInfo.xcprivacy` 帶著它通過了驗證。**這只證明它不會被拒，不證明它是必要的**
   ——macOS 到底強不強制查不到定論；內容查證過（只宣告 `UserDefaults` 一類，代碼 `CA92.1`）。
 
