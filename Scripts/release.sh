@@ -257,7 +257,8 @@ SHA="$(git rev-parse --short HEAD)"
 # 兩件講清楚免得被當成保證：這是**分鐘**解析度，同一分鐘內發兩次會拿到同一個
 # 數字（單調遞增仍成立，唯一性不成立）；而各段有前導零（`0811`），LaunchServices
 # 逐段當整數比所以排序沒問題，而 **ASC 的格式檢查收前導零**（2026-08-20 對
-# 2026.0820.0552 跑 altool --validate-app 回 SUCCEEDED，見 appstore.sh）。
+# 2026.0820.0552 跑 altool --validate-app 回 `VERIFY SUCCEEDED with no errors`，
+# 見 appstore.sh）。
 BUILD_NUMBER="$(date -u +%Y.%m%d.%H%M)"
 ok "${VERSION}（build ${BUILD_NUMBER}）@ ${SHA}"
 

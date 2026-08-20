@@ -103,7 +103,7 @@ if [[ ! -f "${PROFILE}" ]]; then
     # 兩個成因，處方完全不同，所以兩個都講：真的沒有（要去 Apple 辦），或者有但
     # 不在這個工作目錄——它是 untracked，所以 worktree 一開就沒有、一刪就沒了。
     miss "找不到描述檔 ${PROFILE}" \
-         "先找找 ~/Library/Developer/Xcode/UserData/Provisioning\\ Profiles/ 或主 checkout 有沒有現成的（它 untracked，不會跟著 worktree 走）；真的沒有才去 Apple Developer 網站 → Profiles 建一個 Mac App Store 的 Distribution 描述檔"
+         "先找找 ~/Library/Developer/Xcode/UserData/Provisioning Profiles/ 或主 checkout 有沒有現成的（它 untracked，不會跟著 worktree 走）；真的沒有才去 Apple Developer 網站 → Profiles 建一個 Mac App Store 的 Distribution 描述檔"
     MISSING=$((MISSING + 1))
 else
     # 解碼一次，下面五個欄位都從這一份讀。
@@ -352,6 +352,7 @@ cat <<EOF
      altool 會自己去那裡找，不必給路徑。
 
   4. build ${BUILD_NUMBER} 有前導零（月／日／時分那幾段）。**格式檢查驗過了**
-     （2026-08-20，0.5.2 / build 2026.0820.0552，validate 回 SUCCEEDED），還沒驗
-     的是上傳之後的 processing 會不會改寫它——第一次上傳時看一下。
+     （2026-08-20，0.5.2 / build 2026.0820.0552，validate 回
+     VERIFY SUCCEEDED with no errors），還沒驗的是上傳之後的 processing
+     會不會改寫它——第一次上傳時看一下。
 EOF
