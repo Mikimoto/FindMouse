@@ -80,16 +80,83 @@ else
     MISSING=$((MISSING + 1))
 fi
 
-if [[ -f "${PROFILE}" ]]; then
-    # 描述檔會過期，而過期的症狀是上傳被退。這裡只印它自己說的到期日，
-    # 不自己判斷——security cms 的輸出格式不是契約。
-    EXPIRY="$(security cms -D -i "${PROFILE}" 2>/dev/null \
-        | /usr/bin/plutil -extract ExpirationDate raw -o - - 2>/dev/null || echo "讀不出來")"
-    ok "描述檔：${PROFILE}（到期 ${EXPIRY}）"
-else
+if [[ ! -f "${PROFILE}" ]]; then
     miss "找不到描述檔 ${PROFILE}" \
          "Apple Developer 網站 → Profiles → 建一個 Mac App Store 的 Distribution 描述檔，下載後改名放到那個路徑（它在 .gitignore 裡，不進版控）"
     MISSING=$((MISSING + 1))
+else
+    # 解碼一次，下面五個欄位都從這一份讀。
+    PROF="$(mktemp)"
+    if ! security cms -D -i "${PROFILE}" >| "${PROF}" 2>/dev/null || [[ ! -s "${PROF}" ]]; then
+        rm -f "${PROF}"
+        miss "描述檔解不開（${PROFILE} 不是一份簽章過的 profile）" \
+             "重新下載一次。存成文字檔或下載到一半都會長這樣"
+        MISSING=$((MISSING + 1))
+    else
+        # **PlistBuddy 而不是 `plutil -extract`。** 後者把 `.` 當 keypath 分隔符，
+        # 讀不到任何 entitlement 鍵（見 CLAUDE.md）；PlistBuddy 用 `:` 分隔，
+        # 所以鍵名裡的點不會被誤讀。ExpirationDate 沒有點，那個用 plutil 沒問題
+        # 而且它給的是可以直接算的 ISO 8601。
+        pv() { /usr/libexec/PlistBuddy -c "Print :$1" "${PROF}" 2>/dev/null; }
+        P_NAME="$(pv Name)"
+        P_PLAT="$(pv 'Platform:0')"
+        P_APPID="$(pv 'Entitlements:com.apple.application-identifier')"
+        P_TEAM="$(pv 'Entitlements:com.apple.developer.team-identifier')"
+        P_EXP="$(/usr/bin/plutil -extract ExpirationDate raw -o - "${PROF}" 2>/dev/null || true)"
+        rm -f "${PROF}"
+
+        # **描述檔不會列沙盒那些 entitlement，那是正常的。**
+        # 2026-08-20 實測一份真的 Mac App Store 描述檔，`Entitlements` 只有四個鍵：
+        # application-identifier、team-identifier、keychain-access-groups，
+        # 以及 Apple 自己塞的 game-center。`com.apple.security.*` 那一族不受限、
+        # 不需要描述檔授權——所以**不要**寫成「我們的清單必須是它的子集」，
+        # 那會對正確的輸入說不。有經驗內容的不變式只有下面三個。
+        OUR_APPID="$(/usr/libexec/PlistBuddy -c 'Print :com.apple.application-identifier' \
+            "${ROOT}/Scripts/FindMouse.appstore.entitlements" 2>/dev/null || true)"
+        OUR_TEAM="$(/usr/libexec/PlistBuddy -c 'Print :com.apple.developer.team-identifier' \
+            "${ROOT}/Scripts/FindMouse.appstore.entitlements" 2>/dev/null || true)"
+        PROF_BAD=0
+        [[ "${P_PLAT}" == OSX ]] || {
+            miss "描述檔的平台是「${P_PLAT}」不是 OSX" \
+                 "建的時候平台要選 macOS（fastlane 的旗標是 --platform macos，注意 produce 那支要的是 osx）"
+            PROF_BAD=1
+        }
+        [[ -n "${OUR_APPID}" && "${P_APPID}" == "${OUR_APPID}" ]] || {
+            miss "描述檔授權的 application-identifier 是「${P_APPID}」，而 Scripts/FindMouse.appstore.entitlements 寫的是「${OUR_APPID}」" \
+                 "兩邊要一字不差。不符的話簽得過、本機跑得動，上傳才被退"
+            PROF_BAD=1
+        }
+        [[ -n "${OUR_TEAM}" && "${P_TEAM}" == "${OUR_TEAM}" ]] || {
+            miss "描述檔的 team-identifier 是「${P_TEAM}」，而清單寫的是「${OUR_TEAM}」" \
+                 "兩邊要一致"
+            PROF_BAD=1
+        }
+
+        # 到期。過期的描述檔**簽得過**，只有上傳會被退——所以這裡是唯一會出聲的地方。
+        # `plutil -extract raw` 給的是 ISO 8601 UTC（實測 `2027-04-06T17:12:11Z`），
+        # 而 `date -j -f` 對爛字串回非零，所以算不出來時走的是「不知道」那條而不是
+        # 「沒過期」。
+        EXP_EPOCH="$(TZ=UTC date -j -f "%Y-%m-%dT%H:%M:%SZ" "${P_EXP}" +%s 2>/dev/null || true)"
+        if [[ -z "${EXP_EPOCH}" ]]; then
+            miss "讀不出描述檔的到期日（拿到「${P_EXP}」）" "重新下載一次"
+            PROF_BAD=1
+        else
+            DAYS_LEFT=$(( (EXP_EPOCH - $(date +%s)) / 86400 ))
+            if [[ "${DAYS_LEFT}" -le 0 ]]; then
+                miss "描述檔已經過期（${P_EXP}）" "重新產一份"
+                PROF_BAD=1
+            elif [[ "${DAYS_LEFT}" -lt 30 ]]; then
+                printf '  \033[33m!\033[0m 描述檔還有 %d 天到期（%s），發版前先換一份\n' \
+                    "${DAYS_LEFT}" "${P_EXP}"
+            fi
+        fi
+
+        if [[ "${PROF_BAD}" -eq 0 ]]; then
+            ok "描述檔：${P_NAME}（OSX、${DAYS_LEFT} 天後到期、兩個身分鍵與清單相符）"
+        else
+            MISSING=$((MISSING + 1))
+        fi
+    fi
 fi
 
 if [[ "${MODE}" == check ]]; then
