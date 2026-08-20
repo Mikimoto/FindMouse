@@ -97,7 +97,16 @@ else
         # 讀不到任何 entitlement 鍵（見 CLAUDE.md）；PlistBuddy 用 `:` 分隔，
         # 所以鍵名裡的點不會被誤讀。ExpirationDate 沒有點，那個用 plutil 沒問題
         # 而且它給的是可以直接算的 ISO 8601。
-        pv() { /usr/libexec/PlistBuddy -c "Print :$1" "${PROF}" 2>/dev/null; }
+        # **讀不到要回空字串，而且不能讓整支腳本死掉。** 兩個坑疊在一起：
+        # `set -e` 下 `X="$(pv ...)"` 只要 pv 回非零就中止整支（實測 exit 1、
+        # 下一行完全沒執行），那正好違背這一段「一次列完全部缺的」的設計；
+        # 而光加 `|| true` 不夠——PlistBuddy 把「Does Not Exist」印到**stdout**，
+        # 於是變數會裝著一句錯誤訊息而不是空字串，下面的比對訊息就變成一堆亂碼。
+        pv() {
+            local v
+            v="$(/usr/libexec/PlistBuddy -c "Print :$1" "${PROF}" 2>/dev/null)" || v=""
+            printf '%s' "${v}"
+        }
         P_NAME="$(pv Name)"
         P_PLAT="$(pv 'Platform:0')"
         P_APPID="$(pv 'Entitlements:com.apple.application-identifier')"

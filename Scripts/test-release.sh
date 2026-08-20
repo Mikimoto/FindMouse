@@ -392,9 +392,13 @@ step "9. 兩支腳本對隱私宣告清單講的是同一個路徑"
 #
 # 後者沒有任何其他東西會發現：執行、簽章、notarize、Homebrew 那條通路全部不受
 # 影響，只有上傳 App Store 時才知道。所以這裡比對兩邊的字面值。
+# **`-F`（fixed string）不是可選的。** 這個路徑裡有兩個 `.`，而預設的 regex 模式
+# 讓它們匹配任意字元——實測 `Contents/Resources/PrivacyInfoXxcprivacy` 也會被算進去
+# （regex 模式回 1、`-F` 回 0）。也就是說一個**寫錯的**路徑會讓這條守衛照樣說 yes，
+# 而它存在的全部理由就是抓寫錯的路徑。
 PRIV_PATH="Contents/Resources/PrivacyInfo.xcprivacy"
-MK_N="$(grep -c "${PRIV_PATH}" "${ROOT}/Scripts/make-app.sh" || true)"
-RL_N="$(grep -c "${PRIV_PATH}" "${ROOT}/Scripts/release.sh" || true)"
+MK_N="$(grep -cF "${PRIV_PATH}" "${ROOT}/Scripts/make-app.sh" || true)"
+RL_N="$(grep -cF "${PRIV_PATH}" "${ROOT}/Scripts/release.sh" || true)"
 if [[ "${MK_N}" -ge 1 && "${RL_N}" -ge 1 ]]; then
     ok "make-app.sh（${MK_N} 處）與 release.sh（${RL_N} 處）用的是同一個路徑"
 else
