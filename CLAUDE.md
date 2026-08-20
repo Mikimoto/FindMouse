@@ -160,14 +160,11 @@
   ——`zap` 的路徑是絕對路徑，會刪掉使用者真正的圖組與設定，而 `brew uninstall`
   **沒有 `--dry-run`** 可以先看（實測回 `Error: invalid option`）。
   要移除就用不帶 `--zap` 的版本。
-  （**v0.5.1 起那份清單過時了，而且不是往安全的方向過時**：cask 寫的還是
-  `~/Library/Application Support/FindMouse` 與
-  `~/Library/Preferences/tw.com.deepthought.findmouse.plist`，而沙盒之後新的家在
-  `~/Library/Containers/tw.com.deepthought.findmouse`。關鍵是**舊位置沒有變空**
-  ——搬移是複製、刻意不刪原檔（README〈從 v0.5.0 以前升級上來〉就是這樣寫給使用者
-  的），而還沒按過「搬過來…」的人整批圖組都還在那裡。所以現在跑 `--zap` 會刪掉
-  搬移功能存在要救的那一批，同時漏掉容器裡的新家：兩頭都錯。發 v0.5.1 時要一起
-  改 tap 把兩個位置都列上，見 README〈自己發一份〉。）
+  （那份 `zap` 清單在 v0.5.1 那一輪補齊了**三條**——容器、舊的
+  `Application Support/FindMouse`、舊的 plist。**三條都要列，理由不對稱**：搬移是
+  複製、刻意不刪原檔（README〈從 v0.5.0 以前升級上來〉就是這樣寫給使用者的），所以
+  只列新家會留下舊的、只列舊的會刪掉搬移功能存在要救的那一批又漏掉新家。理由寫在
+  cask 那個區塊上面，改它之前先讀。）
 - **`findmouse pack validate` 走 socket，App 必須在跑。** CLI 是薄用戶端，
   App 沒跑會回 `APP_NOT_RUNNING`（exit 3），那不是 pack 有問題。
 - **`ditto -x -k` 會把 zip 裡的 `../x` 攤平到目標根目錄，不是拒絕它**
