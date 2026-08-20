@@ -160,14 +160,11 @@
   ——`zap` 的路徑是絕對路徑，會刪掉使用者真正的圖組與設定，而 `brew uninstall`
   **沒有 `--dry-run`** 可以先看（實測回 `Error: invalid option`）。
   要移除就用不帶 `--zap` 的版本。
-  （**v0.5.1 起那份清單過時了，而且不是往安全的方向過時**：cask 寫的還是
-  `~/Library/Application Support/FindMouse` 與
-  `~/Library/Preferences/tw.com.deepthought.findmouse.plist`，而沙盒之後新的家在
-  `~/Library/Containers/tw.com.deepthought.findmouse`。關鍵是**舊位置沒有變空**
-  ——搬移是複製、刻意不刪原檔（README〈從 v0.5.0 以前升級上來〉就是這樣寫給使用者
-  的），而還沒按過「搬過來…」的人整批圖組都還在那裡。所以現在跑 `--zap` 會刪掉
-  搬移功能存在要救的那一批，同時漏掉容器裡的新家：兩頭都錯。發 v0.5.1 時要一起
-  改 tap 把兩個位置都列上，見 README〈自己發一份〉。）
+  （那份 `zap` 清單在 v0.5.1 那一輪補齊了**三條**——容器、舊的
+  `Application Support/FindMouse`、舊的 plist。**三條都要列，理由不對稱**：搬移是
+  複製、刻意不刪原檔（README〈從 v0.5.0 以前升級上來，圖組不見了〉就是這樣寫給使用者的），所以
+  只列新家會留下舊的、只列舊的會刪掉搬移功能存在要救的那一批又漏掉新家。理由寫在
+  cask 那個區塊上面，改它之前先讀。）
 - **`findmouse pack validate` 走 socket，App 必須在跑。** CLI 是薄用戶端，
   App 沒跑會回 `APP_NOT_RUNNING`（exit 3），那不是 pack 有問題。
 - **`ditto -x -k` 會把 zip 裡的 `../x` 攤平到目標根目錄，不是拒絕它**
@@ -297,8 +294,20 @@
   `altool --validate-app`。共用的是 `make-app.sh`——兩條通路出貨的必須是同一個 App。
 
   `Scripts/appstore.sh --check` 只印前置條件、什麼都不做。2026-08-20 的狀態是
-  **只缺 Mac App Store 的 Distribution 描述檔**（放 `Scripts/embedded.provisionprofile`，
-  在 .gitignore 裡）；兩張憑證本機都有。
+  **前置條件都到齊了**（兩張憑證、Mac App Store 的 Distribution 描述檔），而且整條線
+  實走過一次：`appstore.sh 0.5.2` 出的 `.pkg` 送 `altool --validate-app` 回
+  `VERIFY SUCCEEDED with no errors`。順帶回答了兩個掛很久的前提——**build number 的
+  前導零 ASC 收**（`2026.0820.0552`），而 `PrivacyInfo.xcprivacy` 帶著它通過驗證
+  （只證明不會被拒，不證明必要）。**validate 不等於 upload**：processing 與審查都還沒碰。
+
+  **那份描述檔在 `.gitignore` 裡，所以它會跟著 worktree 一起消失。**
+  `Scripts/embedded.provisionprofile` 是 untracked，而 `git worktree remove` 不留情
+  ——`git-flow:finish` 的收尾那一步就刪掉過一次。救援來源是 Xcode 自己的快取：
+  `~/Library/Developer/Xcode/UserData/Provisioning Profiles/`，挑名字是
+  `tw.com.deepthought.findmouse AppStore` 的那一份（`security cms -D -i <檔> -o <暫存>`
+  再 `PlistBuddy -c 'Print :Name' <暫存>`——**`-o` 是必要的**，PlistBuddy 讀不了
+  `/dev/stdin`）。實測那份與 repo 裡的逐位元組相同。所以要放就放在**主 checkout**，
+  用的時候複製進 worktree，不要在 worktree 裡生一份。
 
   **內嵌描述檔要排在 codesign 之前**，理由與圖示同一個（簽章封印整個 `Contents`），
   而錯誤訊息同樣一個字都不提描述檔。
