@@ -183,19 +183,26 @@ ok "已簽 ${IDENTITY_APP}"
 # InfoPlistTests 釘住，這裡要答的是另一個問題：實際封進簽章的是什麼。
 # 兩者會不一樣——`--entitlements` 哪天被拿掉，檔案照樣完好而簽章裡什麼都沒有。
 say "5 驗簽章"
+# **用 PlistBuddy 不用 `plutil -extract`。** entitlement 的鍵名全是點分隔的，
+# 而 `plutil -extract` 把點當 keypath 分隔符——`plutil -extract
+# com.apple.security.app-sandbox` 對一份**確實含有那個鍵**的 plist 回
+# 「No value at that key path」並 exit 1（2026-08-20 實測）。兩個後果，第二個更糟：
+# 四個鍵的迴圈會在第一個就假性 die 擋掉每一次上架建置；而 get-task-allow 那條
+# 變成**恆真句**——它會在那個鍵真的存在時照樣通過，也就是完全不守。
+# PlistBuddy 對同一份輸入回 `true` / exit 0，不存在的鍵 exit 1。
 SIGNED_ENT="$(mktemp)"
-codesign -d --entitlements - --xml "${APP}" 2>/dev/null > "${SIGNED_ENT}" || true
+codesign -d --entitlements - --xml "${APP}" 2>/dev/null >| "${SIGNED_ENT}" || true
 for key in com.apple.security.app-sandbox \
            com.apple.security.files.user-selected.read-only \
            com.apple.application-identifier \
            com.apple.developer.team-identifier; do
-    /usr/bin/plutil -extract "${key}" raw -o - "${SIGNED_ENT}" >/dev/null 2>&1 \
+    /usr/libexec/PlistBuddy -c "Print :${key}" "${SIGNED_ENT}" >/dev/null 2>&1 \
         || { rm -f "${SIGNED_ENT}"; die "簽出來的 entitlements 沒有 ${key}。上傳會被退，而 App 在本機執行完全正常。"; }
 done
 # get-task-allow 讓別的 process 附加 debugger。**帶著它上傳一定被退**，
 # 而本機執行看不出任何差別。這裡驗的是簽章而不是檔案，所以它也涵蓋
 # 「從別處被合成進來」那種情況。
-if /usr/bin/plutil -extract com.apple.security.get-task-allow raw -o - "${SIGNED_ENT}" >/dev/null 2>&1; then
+if /usr/libexec/PlistBuddy -c 'Print :com.apple.security.get-task-allow' "${SIGNED_ENT}" >/dev/null 2>&1; then
     rm -f "${SIGNED_ENT}"
     die "簽出來的 entitlements 含 get-task-allow，帶著它上傳一定被退。"
 fi
