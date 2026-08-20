@@ -15,8 +15,8 @@
   1. com.apple.application-identifier = <TeamID>.<bundle id>
   2. com.apple.developer.team-identifier = <TeamID>
 
-  用 Xcode 建置時這兩個是它從描述檔自動合成進去的；手動 `codesign --entitlements`
-  沒有那個步驟，所以要自己寫。TeamID 取自簽章身分本身
+  用 Xcode 建置時這兩個是它從描述檔自動合成進去的；手動簽章（把清單交給 codesign
+  的 entitlements 旗標）沒有那個步驟，所以要自己寫。TeamID 取自簽章身分本身
   （`Apple Distribution: DeepThought Co., Ltd. (JA387Z4D7Q)`），不是秘密——
   它印在每一個簽過章的執行檔裡。
 
@@ -24,6 +24,12 @@
   鍵的內容與描述檔相符、上傳不被退」這件事本專案**一次都沒有驗過**。
   `Scripts/appstore.sh` 會在簽章後斷言簽出來的結果含這四個鍵、且沒有
   `get-task-allow`，那是本機驗得到的部分；剩下的要等第一次上傳。
+
+  **註解裡不要出現 ASCII 的兩個連字號。** XML 註解不允許它，而 `plutil -lint`
+  **不會抓**（實測回 OK），`xmllint` 與 codesign 的 AMFI 解析器才會——症狀是簽章
+  當場失敗、訊息是 `AMFIUnserializeXML: syntax error near line N`，一個字都不提
+  註解。這一段本來寫了「codesign 加兩個連字號 entitlements」而踩到。
+  `InfoPlistTests.entitlementsFilesHaveNoDoubleHyphenInsideComments` 釘住它。
 
   刻意**沒有**的東西：
 

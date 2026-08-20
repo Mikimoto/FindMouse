@@ -147,6 +147,49 @@ private func infoPlist() throws -> [String: Any] {
             "application-identifier 應該是 <TeamID>.<bundle id>，實際是「\(appID)」")
 }
 
+/// `Scripts/` 底下每一份 XML plist 的註解裡都不能有 ASCII 的兩個連字號。
+///
+/// **為什麼需要一條測試**：XML 註解不允許它，而 `plutil -lint` **不會抓**（實測回
+/// OK）。抓得到的是 `xmllint` 與 codesign 的 AMFI 解析器，而後者是在 `release.sh`
+/// 或 `appstore.sh` 跑到簽章那一步才炸，訊息是
+/// `AMFIUnserializeXML: syntax error near line N`——一個字都不提註解。
+///
+/// 這個 repo 的 plist 註解都很長而且會提到命令列旗標，所以踩到的機率不低：
+/// 2026-08-20 寫 App Store 那份 entitlements 時就是這樣炸的，而 `plutil -lint`
+/// 在它前面說 OK。
+///
+/// 只掃註解內文，不掃整個檔案：`<!--` 與 `-->` 自己就含兩個連字號。
+@Test func entitlementsFilesHaveNoDoubleHyphenInsideComments() throws {
+    let scripts = repoRoot().appendingPathComponent("Scripts")
+    let names = try FileManager.default.contentsOfDirectory(atPath: scripts.path)
+        .filter { $0.hasSuffix(".entitlements") || $0.hasSuffix(".plist") || $0.hasSuffix(".xcprivacy") }
+        .sorted()
+    // 沒有這一行，整條測試在「路徑算錯」時會空洞地通過。
+    #expect(names.count >= 4, "只掃到 \(names.count) 個檔案（\(names)），路徑可能算錯了")
+
+    for name in names {
+        let text = try String(contentsOf: scripts.appendingPathComponent(name), encoding: .utf8)
+        var rest = Substring(text)
+        while let open = rest.range(of: "<!--") {
+            rest = rest[open.upperBound...]
+            guard let close = rest.range(of: "-->") else {
+                Issue.record("\(name) 有一個沒收尾的 XML 註解")
+                break
+            }
+            let body = rest[..<close.lowerBound]
+            if let bad = body.range(of: "--") {
+                let line = text[..<bad.lowerBound].filter { $0 == "\n" }.count + 1
+                Issue.record("""
+                    \(name) 第 \(line) 行附近的註解內文含 ASCII 的兩個連字號。\
+                    XML 不允許，而 plutil -lint 不會抓——codesign 會在簽章那一步炸，\
+                    訊息是 AMFIUnserializeXML syntax error，不提註解。改寫那句話。
+                    """)
+            }
+            rest = rest[close.upperBound...]
+        }
+    }
+}
+
 /// 圖示的宣告面。
 ///
 /// **這一條只驗宣告，不驗建置**——單元測試跑不到 `make-app.sh`。把兩個半邊釘在
