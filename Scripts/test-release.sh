@@ -149,8 +149,13 @@ done < <(awk '/^verify_dmg\(\)/,/^}/' "${ROOT}/Scripts/release.sh" \
 # stapler 回 65。
 TMP="$(mktemp -d)"
 BAD_DMG="${TMP}/unsigned.dmg"
+# 輸出留著，不要丟進 /dev/null。2026-08-20 這一步失敗過一次（同樣的輸入前後各兩次
+# 都成功，所以是一次性的），而當時的訊息只有「造不出測試用的 dmg」——**一次性失敗
+# 與真的壞掉長得一模一樣**，得從頭自己查磁碟空間、掛載數、目錄狀態。把 hdiutil
+# 自己的話帶進訊息裡，下一個人就不必重來一遍。
+HDI_LOG="${TMP}/hdiutil.log"
 if hdiutil create -volname "FindMouse bad" -srcfolder "${ROOT}/build/release" \
-        -ov -format UDZO "${BAD_DMG}" >/dev/null 2>&1; then
+        -ov -format UDZO "${BAD_DMG}" >| "${HDI_LOG}" 2>&1; then
     OUT="$(Scripts/release.sh --verify-only "${BAD_DMG}" 2>&1)"; CODE=$?
     if [[ "${CODE}" -ne 0 ]]; then
         ok "沒簽的 dmg 被擋下（exit=${CODE}）"
@@ -198,7 +203,7 @@ if hdiutil create -volname "FindMouse bad" -srcfolder "${ROOT}/build/release" \
         && ok "${#LABELS[@]} 條驗收各自報紅該有的次數（原檔一輪＋加隔離屬性一輪，巢狀那條 ×${NESTED_BUNDLES} 個 bundle）" \
         || bad "有驗收沒跑到或次數不對：${MISSING}"
 else
-    bad "造不出測試用的 dmg"
+    bad "造不出測試用的 dmg（hdiutil 說：$(tail -3 "${HDI_LOG}" 2>/dev/null | tr '\n' ' ')）"
 fi
 rm -rf "${TMP}"
 
