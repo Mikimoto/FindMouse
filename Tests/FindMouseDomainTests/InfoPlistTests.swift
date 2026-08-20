@@ -279,9 +279,15 @@ private func privacyManifest() throws -> [String: Any] {
     #expect(declared == ["NSPrivacyAccessedAPICategoryUserDefaults"],
             "宣告的 API 類別變了，每一類都要說得出哪一行程式碼用到它：\(declared.sorted())")
 
-    let userDefaults = try #require(types.first {
+    // **先 filter 再斷言恰好一筆，不要 `first`。** 上面比的是 `Set`，而 Set 會把
+    // 重複的類別摺疊掉——同一個類別宣告兩次（其中一筆 reasons 錯或漏）時
+    // `declared` 仍然只有一個元素，而 `first` 剛好挑到對的那筆，整條就假性通過。
+    let userDefaultsEntries = types.filter {
         $0["NSPrivacyAccessedAPIType"] as? String == "NSPrivacyAccessedAPICategoryUserDefaults"
-    })
+    }
+    #expect(userDefaultsEntries.count == 1,
+            "UserDefaults 那個類別宣告了 \(userDefaultsEntries.count) 次，應該恰好一次")
+    let userDefaults = try #require(userDefaultsEntries.first)
     // CA92.1 = Access info from same app。另外三個 User Defaults 代碼都不是我們：
     // 1C8F.1 是 App Group、AC6B.1 是受管理設定、C56D.1 是第三方 SDK。四個長得很像，
     // 寫錯的後果是上傳被退而本機全綠，所以這裡把值釘死。
