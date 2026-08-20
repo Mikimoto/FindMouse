@@ -132,9 +132,18 @@ private func infoPlist() throws -> [String: Any] {
 
     // 共用的鍵要逐一相等。只比 key 的集合不夠——把 app-sandbox 在 App Store 那份
     // 改成 <false/> 會全綠，而那是兩條通路沙盒姿態分岔最嚴重的形狀。
+    //
+    // **比 `NSObject` 不比 `as? Bool`。** 這個 repo 已經被同一個形狀咬過一次：
+    // 上面那條測試原本寫 `filter { ($0.value as? Bool) == true }`，於是值不是布林的
+    // entitlement 完全隱形（2026-08-19 用陣列值的 temporary-exception 突變實測全綠）。
+    // 這裡若寫 `as? Bool`，兩邊的陣列或字串值都會轉成 nil 而「相等」，那條
+    // `keychain-access-groups` 之類的差異就漏掉了。plist 的值橋接到 NSObject 之後
+    // `==` 走 `isEqual`，數字、字串、陣列、字典都按值比。
     for key in dev.keys {
-        #expect((dev[key] as? Bool) == (store[key] as? Bool),
-                "\(key) 在兩份清單裡的值不一樣")
+        let devValue = dev[key] as? NSObject
+        let storeValue = store[key] as? NSObject
+        #expect(devValue != nil && devValue == storeValue,
+                "\(key) 在兩份清單裡的值不一樣：\(dev[key] ?? "（無）") vs \(store[key] ?? "（無）")")
     }
 
     #expect(store["com.apple.security.get-task-allow"] == nil,
@@ -147,7 +156,8 @@ private func infoPlist() throws -> [String: Any] {
             "application-identifier 應該是 <TeamID>.<bundle id>，實際是「\(appID)」")
 }
 
-/// `Scripts/` 底下每一份 XML plist 的註解裡都不能有 ASCII 的兩個連字號。
+/// `Scripts/` 底下每一份 XML plist（`.plist` / `.entitlements` / `.xcprivacy`）的
+/// 註解裡都不能有 ASCII 的兩個連字號。
 ///
 /// **為什麼需要一條測試**：XML 註解不允許它，而 `plutil -lint` **不會抓**（實測回
 /// OK）。抓得到的是 `xmllint` 與 codesign 的 AMFI 解析器，而後者是在 `release.sh`
@@ -159,7 +169,7 @@ private func infoPlist() throws -> [String: Any] {
 /// 在它前面說 OK。
 ///
 /// 只掃註解內文，不掃整個檔案：`<!--` 與 `-->` 自己就含兩個連字號。
-@Test func entitlementsFilesHaveNoDoubleHyphenInsideComments() throws {
+@Test func noPlistCommentUnderScriptsHasADoubleHyphen() throws {
     let scripts = repoRoot().appendingPathComponent("Scripts")
     let names = try FileManager.default.contentsOfDirectory(atPath: scripts.path)
         .filter { $0.hasSuffix(".entitlements") || $0.hasSuffix(".plist") || $0.hasSuffix(".xcprivacy") }

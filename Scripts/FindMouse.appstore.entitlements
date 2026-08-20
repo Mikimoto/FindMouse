@@ -32,7 +32,7 @@
   **不會抓**（實測回 OK），`xmllint` 與 codesign 的 AMFI 解析器才會——症狀是簽章
   當場失敗、訊息是 `AMFIUnserializeXML: syntax error near line N`，一個字都不提
   註解。這一段本來寫了「codesign 加兩個連字號 entitlements」而踩到。
-  `InfoPlistTests.entitlementsFilesHaveNoDoubleHyphenInsideComments` 釘住它。
+  `InfoPlistTests.noPlistCommentUnderScriptsHasADoubleHyphen` 釘住它。
 
   刻意**沒有**的東西：
 
