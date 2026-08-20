@@ -78,14 +78,23 @@ fi
 
 # Installer 憑證用前綴比對：名稱裡的公司名與 TeamID 由 Apple 決定，寫死完整字串
 # 會在名稱有一點不同時報「找不到」，而那個訊息會把人指去辦一張他已經有的憑證。
-PKG_IDENTITY="$(security find-identity -v 2>/dev/null \
-    | grep -F "${IDENTITY_PKG_PREFIX}" \
-    | head -1 \
+# **也要比對 TeamID。** 只用前綴挑第一張的話，keychain 裡若同時有別的 team 的
+# Installer 憑證就可能挑錯——而 productbuild 與 pkgutil 都會照樣說成功，
+# 要到上傳才因為 team 不符被退。這正是這支腳本想擋的形狀。
+PKG_MATCHES="$(security find-identity -v 2>/dev/null \
+    | grep -F "${IDENTITY_PKG_PREFIX}" | grep -F "(${TEAM_ID})" || true)"
+PKG_IDENTITY="$(printf '%s\n' "${PKG_MATCHES}" | grep . | head -1 \
     | sed -E 's/^[[:space:]]*[0-9]+\)[[:space:]]+[0-9A-F]+[[:space:]]+"(.*)"$/\1/' || true)"
+PKG_COUNT="$(printf '%s\n' "${PKG_MATCHES}" | grep -c . || true)"
 if [[ -n "${PKG_IDENTITY}" ]]; then
-    ok "pkg 簽章身分：${PKG_IDENTITY}"
+    # 多於一張時仍然往下走（挑第一張），但要講出來——同一個 team 有兩張通常是
+    # 舊的還沒清掉，而挑到過期那張的症狀一樣是「本機成功、上傳被退」。
+    [[ "${PKG_COUNT}" -eq 1 ]] \
+        && ok "pkg 簽章身分：${PKG_IDENTITY}" \
+        || printf '  \033[33m!\033[0m %s（team %s 底下有 %s 張，用第一張；舊的建議清掉）\n' \
+               "${PKG_IDENTITY}" "${TEAM_ID}" "${PKG_COUNT}"
 else
-    miss "找不到「${IDENTITY_PKG_PREFIX}」開頭的憑證（.pkg 簽不了）" \
+    miss "找不到「${IDENTITY_PKG_PREFIX}」開頭、且屬於 team ${TEAM_ID} 的憑證（.pkg 簽不了）" \
          "Apple Developer 網站 → Certificates → Mac Installer Distribution。它與 Apple Distribution 是不同的兩張"
     MISSING=$((MISSING + 1))
 fi

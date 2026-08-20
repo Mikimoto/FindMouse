@@ -407,8 +407,12 @@ fi
 
 # 而且組出來的那份 .app 真的有它。空洞地比對兩個字串是不夠的——兩邊可以一起
 # 寫錯，那時 grep 依然相等。
+# **陳舊的產物要先重建再判定。** 這支只在目錄不存在時才建，所以一份**舊的**
+# build/FindMouse.app（例如上一次 make-app.sh 停在某個守衛之前留下的半成品）
+# 會讓下面那條報一個與 diff 完全無關的紅。條件因此看的是**那個檔案**在不在，
+# 不是目錄在不在；缺了就先重建一次，重建完仍然缺才是真的紅。
 DEV_APP_P9="${ROOT}/build/FindMouse.app"
-[[ -d "${DEV_APP_P9}" ]] || Scripts/make-app.sh >/dev/null 2>&1 || true
+[[ -f "${DEV_APP_P9}/${PRIV_PATH}" ]] || Scripts/make-app.sh >/dev/null 2>&1 || true
 if [[ -f "${DEV_APP_P9}/${PRIV_PATH}" ]]; then
     ok "組出來的 .app 在那個路徑上真的有一份（$(/usr/bin/stat -f%z "${DEV_APP_P9}/${PRIV_PATH}") bytes）"
 else
