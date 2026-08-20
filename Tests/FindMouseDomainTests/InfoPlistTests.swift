@@ -222,9 +222,18 @@ private func infoPlist() throws -> [String: Any] {
 @Test func theAppStoreCategoryIsDeclared() throws {
     let category = try #require(try infoPlist()["LSApplicationCategoryType"] as? String,
                                 "沒有 LSApplicationCategoryType，App Store 上架必填")
-    #expect(category.hasPrefix("public.app-category."),
-            "類別必須是 public.app-category.* 那份封閉清單裡的值，實際是「\(category)」")
-    #expect(category != "public.app-category.", "前綴後面是空的")
+    // 收斂到那份清單實際的形狀，而不是只檢查前綴。2026-08-20 把 45 個合法值全部
+    // 抽出來量過：**尾段一律符合 `[a-z0-9-]+`**——沒有第二個點、沒有大寫、沒有底線
+    // （最短 `news`、最長 `magazines-and-newspapers`）。所以這個形狀不會拒絕任何
+    // 合法值，而它擋得住多一個點、夾空白、大小寫混用這幾種打錯字的形狀。
+    //
+    // **它擋不住的**：一個形狀正確但不存在的類別（`public.app-category.utilties`
+    // 那種）。要擋那個只能把 45 個字串抄進來，而那份清單住在 Xcode 的
+    // `DVTCorePlistStructDefs` 裡、會隨 Xcode 版本變——抄過來就是第二份會漂掉的
+    // 真實來源。這一層做到形狀，剩下的由 App Store Connect 退件時告知。
+    #expect(category.range(of: "^public\\.app-category\\.[a-z0-9-]+$",
+                           options: .regularExpression) != nil,
+            "類別的形狀不對（要 public.app-category.<小寫英數與連字號>），實際是「\(category)」")
 }
 
 private func repoRoot() -> URL {
