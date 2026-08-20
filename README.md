@@ -135,12 +135,10 @@ git push origin dev:main
 「使用者從網路下載會不會被擋」的方式。任一條紅，整個發布視為失敗。它打的 tag 指向
 **被建置的那個 commit** 而不是當下的 HEAD（notarize 要等 Apple，那段窗口裡 HEAD 會動）。
 
-**v0.5.1 的 step 4 還要改一樣東西**：cask 的 `zap trash:` 目前列的是
-`~/Library/Application Support/FindMouse`，而沙盒化之後使用者的圖組與設定都住在
-`~/Library/Containers/tw.com.deepthought.findmouse`。兩個都要列——舊位置對
-「從 v0.5.0 以前升上來、但沒按過設定裡那個『搬過來…』」的人仍然有東西。
-沒改的話 `--zap` 兩頭都錯：它會刪掉舊位置那批**還沒搬過來的圖組**（搬移是複製，
-刻意不刪原檔），同時完全漏掉容器裡的新家。
+**step 4 動 `zap trash:` 之前先讀 cask 裡那段註解。** 那份清單是**三條**（容器、
+舊的 `Application Support/FindMouse`、舊的 plist），v0.5.1 那一輪補齊的，而三條的
+理由不對稱：搬移是複製、刻意不刪原檔（見下面〈從 v0.5.0 以前升級上來，圖組不見了〉），所以
+只列新家會留下舊的，只列舊的會刪掉搬移功能存在要救的那一批又漏掉新家。
 
 ### 發到 Mac App Store
 
