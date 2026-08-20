@@ -189,8 +189,11 @@ API 金鑰、截圖與描述等素材。
 
 **兩件還沒驗過的前提**，第一次上傳時要特別看：
 
-- `CFBundleVersion` 用的是 `YYYY.MMDD.HHMM`，各段有前導零。LaunchServices 逐段當
-  整數比所以排序沒問題，但 **App Store Connect 收不收前導零本專案沒驗過**。
+- `CFBundleVersion` 是 **三段**（Apple 允許 1–3 段非負整數），格式 `%Y.%m%d.%H%M`
+  ——例如 `2026.0820.0313`，也就是 `2026` / `0820` / `0313`。段數沒問題，
+  **沒驗過的是前導零**：`0820` 當整數是 820，LaunchServices 逐段當整數比所以本機
+  排序正確，但 **App Store Connect 收不收本專案沒驗過**。第一次上傳時看一下那個
+  數字有沒有被改寫或退回。
 - macOS 到底強不強制 `PrivacyInfo.xcprivacy`，查不到定論。放著是無害的，內容也
   查證過（只宣告 `UserDefaults` 一類，代碼 `CA92.1`），但它不是一個「有驗過」的必要條件。
 
