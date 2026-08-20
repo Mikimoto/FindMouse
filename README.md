@@ -187,15 +187,18 @@ Scripts/appstore.sh <版本> --dry-run    # 只做不需要憑證的那半段
 **還沒做完的**（都在 Apple 那邊，不在這個 repo）：App Store Connect 的 app 紀錄、
 API 金鑰、截圖與描述等素材。
 
-**兩件還沒驗過的前提**，第一次上傳時要特別看：
+**驗到哪裡**：2026-08-20 對 `0.5.2` 跑完整條線——`Scripts/appstore.sh 0.5.2` 出的
+`.pkg` 送 `xcrun altool --validate-app`，回 `VERIFY SUCCEEDED with no errors`。所以：
 
 - `CFBundleVersion` 是 **三段**（Apple 允許 1–3 段非負整數），格式 `%Y.%m%d.%H%M`
-  ——例如 `2026.0820.0313`，也就是 `2026` / `0820` / `0313`。段數沒問題，
-  **沒驗過的是前導零**：`0820` 當整數是 820，LaunchServices 逐段當整數比所以本機
-  排序正確，但 **App Store Connect 收不收本專案沒驗過**。第一次上傳時看一下那個
-  數字有沒有被改寫或退回。
-- macOS 到底強不強制 `PrivacyInfo.xcprivacy`，查不到定論。放著是無害的，內容也
-  查證過（只宣告 `UserDefaults` 一類，代碼 `CA92.1`），但它不是一個「有驗過」的必要條件。
+  ——那次是 `2026.0820.0552`。**各段的前導零 ASC 的格式檢查收**，這條原本是這條
+  通路最大的未知。
+- `PrivacyInfo.xcprivacy` 帶著它通過了驗證。**這只證明它不會被拒，不證明它是必要的**
+  ——macOS 到底強不強制查不到定論；內容查證過（只宣告 `UserDefaults` 一類，代碼 `CA92.1`）。
+
+**但 validate 不等於 upload。** `--validate-app` 跑的是格式檢查，上傳之後還有
+processing 階段，審查更是另一回事。所以第一次真的 `--upload-app` 時還是要看那個 build
+數字有沒有被改寫或退回。
 
 順帶一件會影響使用者的事：**兩條通路共用同一個 bundle id，也就是同一個
 `/Applications/FindMouse.app` 路徑**。設定與圖組因此會延續，但兩邊不能並存——

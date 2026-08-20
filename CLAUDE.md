@@ -297,8 +297,20 @@
   `altool --validate-app`。共用的是 `make-app.sh`——兩條通路出貨的必須是同一個 App。
 
   `Scripts/appstore.sh --check` 只印前置條件、什麼都不做。2026-08-20 的狀態是
-  **只缺 Mac App Store 的 Distribution 描述檔**（放 `Scripts/embedded.provisionprofile`，
-  在 .gitignore 裡）；兩張憑證本機都有。
+  **前置條件都到齊了**（兩張憑證、Mac App Store 的 Distribution 描述檔），而且整條線
+  實走過一次：`appstore.sh 0.5.2` 出的 `.pkg` 送 `altool --validate-app` 回
+  `VERIFY SUCCEEDED with no errors`。順帶回答了兩個掛很久的前提——**build number 的
+  前導零 ASC 收**（`2026.0820.0552`），而 `PrivacyInfo.xcprivacy` 帶著它通過驗證
+  （只證明不會被拒，不證明必要）。**validate 不等於 upload**：processing 與審查都還沒碰。
+
+  **那份描述檔在 `.gitignore` 裡，所以它會跟著 worktree 一起消失。**
+  `Scripts/embedded.provisionprofile` 是 untracked，而 `git worktree remove` 不留情
+  ——`git-flow:finish` 的收尾那一步就刪掉過一次。救援來源是 Xcode 自己的快取：
+  `~/Library/Developer/Xcode/UserData/Provisioning Profiles/`，挑名字是
+  `tw.com.deepthought.findmouse AppStore` 的那一份（`security cms -D -i <檔> -o <暫存>`
+  再 `PlistBuddy -c 'Print :Name' <暫存>`——**`-o` 是必要的**，PlistBuddy 讀不了
+  `/dev/stdin`）。實測那份與 repo 裡的逐位元組相同。所以要放就放在**主 checkout**，
+  用的時候複製進 worktree，不要在 worktree 裡生一份。
 
   **內嵌描述檔要排在 codesign 之前**，理由與圖示同一個（簽章封印整個 `Contents`），
   而錯誤訊息同樣一個字都不提描述檔。
