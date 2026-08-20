@@ -285,8 +285,16 @@ say "5 驗簽章"
 # 四個鍵的迴圈會在第一個就假性 die 擋掉每一次上架建置；而 get-task-allow 那條
 # 變成**恆真句**——它會在那個鍵真的存在時照樣通過，也就是完全不守。
 # PlistBuddy 對同一份輸入回 `true` / exit 0，不存在的鍵 exit 1。
+# **先確認讀得到，再逐鍵檢查。** 原本這裡是 `|| true`，於是 codesign 自己失敗
+# （簽章沒真的完成、或輸出不可解析）會讓 SIGNED_ENT 是空檔，而下面第一條就報
+# 「沒有 com.apple.security.app-sandbox」——把「簽章壞了」講成「缺一個鍵」，
+# 指的方向完全不同。兩種原因要分開講。
 SIGNED_ENT="$(mktemp)"
-codesign -d --entitlements - --xml "${APP}" 2>/dev/null >| "${SIGNED_ENT}" || true
+if ! codesign -d --entitlements - --xml "${APP}" 2>/dev/null >| "${SIGNED_ENT}" \
+   || [[ ! -s "${SIGNED_ENT}" ]]; then
+    rm -f "${SIGNED_ENT}"
+    die "讀不出簽出來的 entitlements（codesign -d 失敗，或輸出是空的）。上一步的簽章可能沒真的完成——單獨跑一次 codesign -d --entitlements - --xml \"${APP}\" 看它說什麼。"
+fi
 for key in com.apple.security.app-sandbox \
            com.apple.security.files.user-selected.read-only \
            com.apple.application-identifier \
