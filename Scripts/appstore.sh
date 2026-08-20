@@ -284,6 +284,9 @@ ok "簽章結構有效"
 # **App Store 那條不 notarize。** notarize 是 Gatekeeper 那條路的門檻，
 # App Store 走的是審查。對 .pkg 送 notarytool 只是浪費時間。
 say "6 打包"
+# productbuild 會印四行 `write: Permission denied`，而它照樣成功。那幾行沒有指出
+# 想寫哪裡，本專案沒有追出來——判斷產物好壞看下面那兩條斷言（檔案在、
+# pkgutil --check-signature 過），不要看那幾行。
 PKG="${STAGE}/FindMouse-${VERSION}.pkg"
 productbuild --component "${APP}" /Applications --sign "${PKG_IDENTITY}" "${PKG}"
 [[ -f "${PKG}" ]] || die "productbuild 回 0 但 ${PKG} 不在。"
