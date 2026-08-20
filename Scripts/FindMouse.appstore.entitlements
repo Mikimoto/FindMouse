@@ -20,10 +20,13 @@
   （`Apple Distribution: DeepThought Co., Ltd. (JA387Z4D7Q)`），不是秘密——
   它印在每一個簽過章的執行檔裡。
 
-  **還沒實測過**：本機沒有 Mac App Store 描述檔也沒有 Installer 憑證，所以「這兩個
-  鍵的內容與描述檔相符、上傳不被退」這件事本專案**一次都沒有驗過**。
-  `Scripts/appstore.sh` 會在簽章後斷言簽出來的結果含這四個鍵、且沒有
-  `get-task-allow`，那是本機驗得到的部分；剩下的要等第一次上傳。
+  **哪些驗過、哪些沒有**（2026-08-20）：`Scripts/appstore.sh` 用真的描述檔跑通過
+  一次：簽出來的結果含這四個鍵、沒有 `get-task-allow`、codesign 的深度嚴格驗證過、
+  `productbuild` 出的 `.pkg` 過 `pkgutil` 的簽章檢查。
+  它的前置檢查還會比對描述檔授權的 application-identifier 與 team-identifier
+  是否與這份清單逐字相符，那是本機能做到的最接近的一步。
+  **還沒驗過的是上傳**：「這兩個鍵相符所以 App Store Connect 會收」要等第一次
+  送出才知道。
 
   **註解裡不要出現 ASCII 的兩個連字號。** XML 註解不允許它，而 `plutil -lint`
   **不會抓**（實測回 OK），`xmllint` 與 codesign 的 AMFI 解析器才會——症狀是簽章

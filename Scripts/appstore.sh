@@ -26,8 +26,18 @@ cd "${ROOT}"
 TEAM_ID="JA387Z4D7Q"
 IDENTITY_APP="Apple Distribution: DeepThought Co., Ltd. (${TEAM_ID})"
 # App Store 的 .pkg 要用 Installer 憑證簽，那是與上面**不同的一張**。
-# 名稱有兩種可能的前綴（新申請的是「3rd Party Mac Developer Installer」），
-# 所以下面用前綴比對而不是完整字串。
+#
+# **前綴只有一個，不要被 portal 的說法誤導。** Apple 的網站把這張憑證的「類型」
+# 叫做 Mac Installer Distribution，而憑證自己的 common name 是
+# `3rd Party Mac Developer Installer: <公司> (<TeamID>)`。兩者是不同的東西：
+# 2026-08-20 實測本機那張（`notBefore` 2026-04-06，四個月前才簽發）的 subject 就是
+# 後者，而 keychain 裡叫 Mac Installer Distribution 的憑證有 **0 張**。
+# 所以這裡只比對這一個前綴——多接受一個「類型名」當備援等於加一條永遠不會中的分支。
+# 順帶：Apple 給新式統一憑證的名字是 Apple Development／Apple Distribution
+# （上面那張就是），Installer 這張仍沿用舊式命名。
+#
+# 用前綴而不是完整字串：公司名與 TeamID 由 Apple 決定，寫死整串會在名稱有一點
+# 不同時報「找不到」，而那個訊息會把人指去辦一張他已經有的憑證。
 IDENTITY_PKG_PREFIX="3rd Party Mac Developer Installer"
 PROFILE="${ROOT}/Scripts/embedded.provisionprofile"
 STAGE="${ROOT}/build/appstore"
