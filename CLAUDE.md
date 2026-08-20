@@ -38,6 +38,13 @@
   走的是 cfprefsd，同樣被擋）。**這不是「無法判定」那一態**——它會如實印 ✗。
   授權在「系統設定 → 隱私權與安全性 → 完全取用磁碟」，加的是終端機 App 本身
   （本機是 Ghostty），改完要重開終端機。
+- **`Scripts/test-release.sh` 對陳舊的 `build/FindMouse.app` 只有第 9 段會自己重建。**
+  一次中途失敗的 `make-app.sh`（例如停在簽章前的某個守衛）會留下一個沒簽章、少檔案
+  的半成品，而其餘幾段只在**目錄不存在**時才建——於是它們會報一堆與你的 diff 完全
+  無關的紅。判別訊號：訊息裡出現「對一份真的沙盒 .app 說不」這種自相矛盾的話。
+  遇到就先 `Scripts/make-app.sh` 重建再重跑。
+  （第 9 段的條件看的是**那個檔案**在不在而不是目錄，缺了就先重建一次——那是
+  2026-08-20 的 review 指出來的，其餘幾段還沒跟上。）
 - **`mise run e2e` 的輸出不要接 `| tail`。** 它的 exit code 會變成 `tail` 的，
   於是 `[e2e] ERROR task failed` 與 exit 0 同時出現。要壓縮就先落檔再讀。
 - **突變的判讀是三態**：紅（含 crash）／綠／編不過。`grep -c FAIL` 回 0 有兩種
@@ -283,6 +290,34 @@
 
   `release.sh` 的驗收因此多了兩條（`stapler validate app`、`syspolicy_check`），
   兩輪都跑。拿 v0.5.0 的 dmg 當正控制實測：**只有那兩條紅**、其餘全綠。
+- **App Store 是第二條通路，不是 `release.sh` 的一個模式。** `Scripts/appstore.sh`。
+  六項全不同：app 簽章身分（Apple Distribution 而非 Developer ID）、必須內嵌
+  `Contents/embedded.provisionprofile`、另一份 entitlements（多兩個身分鍵）、
+  容器是 `.pkg` 而非 `.dmg`、**不 notarize**（App Store 走審查）、驗收是
+  `altool --validate-app`。共用的是 `make-app.sh`——兩條通路出貨的必須是同一個 App。
+
+  `Scripts/appstore.sh --check` 只印前置條件、什麼都不做。2026-08-20 的狀態是
+  **只缺 Mac App Store 的 Distribution 描述檔**（放 `Scripts/embedded.provisionprofile`，
+  在 .gitignore 裡）；兩張憑證本機都有。
+
+  **內嵌描述檔要排在 codesign 之前**，理由與圖示同一個（簽章封印整個 `Contents`），
+  而錯誤訊息同樣一個字都不提描述檔。
+
+  三個工具陷阱，每一個都會讓守衛變成恆真句：
+
+  1. **盤點簽章身分不要用 `security find-identity -v -p codesigning`。** 那個 `-p`
+     會**濾掉 Installer 憑證**（它不是 codesigning 身分）而且不報錯，於是「本機沒有
+     Installer 憑證」這個結論看起來很確定。要看全部就不加 `-p`。
+  2. **`plutil -lint` 不等於 XML 有效。** XML 註解不允許 ASCII 的兩個連字號，而
+     `plutil -lint` 對含有它的檔案回 OK；抓得到的是 `xmllint --noout` 與 codesign
+     的 AMFI 解析器，後者是在簽章那一步才炸、訊息是
+     `AMFIUnserializeXML: syntax error near line N`。這個 repo 的 plist 註解都很長
+     又常提到命令列旗標，所以踩得到——`InfoPlistTests` 有一條在掃它。
+  3. **`plutil -extract` 把 `.` 當 keypath 分隔符**，所以它讀不到任何 entitlement 鍵：
+     `plutil -extract com.apple.security.app-sandbox` 對一份**確實含有那個鍵**的
+     plist 回「No value at that key path」並 exit 1（實測）。讀這種鍵一律用
+     `PlistBuddy -c 'Print :<key>'`。危險的不是假性失敗（那很吵），而是拿它寫
+     「某個鍵**不在**」的斷言——那會變成恆真句，`get-task-allow` 真的在也照樣通過。
 - **Homebrew tap 在另一個 repo**（`Mikimoto/homebrew-findmouse`），發版收尾要手動同步，
   完整順序寫在 README 的〈自己發一份〉。動它之前先知道兩件事：
   `depends_on macos:` 的字串比較格式（`">= :sonoma"`）在 **cask 只是 deprecation 警告、

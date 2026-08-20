@@ -144,6 +144,10 @@ _COMMENT_SYNTAX = {
     ".js": "// {}", ".ts": "// {}",
     ".plist": "<!-- {} -->", ".xml": "<!-- {} -->", ".html": "<!-- {} -->",
     ".entitlements": "<!-- {} -->", ".md": "<!-- {} -->",
+    # .xcprivacy 是 XML plist（Apple 的隱私宣告清單），與 .plist 同一種語法。
+    # **註解內文不能有 ASCII 的兩個連字號**，XML 不允許——這裡插的是固定字串
+    # 所以沒問題，但寫新的對照組文字時要記得（InfoPlistTests 有一條在掃 Scripts/）。
+    ".xcprivacy": "<!-- {} -->",
     ".sh": "# {}", ".bash": "# {}", ".zsh": "# {}",
     ".py": "# {}", ".toml": "# {}", ".yml": "# {}", ".yaml": "# {}",
 }

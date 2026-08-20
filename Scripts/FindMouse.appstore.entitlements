@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  App Store 那條通路的 entitlements。
+
+  **它與 `FindMouse.entitlements` 的關係是「同樣的沙盒，加兩個身分鍵」**，
+  不是兩份各自演化的清單。`InfoPlistTests.theAppStoreEntitlementsAreTheSameSandboxPlusTheStoreIdentity`
+  把這件事釘成可執行的斷言：共用的鍵必須逐一相等、多出來的必須恰好是下面這兩個。
+
+  為什麼要這樣釘：兩條通路出貨的是同一份程式碼，沙盒姿態一旦分岔，**分岔的那一邊
+  不會有人測到**——e2e 跑的是 Developer ID 那份，而 App Store 那份要等審查才知道。
+
+  多出來的兩個鍵：
+
+  1. com.apple.application-identifier = <TeamID>.<bundle id>
+  2. com.apple.developer.team-identifier = <TeamID>
+
+  用 Xcode 建置時這兩個是它從描述檔自動合成進去的；手動簽章（把清單交給 codesign
+  的 entitlements 旗標）沒有那個步驟，所以要自己寫。TeamID 取自簽章身分本身
+  （`Apple Distribution: DeepThought Co., Ltd. (JA387Z4D7Q)`），不是秘密——
+  它印在每一個簽過章的執行檔裡。
+
+  **哪些驗過、哪些沒有**（2026-08-20）：`Scripts/appstore.sh` 用真的描述檔跑通過
+  一次：簽出來的結果含這四個鍵、沒有 `get-task-allow`、codesign 的深度嚴格驗證過、
+  `productbuild` 出的 `.pkg` 過 `pkgutil` 的簽章檢查。
+  它的前置檢查還會比對描述檔授權的 application-identifier 與 team-identifier
+  是否與這份清單逐字相符，那是本機能做到的最接近的一步。
+  **還沒驗過的是上傳**：「這兩個鍵相符所以 App Store Connect 會收」要等第一次
+  送出才知道。
+
+  **註解裡不要出現 ASCII 的兩個連字號。** XML 註解不允許它，而 `plutil -lint`
+  **不會抓**（實測回 OK），`xmllint` 與 codesign 的 AMFI 解析器才會——症狀是簽章
+  當場失敗、訊息是 `AMFIUnserializeXML: syntax error near line N`，一個字都不提
+  註解。這一段本來寫了「codesign 加兩個連字號 entitlements」而踩到。
+  `InfoPlistTests.noPlistCommentUnderScriptsHasADoubleHyphen` 釘住它。
+
+  刻意**沒有**的東西：
+
+  - com.apple.security.get-task-allow — 它讓別的 process 附加 debugger，
+    Xcode 的 debug 建置會加。**帶著它上傳一定被退**，而本機執行完全正常。
+    appstore.sh 因此把「它不在」當成一條斷言，不是靠「我們沒寫它」。
+  - com.apple.security.network.* — FindMouse 不連網。
+  - 任何 temporary-exception — 那一族在沙盒上開洞卻不長得像開關。
+-->
+<plist version="1.0">
+<dict>
+    <key>com.apple.application-identifier</key>
+    <string>JA387Z4D7Q.tw.com.deepthought.findmouse</string>
+    <key>com.apple.developer.team-identifier</key>
+    <string>JA387Z4D7Q</string>
+    <key>com.apple.security.app-sandbox</key>
+    <true/>
+    <key>com.apple.security.files.user-selected.read-only</key>
+    <true/>
+</dict>
+</plist>

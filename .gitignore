@@ -31,3 +31,7 @@ __pycache__/
 # 它們仍是設計權威，CLAUDE.md 與 README 都指著它們——備份由使用者自行安排，
 # repo 這一側不再持有任何副本。
 /docs/superpowers/
+
+# Mac App Store 的描述檔。Apple 發的、會過期、每次重辦都是新檔——不進版控。
+# Scripts/appstore.sh 預期它在這個路徑。
+/Scripts/embedded.provisionprofile

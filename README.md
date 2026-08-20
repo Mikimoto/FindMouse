@@ -142,6 +142,65 @@ git push origin dev:main
 沒改的話 `--zap` 兩頭都錯：它會刪掉舊位置那批**還沒搬過來的圖組**（搬移是複製，
 刻意不刪原檔），同時完全漏掉容器裡的新家。
 
+### 發到 Mac App Store
+
+**這是另一條通路，不是上面那五步的一個選項。** 簽章身分、描述檔、entitlements、
+容器格式、審查機制、驗收方式六項全不同；共用的只有 `make-app.sh`，所以兩條通路
+出貨的是同一個 App。腳本是 `Scripts/appstore.sh`。
+
+一次性要備齊三樣，`Scripts/appstore.sh --check` 會一次列出還缺哪些（它會真的讀
+描述檔：平台、兩個身分鍵與 `Scripts/FindMouse.appstore.entitlements` 是否相符、
+還有幾天到期）：
+
+- `Apple Distribution` 憑證（簽 app）
+- `3rd Party Mac Developer Installer` 憑證（簽 `.pkg`，是**另一張**）
+- Mac App Store 的 Distribution 描述檔，放 `Scripts/embedded.provisionprofile`
+  （gitignored——它會過期，每次重辦都是新檔）
+
+描述檔可以用 fastlane 從命令列辦（**兩支的 `--platform` 值不一樣**，這是 fastlane
+自己的不一致：`produce` 只吃 `ios/osx/tvos`，`sigh` 只吃 `ios/tvos/macos/catalyst`）：
+
+```sh
+# 註冊 App ID（--skip_itc 代表先不建 App Store Connect 那邊的紀錄）
+fastlane produce --username <Apple ID> --team_id JA387Z4D7Q \
+  --app_identifier tw.com.deepthought.findmouse --app_name FindMouse \
+  --platform osx --skip_itc true
+
+# 產描述檔。不要用 --filename，它無條件要求 .mobileprovision 結尾（fastlane 的限制），
+# 所以丟到空目錄再搬
+D="$(mktemp -d)" && fastlane sigh --username <Apple ID> --team_id JA387Z4D7Q \
+  --app_identifier tw.com.deepthought.findmouse --platform macos --output_path "$D" \
+  && mv "$D"/*.provisionprofile Scripts/embedded.provisionprofile && rm -rf "$D"
+```
+
+備齊之後：
+
+```sh
+Scripts/appstore.sh <版本>              # 建置 → 簽 → 打包 → 驗收，出 build/appstore/*.pkg
+Scripts/appstore.sh <版本> --dry-run    # 只做不需要憑證的那半段
+```
+
+**不 notarize**——那是 Gatekeeper 那條路的門檻，App Store 走的是審查。腳本到 `.pkg`
+為止就停，把 `altool --validate-app` 與 `--upload-app` 的確切命令印出來留給人按：
+上傳需要 App Store Connect 的 API 金鑰，而那是送出去就收不回來的動作。
+
+**還沒做完的**（都在 Apple 那邊，不在這個 repo）：App Store Connect 的 app 紀錄、
+API 金鑰、截圖與描述等素材。
+
+**兩件還沒驗過的前提**，第一次上傳時要特別看：
+
+- `CFBundleVersion` 是 **三段**（Apple 允許 1–3 段非負整數），格式 `%Y.%m%d.%H%M`
+  ——例如 `2026.0820.0313`，也就是 `2026` / `0820` / `0313`。段數沒問題，
+  **沒驗過的是前導零**：`0820` 當整數是 820，LaunchServices 逐段當整數比所以本機
+  排序正確，但 **App Store Connect 收不收本專案沒驗過**。第一次上傳時看一下那個
+  數字有沒有被改寫或退回。
+- macOS 到底強不強制 `PrivacyInfo.xcprivacy`，查不到定論。放著是無害的，內容也
+  查證過（只宣告 `UserDefaults` 一類，代碼 `CA92.1`），但它不是一個「有驗過」的必要條件。
+
+順帶一件會影響使用者的事：**兩條通路共用同一個 bundle id，也就是同一個
+`/Applications/FindMouse.app` 路徑**。設定與圖組因此會延續，但兩邊不能並存——
+從 App Store 裝進去之後，Homebrew cask 會看到一個「被人手動換掉」的 app。
+
 只驗一個既有的 dmg：`Scripts/release.sh --verify-only <某個.dmg>`
 
 驗收會掛載 dmg、對**裡面那個 `.app`** 也跑一遍（包含 `stapler validate` 與 Apple 的

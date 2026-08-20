@@ -104,6 +104,102 @@ private func infoPlist() throws -> [String: Any] {
     }
 }
 
+/// App Store 那份 entitlements 與 Developer ID 那份的關係，是「同樣的沙盒 ＋ 兩個
+/// 身分鍵」——不是兩份各自演化的清單。
+///
+/// **為什麼要把關係釘住，而不是分別釘兩份清單**：分別釘的話，兩邊各自「合法」地
+/// 漂開也不會紅。而沙盒姿態一旦分岔，**分岔的那一邊沒有人測得到**——e2e 跑的是
+/// Developer ID 那份，App Store 那份要等審查才知道。
+///
+/// `get-task-allow` 特別點名：它讓別的 process 附加 debugger，帶著它上傳一定被退，
+/// 而本機執行完全正常。這裡擋「有人把它寫進檔案」，`appstore.sh` 擋「簽出來的結果
+/// 裡有它」——後者才涵蓋得到「從別處被合成進來」。
+@Test func theAppStoreEntitlementsAreTheSameSandboxPlusTheStoreIdentity() throws {
+    func load(_ name: String) throws -> [String: Any] {
+        let raw = try Data(contentsOf: repoRoot().appendingPathComponent("Scripts/\(name)"))
+        return try #require(
+            try PropertyListSerialization.propertyList(from: raw, format: nil) as? [String: Any])
+    }
+    let dev = try load("FindMouse.entitlements")
+    let store = try load("FindMouse.appstore.entitlements")
+
+    let extra = Set(store.keys).subtracting(dev.keys)
+    #expect(extra == ["com.apple.application-identifier",
+                      "com.apple.developer.team-identifier"],
+            "App Store 那份多出來的鍵應該恰好是兩個身分鍵：\(extra.sorted())")
+    #expect(Set(dev.keys).subtracting(store.keys).isEmpty,
+            "App Store 那份少了 Developer ID 有的鍵：\(Set(dev.keys).subtracting(store.keys).sorted())")
+
+    // 共用的鍵要逐一相等。只比 key 的集合不夠——把 app-sandbox 在 App Store 那份
+    // 改成 <false/> 會全綠，而那是兩條通路沙盒姿態分岔最嚴重的形狀。
+    //
+    // **比 `NSObject` 不比 `as? Bool`。** 這個 repo 已經被同一個形狀咬過一次：
+    // 上面那條測試原本寫 `filter { ($0.value as? Bool) == true }`，於是值不是布林的
+    // entitlement 完全隱形（2026-08-19 用陣列值的 temporary-exception 突變實測全綠）。
+    // 這裡若寫 `as? Bool`，兩邊的陣列或字串值都會轉成 nil 而「相等」，那條
+    // `keychain-access-groups` 之類的差異就漏掉了。plist 的值橋接到 NSObject 之後
+    // `==` 走 `isEqual`，數字、字串、陣列、字典都按值比。
+    for key in dev.keys {
+        let devValue = dev[key] as? NSObject
+        let storeValue = store[key] as? NSObject
+        #expect(devValue != nil && devValue == storeValue,
+                "\(key) 在兩份清單裡的值不一樣：\(dev[key] ?? "（無）") vs \(store[key] ?? "（無）")")
+    }
+
+    #expect(store["com.apple.security.get-task-allow"] == nil,
+            "get-task-allow 帶著上傳一定被退，而本機執行完全正常")
+    // 身分鍵的形狀：application-identifier 必須是 <TeamID>.<bundle id>。
+    let team = try #require(store["com.apple.developer.team-identifier"] as? String)
+    let appID = try #require(store["com.apple.application-identifier"] as? String)
+    let bundleID = try #require(try infoPlist()["CFBundleIdentifier"] as? String)
+    #expect(appID == "\(team).\(bundleID)",
+            "application-identifier 應該是 <TeamID>.<bundle id>，實際是「\(appID)」")
+}
+
+/// `Scripts/` 底下每一份 XML plist（`.plist` / `.entitlements` / `.xcprivacy`）的
+/// 註解裡都不能有 ASCII 的兩個連字號。
+///
+/// **為什麼需要一條測試**：XML 註解不允許它，而 `plutil -lint` **不會抓**（實測回
+/// OK）。抓得到的是 `xmllint` 與 codesign 的 AMFI 解析器，而後者是在 `release.sh`
+/// 或 `appstore.sh` 跑到簽章那一步才炸，訊息是
+/// `AMFIUnserializeXML: syntax error near line N`——一個字都不提註解。
+///
+/// 這個 repo 的 plist 註解都很長而且會提到命令列旗標，所以踩到的機率不低：
+/// 2026-08-20 寫 App Store 那份 entitlements 時就是這樣炸的，而 `plutil -lint`
+/// 在它前面說 OK。
+///
+/// 只掃註解內文，不掃整個檔案：`<!--` 與 `-->` 自己就含兩個連字號。
+@Test func noPlistCommentUnderScriptsHasADoubleHyphen() throws {
+    let scripts = repoRoot().appendingPathComponent("Scripts")
+    let names = try FileManager.default.contentsOfDirectory(atPath: scripts.path)
+        .filter { $0.hasSuffix(".entitlements") || $0.hasSuffix(".plist") || $0.hasSuffix(".xcprivacy") }
+        .sorted()
+    // 沒有這一行，整條測試在「路徑算錯」時會空洞地通過。
+    #expect(names.count >= 4, "只掃到 \(names.count) 個檔案（\(names)），路徑可能算錯了")
+
+    for name in names {
+        let text = try String(contentsOf: scripts.appendingPathComponent(name), encoding: .utf8)
+        var rest = Substring(text)
+        while let open = rest.range(of: "<!--") {
+            rest = rest[open.upperBound...]
+            guard let close = rest.range(of: "-->") else {
+                Issue.record("\(name) 有一個沒收尾的 XML 註解")
+                break
+            }
+            let body = rest[..<close.lowerBound]
+            if let bad = body.range(of: "--") {
+                let line = text[..<bad.lowerBound].filter { $0 == "\n" }.count + 1
+                Issue.record("""
+                    \(name) 第 \(line) 行附近的註解內文含 ASCII 的兩個連字號。\
+                    XML 不允許，而 plutil -lint 不會抓——codesign 會在簽章那一步炸，\
+                    訊息是 AMFIUnserializeXML syntax error，不提註解。改寫那句話。
+                    """)
+            }
+            rest = rest[close.upperBound...]
+        }
+    }
+}
+
 /// 圖示的宣告面。
 ///
 /// **這一條只驗宣告，不驗建置**——單元測試跑不到 `make-app.sh`。把兩個半邊釘在
@@ -121,4 +217,129 @@ private func infoPlist() throws -> [String: Any] {
     // 而 make-app.sh 會自己接上 `.icns`。帶了副檔名不會壞，但兩邊的組法就
     // 各有一份假設了。
     #expect(!name.hasSuffix(".icns"), "只寫基底名，副檔名由 make-app.sh 接")
+}
+
+/// App Store 的主類別。
+///
+/// **為什麼在 Homebrew 版也要有**：出貨的是同一份 `Scripts/Info.plist`，兩條通路
+/// 共用。分開維護兩份 plist 才是真正會漂掉的做法。
+///
+/// 只驗形狀不釘死值：換類別是產品決定，不該要改測試。要防的是**打錯字與整個漏掉**
+/// ——Xcode 27 的 `DVTCorePlistStructDefs` 把這個鍵標成 `use="required"`，而它的
+/// 合法值是一份 45 個字串的封閉清單（`public.app-category.utilities` 在裡面，
+/// 2026-08-20 從那份定義檔查的）。不在清單上的字串會被 App Store Connect 退件，
+/// 而在本機**沒有任何東西會發現**：plist 合法、簽章有效、App 照常啟動。
+@Test func theAppStoreCategoryIsDeclared() throws {
+    let category = try #require(try infoPlist()["LSApplicationCategoryType"] as? String,
+                                "沒有 LSApplicationCategoryType，App Store 上架必填")
+    // 收斂到那份清單實際的形狀，而不是只檢查前綴。2026-08-20 把 45 個合法值全部
+    // 抽出來量過：**尾段一律符合 `[a-z0-9-]+`**——沒有第二個點、沒有大寫、沒有底線
+    // （最短 `news`、最長 `magazines-and-newspapers`）。所以這個形狀不會拒絕任何
+    // 合法值，而它擋得住多一個點、夾空白、大小寫混用這幾種打錯字的形狀。
+    //
+    // **它擋不住的**：一個形狀正確但不存在的類別（`public.app-category.utilties`
+    // 那種）。要擋那個只能把 45 個字串抄進來，而那份清單住在 Xcode 的
+    // `DVTCorePlistStructDefs` 裡、會隨 Xcode 版本變——抄過來就是第二份會漂掉的
+    // 真實來源。這一層做到形狀，剩下的由 App Store Connect 退件時告知。
+    #expect(category.range(of: "^public\\.app-category\\.[a-z0-9-]+$",
+                           options: .regularExpression) != nil,
+            "類別的形狀不對（要 public.app-category.<小寫英數與連字號>），實際是「\(category)」")
+}
+
+private func repoRoot() -> URL {
+    URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+}
+
+private func privacyManifest() throws -> [String: Any] {
+    let raw = try Data(contentsOf: repoRoot().appendingPathComponent("Scripts/PrivacyInfo.xcprivacy"))
+    guard let dict = try PropertyListSerialization.propertyList(
+        from: raw, format: nil) as? [String: Any] else {
+        throw CocoaError(.propertyListReadCorrupt)
+    }
+    return dict
+}
+
+/// 隱私宣告清單宣告的東西，恰好是我們真的用到的那些。
+///
+/// 用**精確相等**的理由與 entitlements 那條一樣：多宣告一類不會壞掉，但它會變成
+/// 一個沒有人知道能不能拿掉的宣告。少宣告一類則是上傳被退，而本機驗不出來。
+///
+/// 三個「無」的鍵也一起釘：把 `NSPrivacyTracking` 從 `false` 改成 `true` 不會讓
+/// 任何東西報錯，只會讓 App Store 的隱私標籤說我們在追蹤使用者。
+@Test func thePrivacyManifestDeclaresExactlyTheApisWeUse() throws {
+    let m = try privacyManifest()
+
+    #expect((m["NSPrivacyTracking"] as? Bool) == false, "FindMouse 不追蹤")
+    #expect((m["NSPrivacyTrackingDomains"] as? [String])?.isEmpty == true)
+    #expect((m["NSPrivacyCollectedDataTypes"] as? [[String: Any]])?.isEmpty == true)
+
+    let types = try #require(m["NSPrivacyAccessedAPITypes"] as? [[String: Any]])
+    let declared = Set(types.compactMap { $0["NSPrivacyAccessedAPIType"] as? String })
+    #expect(declared == ["NSPrivacyAccessedAPICategoryUserDefaults"],
+            "宣告的 API 類別變了，每一類都要說得出哪一行程式碼用到它：\(declared.sorted())")
+
+    // **先 filter 再斷言恰好一筆，不要 `first`。** 上面比的是 `Set`，而 Set 會把
+    // 重複的類別摺疊掉——同一個類別宣告兩次（其中一筆 reasons 錯或漏）時
+    // `declared` 仍然只有一個元素，而 `first` 剛好挑到對的那筆，整條就假性通過。
+    let userDefaultsEntries = types.filter {
+        $0["NSPrivacyAccessedAPIType"] as? String == "NSPrivacyAccessedAPICategoryUserDefaults"
+    }
+    #expect(userDefaultsEntries.count == 1,
+            "UserDefaults 那個類別宣告了 \(userDefaultsEntries.count) 次，應該恰好一次")
+    let userDefaults = try #require(userDefaultsEntries.first)
+    // CA92.1 = Access info from same app。另外三個 User Defaults 代碼都不是我們：
+    // 1C8F.1 是 App Group、AC6B.1 是受管理設定、C56D.1 是第三方 SDK。四個長得很像，
+    // 寫錯的後果是上傳被退而本機全綠，所以這裡把值釘死。
+    #expect((userDefaults["NSPrivacyAccessedAPITypeReasons"] as? [String]) == ["CA92.1"])
+}
+
+/// 反方向：程式碼開始用到某一類 required-reason API，而清單沒跟上。
+///
+/// 上面那條守的是「清單多宣告」，這條守的是「程式碼多用」——**兩個方向的失效
+/// 完全不同**，而後者才是會被退件的那個。掃的是 `Sources/`，與
+/// `ArchitectureBoundaryTests` 同一種專案衛生掃描。
+///
+/// 這是**文字比對**，所以它擋不住刻意規避（動態呼叫、字串拼接），那不是它的目的；
+/// 目的是讓「順手加一行讀檔案修改時間」在 CI 就紅，而不是在上傳時才知道。
+/// 已宣告的 UserDefaults 不在掃描範圍——它本來就該出現。
+@Test func noUndeclaredRequiredReasonApiSneaksIntoSources() throws {
+    // 每一類的標記取自 Apple 的 required reason API 清單裡實際會出現在 Swift 原始碼
+    // 的那些呼叫。命中不代表一定要宣告（可能在註解裡），但它值得一次人工判讀。
+    let markers: [String: [String]] = [
+        "NSPrivacyAccessedAPICategoryFileTimestamp":
+            [".creationDateKey", ".contentModificationDateKey", ".attributeModificationDateKey",
+             "attributesOfItem(", "getattrlist(", "fstat(", "lstat("],
+        "NSPrivacyAccessedAPICategorySystemBootTime":
+            ["systemUptime", "mach_absolute_time(", "kern.boottime"],
+        "NSPrivacyAccessedAPICategoryDiskSpace":
+            [".volumeAvailableCapacityKey", ".volumeAvailableCapacityForImportantUsageKey",
+             "systemFreeSize", "statfs("],
+        "NSPrivacyAccessedAPICategoryActiveKeyboards":
+            ["activeInputModes"],
+    ]
+
+    let sources = repoRoot().appendingPathComponent("Sources")
+    let files = FileManager.default.enumerator(at: sources, includingPropertiesForKeys: nil)?
+        .compactMap { $0 as? URL }
+        .filter { $0.pathExtension == "swift" } ?? []
+    // 沒有這一行，整條測試在「路徑算錯、一個檔案都沒讀到」時會空洞地通過。
+    #expect(files.count > 20, "只掃到 \(files.count) 個 .swift，路徑可能算錯了")
+
+    let declared = Set((try privacyManifest()["NSPrivacyAccessedAPITypes"] as? [[String: Any]] ?? [])
+        .compactMap { $0["NSPrivacyAccessedAPIType"] as? String })
+
+    for (category, needles) in markers where !declared.contains(category) {
+        for file in files {
+            let text = try String(contentsOf: file, encoding: .utf8)
+            for needle in needles where text.contains(needle) {
+                Issue.record("""
+                    \(file.lastPathComponent) 出現「\(needle)」，那屬於 \(category)，\
+                    而 Scripts/PrivacyInfo.xcprivacy 沒有宣告它。\
+                    確認是真的用到就去補宣告（代碼查 Xcode 的 DVTCorePlistStructDefs），\
+                    只是碰巧出現在註解裡就改掉那個字。
+                    """)
+            }
+        }
+    }
 }
