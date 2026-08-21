@@ -180,12 +180,17 @@ Scripts/appstore.sh <版本> --dry-run    # 只做不需要憑證的那半段
 
 **不 notarize**——那是 Gatekeeper 那條路的門檻，App Store 走的是審查。腳本到 `.pkg`
 為止就停，把 `altool --validate-app` 與 `--upload-app` 的確切命令印出來留給人按：
-上傳需要 App Store Connect 的 API 金鑰，而那是送出去就收不回來的動作。
+上傳需要 App Store Connect 的認證，而那是送出去就收不回來的動作。腳本印的與實測走的
+都是 API 金鑰。
 
-**已經有的**（2026-08-20）：App ID 與 App Store Connect 的 app 紀錄。
+**已經有的**（2026-08-20）：App ID、App Store Connect 的 app 紀錄，以及一個已上傳、
+processing 跑完、狀態 `VALID` 的 build。也就是說送審缺的只是素材，不必再上傳一次。
 **還沒做完的**（都在 Apple 那邊，不在這個 repo）：截圖、描述、關鍵字、支援與隱私政策
-網址、分級與價格——送審要的素材。API 金鑰是選配，上面第一次驗證走的是 Apple ID ＋
-app-specific password（`-u` / `-p`），`--apiKey` / `--apiIssuer` 只是另一條路。
+網址、分級與價格——送審要的素材。**認證這樣分**：`appstore.sh` 印出來的兩條命令都是
+API 金鑰（`--apiKey` / `--apiIssuer`；`.p8` 放 `~/.appstoreconnect/private_keys/`，
+altool 會自己去那裡找，不必給路徑），而金鑰在 validate 與 upload 兩個動作上都實測過，
+所以照腳本印的做就是走在驗過的路上。Apple ID ＋ app-specific password（`-u` / `-p`）
+只在 validate 試過一次（那是 build `2026.0820.0552` 那輪），upload 沒用它試過。
 
 **驗到哪裡**：2026-08-20 對 `0.5.2` 跑完整條線——`Scripts/appstore.sh 0.5.2` 出的
 `.pkg` 送 `xcrun altool --validate-app`，回 `VERIFY SUCCEEDED with no errors`。所以：
@@ -196,9 +201,20 @@ app-specific password（`-u` / `-p`），`--apiKey` / `--apiIssuer` 只是另一
 - `PrivacyInfo.xcprivacy` 帶著它通過了驗證。**這只證明它不會被拒，不證明它是必要的**
   ——macOS 到底強不強制查不到定論；內容查證過（只宣告 `UserDefaults` 一類，代碼 `CA92.1`）。
 
-**但 validate 不等於 upload。** `--validate-app` 跑的是格式檢查，上傳之後還有
-processing 階段，審查更是另一回事。所以第一次真的 `--upload-app` 時還是要看那個 build
-數字有沒有被改寫或退回。
+**上傳也走完了**（同一天，重建自 `da9a653` 的 `.pkg`，build `2026.0820.1137`）：
+`--upload-app` 回 `UPLOAD SUCCEEDED with no errors`，processing 跑完之後那個 build 在
+ASC 上是 `VALID`。而它回答了上面那個未知——**ASC 顯示的字串與送上去的不一定相同**：
+`.pkg` 裡的 `CFBundleVersion` 是 `2026.0820.1137`，ASC 回報的是 `2026.820.1137`，
+中間那段的前導零沒了。那次只有那一段帶前導零，所以只證得到那一段。
+
+兩個後果。**不要拿 build 數字做字串比對**——在 ASC 上找不到 `2026.0820.1137` 不代表
+沒上傳成功，以 ASC 自己顯示的值為準。
+
+而**排序怎麼算沒有實測，所以這裡不下結論**。欄位定義是「最多三段以句點分隔的非負
+整數」，逐段當整數比的話 `0820` 與 `820` 同值、排序不受影響；但字串比較下 `1001` 會
+排在 `905` 前面（10 月比 9 月舊），而 ASC 走哪一種沒人量過。要驗只能等下一次跨月上傳。
+
+送審是另一回事，還沒碰。
 
 順帶一件會影響使用者的事：**兩條通路共用同一個 bundle id，也就是同一個
 `/Applications/FindMouse.app` 路徑**。設定與圖組因此會延續，但兩邊不能並存——

@@ -256,9 +256,13 @@ SHA="$(git rev-parse --short HEAD)"
 #
 # 兩件講清楚免得被當成保證：這是**分鐘**解析度，同一分鐘內發兩次會拿到同一個
 # 數字（單調遞增仍成立，唯一性不成立）；而各段有前導零（`0811`），LaunchServices
-# 逐段當整數比所以排序沒問題，而 **ASC 的格式檢查收前導零**（2026-08-20 對
-# 2026.0820.0552 跑 altool --validate-app 回 `VERIFY SUCCEEDED with no errors`，
-# 見 appstore.sh）。
+# 逐段當整數比，所以在 macOS 這一側排序沒問題。
+#
+# **ASC 那一側是另一件事，不要把上一句延伸過去。** 已知的只有一件：它顯示的字串與
+# 送上去的不一定相同（2026-08-20 上傳 2026.0820.1137，App Store Connect 回報
+# 2026.820.1137，月日那段的前導零沒了），所以別拿這個數字去那邊做字串比對。
+# 「ASC 怎麼排序」沒有實測——兩種可能與反例（字串比較下 1001 會排在 905 前面）
+# 寫在 CLAUDE.md 的 App Store 段。
 BUILD_NUMBER="$(date -u +%Y.%m%d.%H%M)"
 ok "${VERSION}（build ${BUILD_NUMBER}）@ ${SHA}"
 
