@@ -214,9 +214,12 @@ SHA="$(git rev-parse --short HEAD)"
 # 與 release.sh 同一個方案，理由也同一個（見那支的註解）：不用 rev-list --count，
 # 它在歷史被重寫時會倒退，而 App Store Connect 用這個數字判新舊。
 #
-# **前導零這件事在這條通路上更要緊，而它已經驗過了**：2026-08-20 對 0.5.2 的 .pkg
-# （build 2026.0820.0552）跑 altool --validate-app，回 VERIFY SUCCEEDED with no
-# errors——ASC 的格式檢查收前導零。還沒驗的是上傳之後的 processing 會不會改寫它。
+# **前導零這件事在這條通路上更要緊，而它整條線都驗過了**：2026-08-20 對 0.5.2 的
+# .pkg 跑 altool --validate-app 回 VERIFY SUCCEEDED with no errors，接著
+# --upload-app 也過。而 **ASC 顯示的字串與送上去的不一定相同**——送上去的是
+# 2026.0820.1137，App Store Connect 回報 2026.820.1137，月日那段的前導零沒了。
+# 這是一筆觀察而不是一條規則（那次只有那一段帶前導零，所以只證得到那一段），
+# 所以不要拿這個數字去 ASC 上做字串比對。
 BUILD_NUMBER="$(date -u +%Y.%m%d.%H%M)"
 
 rm -rf "${STAGE}"
@@ -351,8 +354,8 @@ cat <<EOF
      金鑰放 ~/.appstoreconnect/private_keys/AuthKey_<KeyID>.p8，
      altool 會自己去那裡找，不必給路徑。
 
-  4. build ${BUILD_NUMBER} 有前導零（月／日／時分那幾段）。**格式檢查驗過了**
-     （2026-08-20，0.5.2 / build 2026.0820.0552，validate 回
-     VERIFY SUCCEEDED with no errors），還沒驗的是上傳之後的 processing
-     會不會改寫它——第一次上傳時看一下。
+  4. **ASC 上的 build 字串不一定等於這裡印的。** 實測 2026-08-20：送上去的
+     2026.0820.1137，在 App Store Connect 上是 2026.820.1137——月日那段的前導零
+     沒了。所以在 ASC 上搜不到上面那個 ${BUILD_NUMBER} 不代表沒上傳成功，
+     以 ASC 自己顯示的值為準。
 EOF

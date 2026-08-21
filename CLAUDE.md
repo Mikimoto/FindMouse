@@ -297,8 +297,20 @@
   **前置條件都到齊了**（兩張憑證、Mac App Store 的 Distribution 描述檔），而且整條線
   實走過一次：`appstore.sh 0.5.2` 出的 `.pkg` 送 `altool --validate-app` 回
   `VERIFY SUCCEEDED with no errors`。順帶回答了兩個掛很久的前提——**build number 的
-  前導零 ASC 收**（`2026.0820.0552`），而 `PrivacyInfo.xcprivacy` 帶著它通過驗證
-  （只證明不會被拒，不證明必要）。**validate 不等於 upload**：processing 與審查都還沒碰。
+  前導零過得了格式檢查**（`2026.0820.0552`；ASC 上顯示的值是另一回事，見下一段），
+  而 `PrivacyInfo.xcprivacy` 帶著它通過驗證
+  （只證明不會被拒，不證明必要）。
+
+  **上傳與 processing 也走完了**（同日、重建自 `da9a653`，build `2026.0820.1137`）：
+  `--upload-app` 回 `UPLOAD SUCCEEDED with no errors`，ASC 上那個 build 是 `VALID`。
+  而 **ASC 顯示的字串與送上去的不一定相同**——`.pkg` 裡是 `2026.0820.1137`，ASC 回報
+  的是 `2026.820.1137`，中間那段的前導零沒了。所以別拿它做字串比對，搜不到不等於沒
+  上傳成功，以 ASC 自己顯示的值為準。
+
+  **ASC 怎麼排序沒有實測，所以不替它下結論。** 這個欄位是「最多三段以句點分隔的非負
+  整數」，逐段當整數比的話 `0820` 與 `820` 同值、排序不受影響；但字串比較下 `1001` 會
+  排在 `905` 前面（10 月比 9 月舊），而 ASC 走哪一種沒人量過——寫「應該不受影響」等於
+  拿同一句話裡說沒實測的前提去支撐結論。要驗只能等下一次跨月上傳。送審還沒碰。
 
   **那份描述檔在 `.gitignore` 裡，所以它會跟著 worktree 一起消失。**
   `Scripts/embedded.provisionprofile` 是 untracked，而 `git worktree remove` 不留情

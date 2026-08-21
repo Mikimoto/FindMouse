@@ -25,8 +25,12 @@
   `productbuild` 出的 `.pkg` 過 `pkgutil` 的簽章檢查。
   它的前置檢查還會比對描述檔授權的 application-identifier 與 team-identifier
   是否與這份清單逐字相符，那是本機能做到的最接近的一步。
-  **還沒驗過的是上傳**：「這兩個鍵相符所以 App Store Connect 會收」要等第一次
-  送出才知道。
+  **上傳也走完了**：build 2026.0820.1137 那一份 `.pkg`（同一個檔案先後送 altool 的
+  validate-app 與 upload-app，兩次都回成功），processing 完的 build 在
+  App Store Connect 上是 `VALID`。
+  但這只是一筆觀察，不是因果：沒有做「把身分鍵拿掉再送一次」的對照，所以它證不到
+  這兩個鍵是被收的原因、也證不到它們是必要的。這與 README 那條「`PrivacyInfo` 通過
+  驗證只證明不會被拒、不證明必要」是同一個界線。
 
   **註解裡不要出現 ASCII 的兩個連字號。** XML 註解不允許它，而 `plutil -lint`
   **不會抓**（實測回 OK），`xmllint` 與 codesign 的 AMFI 解析器才會——症狀是簽章
