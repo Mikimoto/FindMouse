@@ -75,10 +75,10 @@
     "x": 0.509521,
     "y": 0.937325
   },
-  "author": "Gemini 2.5 Flash Image (Nano Banana)",
+  "author": "Mikimoto",
   "facing": "right",
   "id": "mycat",
-  "license": "TBD",
+  "license": "Apache-2.0",
   "logicalHeight": 96,
   "mirrorForOpposite": true,
   "name": "橘白蓬鬆貓",
