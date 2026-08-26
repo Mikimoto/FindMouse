@@ -20,6 +20,13 @@
     <string>14.0</string>
     <key>LSApplicationCategoryType</key>
     <string>public.app-category.utilities</string>
+    <!--
+      App Store Connect 的 Copyright 欄位要與這裡一致，兩邊各存一份遲早會漂。
+      版權人取自 repo 根目錄的 NOTICE（Copyright 2026 Mikimoto），不是簽章身分
+      裡的 DeepThought Co., Ltd.：後者是 Apple 開發者帳號，不是著作權人。
+    -->
+    <key>NSHumanReadableCopyright</key>
+    <string>Copyright © 2026 Mikimoto</string>
     <key>LSUIElement</key>
     <true/>
     <key>NSHighResolutionCapable</key>
