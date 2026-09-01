@@ -62,6 +62,19 @@
   不是「兩個都建」，後面那個把前面的蓋掉——`.app` 裡會裝著上一次剛好還留在
   `.build` 裡的舊執行檔，而且沒有任何錯誤訊息。判斷「我的修改有沒有進到跑起來的
   那個東西」唯一可信的是**比對產物的雜湊**，不是 mtime、也不是看建置有沒有印錯誤。
+- **出貨的是 universal binary（arm64 ＋ x86_64），旗標在 `make-app.sh` 的 `ARCHS`。**
+  SwiftPM 預設只建當前架構，而開發機是 Apple Silicon——所以 arm64-only 出貨在
+  本機**完全沒有訊號**：`.app` 照組、e2e 照綠、`codesign` 照過、ASC 照收、審查照過。
+  只有 Intel 使用者會發現，而那時東西已經在 App Store 上了（2026-09-01 實際發生：
+  使用者在 macOS 26.6.2 的 Intel Mac 上看到「與此裝置不相容」、連下載鍵都沒有）。
+  **那個訊息完全不提 CPU**，第一直覺會去查系統版本需求，而 ASC 上那個 build 的
+  `lsMinimumSystemVersion` 是 14.0——查得到、也對，於是死路一條。判別法是
+  `lipo -archs <.app>/Contents/MacOS/FindMouse`。
+  `make-app.sh` 在簽章前有一道 lipo 守衛擋這件事（拿掉 `--arch x86_64` 實測會紅）。
+  兩件連帶的：**`--show-bin-path` 也要帶同一組旗標**（不帶的話回的是
+  `.build/arm64-apple-macosx/<config>`，帶了是 `.build/out/Products/<Config>`，
+  兩個目錄同時存在且都有產物——`e2e.sh` 取 CLI 路徑那行就是為此同步的）；
+  而 CLI 走 Homebrew formula 從原始碼建，不受影響。
 - **同時只能有一個 FindMouse 實例。** 身分是 unix socket，第二個實例會自己退出。
   測試前要斷言零個實例，不能「殺完就當作乾淨」；`pgrep -f <路徑片段>` 比
   `pgrep -x <名字>` 可靠（bundle 內執行檔名與 SwiftPM 產物名不同）。
@@ -327,6 +340,13 @@
   之後，送的卻仍是 08-20 上傳的那個 build——`asc builds count --app 6803354801`
   到今天回 `total: 1`。所以兩條通路是分岔的：Homebrew 拿得到 0.5.3，App Store
   審的是 0.5.2。這不會有任何訊號提醒你，發版時要自己對。
+
+  **已上架的那個 build 是 arm64-only。** 版本 1.0 在 2026-08-26 送審、09-01 已是
+  `READY_FOR_DISTRIBUTION`，而它承載的 build `2026.820.1137` 建於 `make-app.sh`
+  加上 `--arch` 之前——Intel Mac 在 App Store 看到的是「與此裝置不相容」。
+  修法在〈會咬人的地方〉的 universal binary 那條；**光修腳本救不了已上架的那一版**，
+  要重建、重新 `--upload-app`、再送一次審查。查它是不是還沒換掉：
+  `asc builds list --app 6803354801` 的 `version` 欄若仍是 `2026.820.1137` 就是。
 
   **那份描述檔在 `.gitignore` 裡，所以它會跟著 worktree 一起消失。**
   `Scripts/embedded.provisionprofile` 是 untracked，而 `git worktree remove` 不留情
