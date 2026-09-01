@@ -15,9 +15,19 @@ cd "${ROOT}"
 #
 # 這件事讓 e2e 整個失去意義：它跑的是舊 binary，而「跑起來的東西有沒有反映
 # 我的原始碼」在外面完全看不出來——`Build complete!` 照印、e2e 照綠。
-swift build -c "${CONFIG}" --product FindMouseApp
-swift build -c "${CONFIG}" --product findmouse
-BIN_DIR="$(swift build -c "${CONFIG}" --show-bin-path)"
+#
+# **兩個架構都建，每一種建置都建。** 出貨的是 arm64-only 的話，Intel Mac 在
+# App Store 上看到的是「與此裝置不相容」、連下載鍵都沒有（2026-09-01 使用者
+# 回報，ASC 上那個 build 的 lsMinimumSystemVersion 是 14.0，所以不是版本問題
+# 而是 CPU）；Homebrew 那條更糟，dmg 裝得下去、雙擊沒反應。
+#
+# 這不是「發布時才做的事」——那個形狀這個 repo 已經踩過兩次（entitlements、
+# PrivacyInfo）。旗標寫死而不是留一個環境變數：忘了設的那條路正是這個 bug。
+# --show-bin-path 也要帶同一組旗標，否則它回的是 arm64-only 那個目錄。
+ARCHS=(--arch arm64 --arch x86_64)
+swift build -c "${CONFIG}" "${ARCHS[@]}" --product FindMouseApp
+swift build -c "${CONFIG}" "${ARCHS[@]}" --product findmouse
+BIN_DIR="$(swift build -c "${CONFIG}" "${ARCHS[@]}" --show-bin-path)"
 
 
 # 輸出路徑可被覆寫。release.sh 用它把發布版組到 build/release/，
@@ -157,6 +167,25 @@ plutil -lint "${APP}/Contents/Resources/PrivacyInfo.xcprivacy" >/dev/null || {
 #
 # 不加 `--options runtime`：hardened runtime 是 notarize 的門檻，不是沙盒的，
 # 而它會擋掉開發時想附加 debugger 的路。release.sh 那邊才需要。
+# 上面那組 --arch 旗標的正面確認。讀的是**已經複製進 .app 的那一份**，不是
+# .build 裡的來源——理由與圖示、bundle id 那兩條同一個：出貨的是複本。
+#
+# 這道守衛擋的是「旗標被拿掉」與「BIN_DIR 指到 arm64-only 目錄」兩種，兩者
+# 在外面都完全看不出來：.app 照組、e2e 照綠（開發機是 Apple Silicon），
+# 只有 Intel 使用者會發現，而那時東西已經在 App Store 上了。
+GOT_ARCHS="$(lipo -archs "${APP}/Contents/MacOS/FindMouse")"
+for want in arm64 x86_64; do
+    case " ${GOT_ARCHS} " in
+        *" ${want} "*) ;;
+        *)
+            echo "${APP}/Contents/MacOS/FindMouse 缺少 ${want}（實際只有：${GOT_ARCHS}）。" >&2
+            echo "出貨 arm64-only 的話 Intel Mac 在 App Store 上會看到「與此裝置不相容」。" >&2
+            echo "檢查這支腳本上方的 ARCHS 旗標有沒有同時傳給三個 swift build。" >&2
+            exit 1
+            ;;
+    esac
+done
+
 codesign --force --sign - --entitlements "${ROOT}/Scripts/FindMouse.entitlements" "${APP}"
 
 echo "已組出 ${APP}（ad-hoc 簽章 ＋ app-sandbox）"

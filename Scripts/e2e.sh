@@ -203,7 +203,10 @@ make_pack() {
 
 step "建置"
 Scripts/make-app.sh >/dev/null || { echo "建置失敗"; exit 1; }
-BIN="$(swift build --show-bin-path)"
+# 旗標要與 make-app.sh 的 ARCHS 一致。不一致的話這裡回的是 arm64-only 那個
+# 目錄，而 make-app.sh 建的是 universal 的——於是 e2e 測的 CLI 與剛組出來的
+# .app 來自不同次建置，「跑起來的東西有沒有反映我的原始碼」又一次看不出來。
+BIN="$(swift build --arch arm64 --arch x86_64 --show-bin-path)"
 FM="${BIN}/findmouse"
 APP="${ROOT}/build/FindMouse.app"
 echo "  findmouse：${FM}"
