@@ -310,7 +310,23 @@
   **ASC 怎麼排序沒有實測，所以不替它下結論。** 這個欄位是「最多三段以句點分隔的非負
   整數」，逐段當整數比的話 `0820` 與 `820` 同值、排序不受影響；但字串比較下 `1001` 會
   排在 `905` 前面（10 月比 9 月舊），而 ASC 走哪一種沒人量過——寫「應該不受影響」等於
-  拿同一句話裡說沒實測的前提去支撐結論。要驗只能等下一次跨月上傳。送審還沒碰。
+  拿同一句話裡說沒實測的前提去支撐結論。要驗只能等下一次跨月上傳。
+
+  **送審已經送出去了**（2026-08-26 16:41 UTC；2026-08-29 查仍是 `IN_REVIEW`）。
+  查狀態用 `asc review status --app 6803354801`——它把版本、最近一次 submission
+  與「下一步該做什麼」一起回，比翻網頁快。
+
+  **版本記錄的字串與 build 裡的 `CFBundleShortVersionString` 不必相同。**
+  ASC 的版本記錄是 `1.0`，而送審那個 build 的 pre-release version 實查是 `0.5.2`
+  （`asc builds pre-release-version view --build-id <id>`），Apple 照樣收下並進入審查。
+  所以「App Store 顯示 1.0」與「repo 是 0.5.x」不是漂移，是兩個不同的東西：對外的
+  行銷版本，與這包程式碼的版本。判斷「審的到底是哪一包程式碼」只能問 build 的
+  pre-release version，不能看版本記錄。
+
+  **而 v0.5.3 沒有進 App Store。** 它 08-26 15:06 UTC 發到 GitHub，送審在 1.5 小時
+  之後，送的卻仍是 08-20 上傳的那個 build——`asc builds count --app 6803354801`
+  到今天回 `total: 1`。所以兩條通路是分岔的：Homebrew 拿得到 0.5.3，App Store
+  審的是 0.5.2。這不會有任何訊號提醒你，發版時要自己對。
 
   **那份描述檔在 `.gitignore` 裡，所以它會跟著 worktree 一起消失。**
   `Scripts/embedded.provisionprofile` 是 untracked，而 `git worktree remove` 不留情
