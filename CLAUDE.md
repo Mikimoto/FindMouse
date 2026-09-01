@@ -320,6 +320,14 @@
   的是 `2026.820.1137`，中間那段的前導零沒了。所以別拿它做字串比對，搜不到不等於沒
   上傳成功，以 ASC 自己顯示的值為準。
 
+  **2026-09-01 補測：被剝掉的不只中間那段。** 送 `2026.0901.0757`，ASC 上是
+  `2026.901.757`——**每一段各自被當成整數重印**。上一次只有月日那段帶前導零，
+  所以只證得到那一段；這次時分那段也帶了，兩段一起沒。實務後果比字串比對更直接：
+  `asc builds upload --wait` 用送上去的字串去輪詢「build 出現了沒」，於是它**永遠
+  等不到**——那次 build 早就 `VALID` 了，而它還在印 `Waiting for build
+  2026.0901.0757 (1.1.0) to appear`。要等就自己輪 `asc builds list` 比對
+  `uploadedDate`，不要用 `--wait`。
+
   **ASC 怎麼排序沒有實測，所以不替它下結論。** 這個欄位是「最多三段以句點分隔的非負
   整數」，逐段當整數比的話 `0820` 與 `820` 同值、排序不受影響；但字串比較下 `1001` 會
   排在 `905` 前面（10 月比 9 月舊），而 ASC 走哪一種沒人量過——寫「應該不受影響」等於
@@ -338,15 +346,36 @@
 
   **而 v0.5.3 沒有進 App Store。** 它 08-26 15:06 UTC 發到 GitHub，送審在 1.5 小時
   之後，送的卻仍是 08-20 上傳的那個 build——`asc builds count --app 6803354801`
-  到今天回 `total: 1`。所以兩條通路是分岔的：Homebrew 拿得到 0.5.3，App Store
-  審的是 0.5.2。這不會有任何訊號提醒你，發版時要自己對。
+  到 08-29 回 `total: 1`。所以那段時間兩條通路是分岔的：Homebrew 拿得到 0.5.3，
+  App Store 審的是 0.5.2。這不會有任何訊號提醒你，發版時要自己對。
+  （2026-09-01 的 1.1.0 是兩條一起發的，分岔在那一版收斂。）
 
-  **已上架的那個 build 是 arm64-only。** 版本 1.0 在 2026-08-26 送審、09-01 已是
-  `READY_FOR_DISTRIBUTION`，而它承載的 build `2026.820.1137` 建於 `make-app.sh`
-  加上 `--arch` 之前——Intel Mac 在 App Store 看到的是「與此裝置不相容」。
-  修法在〈會咬人的地方〉的 universal binary 那條；**光修腳本救不了已上架的那一版**，
-  要重建、重新 `--upload-app`、再送一次審查。查它是不是還沒換掉：
-  `asc builds list --app 6803354801` 的 `version` 欄若仍是 `2026.820.1137` 就是。
+  **上架的 1.0 是 arm64-only，1.1.0 是修正版。** 1.0 承載的 build `2026.820.1137`
+  建於 `make-app.sh` 加上 `--arch` 之前，Intel Mac 在 App Store 看到的是「與此裝置
+  不相容」（見〈會咬人的地方〉的 universal binary 那條）。**光修腳本救不了已上架的
+  那一版**——2026-09-01 重建、上傳 build `2026.901.757`、送 1.1.0 審查
+  （`WAITING_FOR_REVIEW`）。
+
+  **整條線可以只用 `asc` 走完，不必 `altool`。** `altool` 要 `--apiIssuer`，而那個值
+  只在 keychain 裡；`asc` 自己就讀得到（`asc auth status` 看得到 profile）。順序：
+
+      asc builds upload --app <id> --pkg <pkg> --version <x.y.z> --build-number <build>
+      asc versions create --app <id> --version <x.y.z> --platform MAC_OS --copy-metadata-from <上一版>
+      asc localizations update --version <verId> --locale <loc> --whats-new "..."
+      asc versions attach-build --version-id <verId> --build-id <buildId>
+      asc builds update --build-id <buildId> --uses-non-exempt-encryption=false
+      asc review submit --app <id> --version <x.y.z> --platform MAC_OS --build-id <buildId> --confirm
+
+  四個會咬人的地方：**`--platform MAC_OS` 不給就預設 `IOS`**（`review submit` 會回
+  `app store version not found for version "1.1.0" and platform "IOS"`，看起來像版本
+  不存在，其實是平台猜錯）；`--copy-metadata-from` 只複製六個文字欄位
+  （description／keywords／marketingUrl／promotionalText／supportUrl／whatsNew），
+  **`whatsNew` 要自己填**（首發那版是空的，複製過來也是空的）；build 上傳完
+  **encryption 宣告是獨立一步**，不設就卡在 `build.encryption.missing`；
+  而 **`asc screenshots list` 對已上架的 1.0 也回 0**，所以它對「有沒有截圖」沒有
+  鑑別力，不要拿它下結論——判送審擋在哪一律問 `asc review doctor --app <id>`，
+  它會逐條列出 blocking 與 warning。
+
 
   **那份描述檔在 `.gitignore` 裡，所以它會跟著 worktree 一起消失。**
   `Scripts/embedded.provisionprofile` 是 untracked，而 `git worktree remove` 不留情
