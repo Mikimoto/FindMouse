@@ -1,5 +1,7 @@
 # FindMouse
 
+<p align="center"><img src="docs/findmouse.gif" width="800" alt="按 ⌥⌘F，貓跑過來用爪子壓住游標"></p>
+
 找不到滑鼠游標時，按一下快捷鍵，一隻貓從螢幕邊緣跑過來坐在游標旁邊。
 
 macOS 選單列常駐程式。貓抵達之後會待一陣子、伸懶腰、打呵欠，最後蜷起來睡著；
